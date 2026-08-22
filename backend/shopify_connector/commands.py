@@ -1497,14 +1497,35 @@ def process_refund(store: ShopifyStore, payload: dict) -> CommandResult:
         for line in payload.get("refund_line_items", []):
             refund_amount += Decimal(str(line.get("subtotal", "0")))
 
-    if refund_amount <= 0:
-        return CommandResult.fail("Refund amount is zero or negative.")
+    if refund_amount < 0:
+        return CommandResult.fail("Refund amount is negative.")
 
     refund_date_str = payload.get("created_at", "")
     try:
         refund_date = datetime.fromisoformat(refund_date_str.replace("Z", "+00:00")).date()
     except (ValueError, AttributeError):
         refund_date = datetime.now().date()
+
+    if refund_amount == 0:
+        # A5 (K#1 / Codex P2a): a legitimately zero-value refund produces no
+        # accounting, but must not be silently dropped at ingress (a bare fail the
+        # webhook acks and loses). Persist the durable handled-zero marker HERE, in
+        # the canonical writer: a ShopifyRefund row marked PROCESSED, with NO
+        # accounting event (nothing to post) — the projection never sees a
+        # zero-amount event on this path.
+        with command_writes_allowed():
+            refund = ShopifyRefund.objects.create(
+                company=store.company,
+                order=order,
+                shopify_refund_id=shopify_refund_id,
+                amount=refund_amount,
+                currency=order.currency,
+                reason=payload.get("note", ""),
+                shopify_created_at=refund_date_str or datetime.now().isoformat(),
+                raw_payload=payload,
+                status=ShopifyRefund.Status.PROCESSED,
+            )
+        return CommandResult.ok(data={"refund": refund, "handled_zero": True})
 
     with command_writes_allowed():
         refund = ShopifyRefund.objects.create(

@@ -213,6 +213,40 @@ def test_refund_credit_note_failure_raises_command_failed(company, owner_members
             handler._handle_refund_created(event, event.get_data(), mapping)
 
 
+def test_refund_aged_orphan_with_order_received_stays_retryable(company, owner_membership):
+    """Codex round-1 P1: an aged refund whose ORDER WAS RECEIVED (a ShopifyOrder
+    row exists) but whose invoice has not posted yet must stay RETRYABLE
+    (DeferEvent), NOT be consumed — otherwise a later-posting invoice would leave
+    the refund permanently unbooked (dedup blocks re-ingest, rebuild is
+    pilot-blocked). Only a genuine orphan (no order ever received) quarantines."""
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    from events.models import BusinessEvent
+    from projections.base import DeferEvent
+
+    store = _shopify_setup(company)
+    _make_order_row(company, store, order_id="9900045", total="200.00")  # received; invoice not yet posted
+    event = _emit_refund(company, refund_id="9900046", order_id="9900045", amount="50.00")
+    # Age past the 24h fresh-defer window so only the order_received discriminator
+    # keeps it retryable.
+    BusinessEvent.objects.filter(pk=event.pk).update(recorded_at=timezone.now() - timedelta(hours=25))
+    event.refresh_from_db()
+
+    import shopify_connector.projections as proj_module
+
+    handler = ShopifyAccountingHandler()
+    original = proj_module._INVOICE_LOOKUP_DELAY_SECONDS
+    proj_module._INVOICE_LOOKUP_DELAY_SECONDS = 0.001
+    try:
+        with pytest.raises(DeferEvent) as exc:
+            handler.handle(event)
+        assert "order_received=True" in str(exc.value)
+    finally:
+        proj_module._INVOICE_LOOKUP_DELAY_SECONDS = original
+
+
 # =============================================================================
 # K#1 handled-zero markers — durable trace, never a silent consume, no false alert
 # =============================================================================
@@ -236,29 +270,47 @@ def test_order_zero_total_marks_processed_no_journal(company, owner_membership):
     assert not ProjectionFailureLog.objects.filter(company=company, event=event).exists()
 
 
-def test_refund_zero_amount_marks_processed_no_credit_note(company, owner_membership):
-    """A zero-value refund books no credit note, but the source row is marked
-    PROCESSED (handled-zero marker) rather than silently consumed."""
-    from sales.models import SalesCreditNote
+def test_order_negative_total_raises_invalid_data(company, owner_membership):
+    """Codex P2b: a NEGATIVE order total is invalid provider data — the handler
+    must raise ProjectionInvalidDataError, not mark it PROCESSED like a benign
+    zero (which would hide invalid evidence as a handled order)."""
+    from projections.exceptions import ProjectionInvalidDataError
 
     store = _shopify_setup(company)
-    order = _make_order_row(company, store, order_id="9900030", total="100.00")
-    ShopifyRefund.objects.create(
-        company=company,
-        order=order,
-        shopify_refund_id=9900031,
-        amount=Decimal("0"),
-        currency="EGP",
-        shopify_created_at="2026-05-04T00:00:00Z",
-    )
-    event = _emit_refund(company, refund_id="9900031", order_id="9900030", amount="0")
+    event = _emit_order(company, order_id="9900050", amount="-10.00", store=store)
+    with pytest.raises(ProjectionInvalidDataError):
+        ShopifyAccountingHandler().handle(event)
 
-    ShopifyAccountingHandler().handle(event)
+
+def test_process_refund_zero_amount_persists_handled_zero_marker(company, owner_membership):
+    """K#1 / Codex P2a: the canonical ingress (process_refund) persists the durable
+    handled-zero marker for a zero-value refund — a PROCESSED ShopifyRefund row
+    with NO accounting event — instead of a bare fail the webhook acks and loses.
+    (Pre-fix the row/event were never created, so the projection marker was
+    unreachable for a real refund.)"""
+    from events.models import BusinessEvent
+    from shopify_connector import commands as cmd
+
+    store = _shopify_setup(company)
+    _make_order_row(company, store, order_id="9900030", total="100.00")
+
+    result = cmd.process_refund(
+        store,
+        {
+            "id": 9900031,
+            "order_id": 9900030,
+            "created_at": "2026-05-04T00:00:00Z",
+            "transactions": [],
+            "refund_line_items": [],
+        },
+    )
+    assert result.success
+    assert result.data.get("handled_zero") is True
 
     refund = ShopifyRefund.objects.get(company=company, shopify_refund_id=9900031)
     assert refund.status == ShopifyRefund.Status.PROCESSED
-    assert not SalesCreditNote.objects.filter(company=company, source="shopify", source_document_id="9900031").exists()
-    assert not ProjectionFailureLog.objects.filter(company=company, event=event).exists()
+    assert refund.event_id is None, "a zero refund must emit no accounting event"
+    assert not BusinessEvent.objects.filter(company=company, idempotency_key="shopify.refund.created:9900031").exists()
 
 
 # =============================================================================

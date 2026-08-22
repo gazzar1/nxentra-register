@@ -723,7 +723,16 @@ class ShopifyAccountingHandler(BaseProjection):
         entry_date = _parse_date(data.get("transaction_date")) or event.created_at.date()
         currency = data.get("currency") or getattr(event.company, "default_currency", "USD")
 
-        if total_price <= 0:
+        if total_price < 0:
+            # A5 (Codex P2b): a NEGATIVE order total is invalid provider data, not
+            # a benign zero — surface it for review rather than marking it handled.
+            from projections.exceptions import ProjectionInvalidDataError
+
+            raise ProjectionInvalidDataError(
+                f"Shopify order {order_name} has a negative total_price {total_price}; "
+                f"invalid order data (cannot produce an invoice)."
+            )
+        if total_price == 0:
             # A5 (K#1): a legitimately zero-value order produces no invoice/JE,
             # but must not be SILENTLY consumed. Mark the source row PROCESSED
             # (no JE) as the durable handled-zero marker instead of a bare return,
@@ -1094,10 +1103,21 @@ class ShopifyAccountingHandler(BaseProjection):
         entry_date = _parse_date(data.get("transaction_date")) or event.created_at.date()
         currency = data.get("currency") or getattr(event.company, "default_currency", "USD")
 
-        if amount <= 0:
-            # A5 (K#1): a legitimately zero-value refund produces no credit note,
-            # but must not be SILENTLY consumed. Mark the source row PROCESSED
-            # (no JE) as the durable handled-zero marker instead of a bare return.
+        if amount < 0:
+            # A5 (Codex P2b): a NEGATIVE refund amount is invalid provider data —
+            # surface it for review rather than marking it handled.
+            from projections.exceptions import ProjectionInvalidDataError
+
+            raise ProjectionInvalidDataError(
+                f"Shopify refund {refund_id} has a negative amount {amount}; invalid refund data."
+            )
+        if amount == 0:
+            # A5 (K#1): a zero-value refund produces no credit note. The canonical
+            # handled-zero marker is written at INGRESS by process_refund (a
+            # PROCESSED ShopifyRefund row with NO event — see Codex P2a), so on the
+            # canonical path the projection never sees a zero-amount event; this
+            # branch is defensive for a legacy/replayed event and stays a durable
+            # marker, never a silent consume.
             ShopifyRefund.objects.filter(company=event.company, shopify_refund_id=refund_id).update(
                 status=ShopifyRefund.Status.PROCESSED
             )
@@ -1110,14 +1130,24 @@ class ShopifyAccountingHandler(BaseProjection):
         original_invoice = _find_posted_shopify_invoice(event.company, shopify_order_id)
 
         if not original_invoice:
-            # A41: the in-pass retry exhausted, but the order_paid event
-            # may still be pending in the queue (Shopify webhook
-            # re-ordering, or a worker restart split the batch). If the
-            # event is fresh (< 24h), raise DeferEvent so process_pending
-            # rewinds the bookmark and re-attempts on the next pass.
-            # Older events are treated as truly orphan (the order really
-            # doesn't exist) — log warning and accept, matching pre-A41
-            # behavior.
+            # A5 (Codex round-1 P1): keep the refund RETRYABLE while its order
+            # could still post, and quarantine ONLY a genuine orphan.
+            #
+            # The order was RECEIVED iff a ShopifyOrder row exists (process_order_paid
+            # creates it up front, independent of projection order). If it exists the
+            # invoice is merely pending — being processed, deferred, or blocked on an
+            # operator-fixable error — and the refund must self-heal once it posts, so
+            # DEFER (DeferEvent rewinds at batch end; later events still apply once via
+            # markers, so no frozen projection). Consuming here would foreclose
+            # recovery: process_refund dedups on the existing row, resolving a failure
+            # log only changes the log, and rebuild is capability-blocked under the
+            # pilot.
+            #
+            # Only when the order was NEVER received (no row) AND the fresh-defer
+            # window has elapsed is this a genuine orphan — retrying cannot help
+            # (there is no order to credit against), so record a VISIBLE terminal
+            # quarantine that advances the stream (the infinite invisible loop the
+            # A41 silent-return avoided, now made loud).
             from datetime import timedelta
 
             from django.utils import timezone as _tz
@@ -1125,29 +1155,26 @@ class ShopifyAccountingHandler(BaseProjection):
             from projections.base import DeferEvent
 
             event_age = _tz.now() - event.recorded_at
-            if event_age < timedelta(hours=24):
+            order_received = ShopifyOrder.objects.filter(
+                company=event.company, shopify_order_id=data.get("shopify_order_id")
+            ).exists()
+            if order_received or event_age < timedelta(hours=24):
                 raise DeferEvent(
-                    f"Awaiting order_paid for Shopify order {shopify_order_id} "
-                    f"(refund {refund_id} aged {event_age.total_seconds():.0f}s)"
+                    f"Awaiting posted invoice for Shopify order {shopify_order_id} "
+                    f"(refund {refund_id}, order_received={order_received}, aged "
+                    f"{event_age.total_seconds():.0f}s)"
                 )
 
-            # A5: upgrade A41's SILENT orphan-accept to a VISIBLE quarantine.
-            # Same disposition (past the defer window the order genuinely doesn't
-            # exist, so retrying won't help), but ProjectionTerminalSkip records
-            # an operator-visible ProjectionFailureLog AND advances — the refund
-            # is no longer silently consumed, yet the stream is not head-of-line
-            # stalled (the exact infinite loop the A41 silent-return avoided).
             from projections.exceptions import ProjectionTerminalSkip
 
             raise ProjectionTerminalSkip(
-                f"Shopify refund {refund_id} has no original invoice for order "
-                f"{shopify_order_id} after {_INVOICE_LOOKUP_MAX_ATTEMPTS} retries and "
-                f"{event_age} of waiting — treating as orphan (the order may predate "
-                f"the module-routing refactor or its order_paid webhook was lost).",
+                f"Shopify refund {refund_id} references order {shopify_order_id}, which was "
+                f"never received after {event_age} — genuine orphan; no invoice can be "
+                f"produced to credit against.",
                 fix_hint=(
-                    "If the order exists, re-run the Shopify sync so its invoice posts, then "
-                    "resolve this refund from /finance/exceptions; otherwise book the refund "
-                    "manually and mark this failure resolved."
+                    "Confirm the order in Shopify and re-run the sync so its order_paid event "
+                    "arrives (the refund then self-heals), or book the refund manually and "
+                    "resolve this from /finance/exceptions."
                 ),
             )
 
