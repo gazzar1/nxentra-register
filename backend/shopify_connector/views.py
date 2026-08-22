@@ -991,8 +991,10 @@ class ShopifyOrdersView(APIView):
     def get(self, request):
         from decimal import Decimal
 
-        from django.db.models import DecimalField, Sum
+        from django.db.models import DecimalField, Q, Sum
         from django.db.models.functions import Coalesce
+
+        from .models import ShopifyRefund
 
         actor = resolve_actor(request)
         require(actor, "settings.view")
@@ -1004,7 +1006,10 @@ class ShopifyOrdersView(APIView):
             ShopifyOrder.objects.filter(company=actor.company)
             .annotate(
                 total_refunded=Coalesce(
-                    Sum("refunds__amount"),
+                    # A5 (Codex round-3 P2): exclude invalid (ERROR/rejected)
+                    # refunds — e.g. a negative payload persisted as evidence — so
+                    # they never skew the displayed refunded total.
+                    Sum("refunds__amount", filter=~Q(refunds__status=ShopifyRefund.Status.ERROR)),
                     Decimal("0"),
                     output_field=DecimalField(max_digits=18, decimal_places=2),
                 )

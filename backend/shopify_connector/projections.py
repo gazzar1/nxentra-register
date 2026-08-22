@@ -1130,42 +1130,63 @@ class ShopifyAccountingHandler(BaseProjection):
         original_invoice = _find_posted_shopify_invoice(event.company, shopify_order_id)
 
         if not original_invoice:
-            # A5 (Codex round-1 P1): keep the refund RETRYABLE while its order
-            # could still post, and quarantine ONLY a genuine orphan.
-            #
-            # The order was RECEIVED iff a ShopifyOrder row exists (process_order_paid
-            # creates it up front, independent of projection order). If it exists the
-            # invoice is merely pending — being processed, deferred, or blocked on an
-            # operator-fixable error — and the refund must self-heal once it posts, so
-            # DEFER (DeferEvent rewinds at batch end; later events still apply once via
-            # markers, so no frozen projection). Consuming here would foreclose
-            # recovery: process_refund dedups on the existing row, resolving a failure
-            # log only changes the log, and rebuild is capability-blocked under the
-            # pilot.
-            #
-            # Only when the order was NEVER received (no row) AND the fresh-defer
-            # window has elapsed is this a genuine orphan — retrying cannot help
-            # (there is no order to credit against), so record a VISIBLE terminal
-            # quarantine that advances the stream (the infinite invisible loop the
-            # A41 silent-return avoided, now made loud).
+            # A5 (Codex rounds 1 & 3): keep the refund RETRYABLE while its order's
+            # invoice could still post, and quarantine a dead-end. The order's own
+            # order_paid event is the discriminator (via the ShopifyOrder row's
+            # event_id, set up front by process_order_paid):
+            #   * event still PENDING (no applied marker for this projection) — the
+            #     invoice is being processed / deferred / blocked on an
+            #     operator-fixable error, so DEFER; it self-heals once it posts
+            #     (DeferEvent rewinds at batch end, so later events still apply once
+            #     via markers — no frozen projection). Consuming here would foreclose
+            #     recovery: process_refund dedups on the existing row, resolving a
+            #     failure log only changes the log, and rebuild is pilot-blocked.
+            #   * event already APPLIED but produced NO invoice (e.g. a closed-period
+            #     ProjectionTerminalSkip on the order) — the invoice can never post
+            #     (rebuild is blocked), so this refund is a dead-end: VISIBLE terminal
+            #     quarantine, not an endless defer (Codex round-3 P1).
+            #   * no order event at all — a fresh refund may still be racing its order
+            #     webhook (DEFER < 24h); past that it is a genuine orphan (quarantine).
             from datetime import timedelta
 
             from django.utils import timezone as _tz
 
             from projections.base import DeferEvent
+            from projections.exceptions import ProjectionTerminalSkip
+            from projections.models import ProjectionAppliedEvent
 
             event_age = _tz.now() - event.recorded_at
-            order_received = ShopifyOrder.objects.filter(
+            order_row = ShopifyOrder.objects.filter(
                 company=event.company, shopify_order_id=data.get("shopify_order_id")
-            ).exists()
-            if order_received or event_age < timedelta(hours=24):
-                raise DeferEvent(
-                    f"Awaiting posted invoice for Shopify order {shopify_order_id} "
-                    f"(refund {refund_id}, order_received={order_received}, aged "
-                    f"{event_age.total_seconds():.0f}s)"
+            ).first()
+            order_event_id = order_row.event_id if order_row else None
+
+            if order_event_id is not None:
+                order_applied = ProjectionAppliedEvent.objects.filter(
+                    company=event.company, projection_name=self.name, event_id=order_event_id
+                ).exists()
+                if not order_applied:
+                    raise DeferEvent(
+                        f"Awaiting posted invoice for Shopify order {shopify_order_id} "
+                        f"(refund {refund_id}; order event pending)"
+                    )
+                raise ProjectionTerminalSkip(
+                    f"Shopify refund {refund_id}: order {shopify_order_id} was processed but "
+                    f"produced no invoice (e.g. it fell in a closed period and was quarantined), "
+                    f"so this refund has nothing to credit against.",
+                    fix_hint=(
+                        "Resolve the order's own failure first (e.g. reopen the period and re-run "
+                        "the Shopify sync so its invoice posts), then re-run the sync to re-ingest "
+                        "this refund; or book the refund manually and resolve this from "
+                        "/finance/exceptions."
+                    ),
                 )
 
-            from projections.exceptions import ProjectionTerminalSkip
+            if event_age < timedelta(hours=24):
+                raise DeferEvent(
+                    f"Awaiting order_paid for Shopify order {shopify_order_id} "
+                    f"(refund {refund_id}, aged {event_age.total_seconds():.0f}s)"
+                )
 
             raise ProjectionTerminalSkip(
                 f"Shopify refund {refund_id} references order {shopify_order_id}, which was "

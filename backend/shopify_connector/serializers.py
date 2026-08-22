@@ -82,7 +82,9 @@ class ShopifyOrderSerializer(serializers.ModelSerializer):
             return str(annotated)
         from django.db.models import Sum
 
-        total = obj.refunds.aggregate(t=Sum("amount"))["t"]
+        # A5 (Codex round-3 P2): exclude invalid (ERROR/rejected) refunds so a
+        # persisted-as-evidence negative payload never skews the refunded total.
+        total = obj.refunds.exclude(status=ShopifyRefund.Status.ERROR).aggregate(t=Sum("amount"))["t"]
         return str(total or "0.00")
 
     def get_journal_entry_pk(self, obj):

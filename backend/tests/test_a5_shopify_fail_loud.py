@@ -213,12 +213,11 @@ def test_refund_credit_note_failure_raises_command_failed(company, owner_members
             handler._handle_refund_created(event, event.get_data(), mapping)
 
 
-def test_refund_aged_orphan_with_order_received_stays_retryable(company, owner_membership):
-    """Codex round-1 P1: an aged refund whose ORDER WAS RECEIVED (a ShopifyOrder
-    row exists) but whose invoice has not posted yet must stay RETRYABLE
-    (DeferEvent), NOT be consumed — otherwise a later-posting invoice would leave
-    the refund permanently unbooked (dedup blocks re-ingest, rebuild is
-    pilot-blocked). Only a genuine orphan (no order ever received) quarantines."""
+def test_refund_aged_orphan_with_pending_order_stays_retryable(company, owner_membership):
+    """Codex round-1 P1 (refined round-3): an aged refund whose order's order_paid
+    event is still PENDING (received, not yet applied — invoice not posted) stays
+    RETRYABLE (DeferEvent), NOT consumed — a later-posting invoice would otherwise
+    leave it permanently unbooked (dedup blocks re-ingest; rebuild is pilot-blocked)."""
     from datetime import timedelta
 
     from django.utils import timezone
@@ -227,10 +226,12 @@ def test_refund_aged_orphan_with_order_received_stays_retryable(company, owner_m
     from projections.base import DeferEvent
 
     store = _shopify_setup(company)
-    _make_order_row(company, store, order_id="9900045", total="200.00")  # received; invoice not yet posted
+    order_event = _emit_order(company, order_id="9900045", amount="200.00", store=store)  # received, NOT applied
+    order = _make_order_row(company, store, order_id="9900045", total="200.00")
+    order.event_id = order_event.id
+    order.save(update_fields=["event_id"])
     event = _emit_refund(company, refund_id="9900046", order_id="9900045", amount="50.00")
-    # Age past the 24h fresh-defer window so only the order_received discriminator
-    # keeps it retryable.
+    # Age past 24h so only the pending-order discriminator (not age) keeps it retryable.
     BusinessEvent.objects.filter(pk=event.pk).update(recorded_at=timezone.now() - timedelta(hours=25))
     event.refresh_from_db()
 
@@ -242,7 +243,41 @@ def test_refund_aged_orphan_with_order_received_stays_retryable(company, owner_m
     try:
         with pytest.raises(DeferEvent) as exc:
             handler.handle(event)
-        assert "order_received=True" in str(exc.value)
+        assert "order event pending" in str(exc.value)
+    finally:
+        proj_module._INVOICE_LOOKUP_DELAY_SECONDS = original
+
+
+def test_refund_orphaned_by_terminally_applied_order_quarantines(company, owner_membership):
+    """Codex round-3 P1: a refund whose order was TERMINALLY APPLIED without an
+    invoice (e.g. a closed-period ProjectionTerminalSkip on the order) must NOT
+    defer forever — the invoice can never post (rebuild is pilot-blocked), so the
+    refund is a dead-end and gets a VISIBLE terminal quarantine."""
+    from projections.exceptions import ProjectionTerminalSkip
+    from projections.models import ProjectionAppliedEvent
+    from projections.write_barrier import projection_writes_allowed
+
+    store = _shopify_setup(company)
+    order_event = _emit_order(company, order_id="9900070", amount="100.00", store=store)
+    order = _make_order_row(company, store, order_id="9900070", total="100.00")
+    order.event_id = order_event.id
+    order.save(update_fields=["event_id"])
+    # The order's order_paid event APPLIED (consumed) with no invoice — the
+    # closed-period TerminalSkip shape.
+    with projection_writes_allowed():
+        ProjectionAppliedEvent.objects.create(
+            company=company, projection_name=ShopifyAccountingHandler().name, event=order_event
+        )
+
+    refund_event = _emit_refund(company, refund_id="9900071", order_id="9900070", amount="40.00")
+    import shopify_connector.projections as proj_module
+
+    handler = ShopifyAccountingHandler()
+    original = proj_module._INVOICE_LOOKUP_DELAY_SECONDS
+    proj_module._INVOICE_LOOKUP_DELAY_SECONDS = 0.001
+    try:
+        with pytest.raises(ProjectionTerminalSkip):
+            handler.handle(refund_event)
     finally:
         proj_module._INVOICE_LOOKUP_DELAY_SECONDS = original
 
@@ -370,3 +405,38 @@ def test_process_refund_negative_amount_persists_rejected_marker(company, owner_
     assert "negative" in refund.error_message.lower()
     assert refund.event_id is None
     assert not BusinessEvent.objects.filter(company=company, idempotency_key="shopify.refund.created:9900061").exists()
+
+
+def test_error_refund_excluded_from_total_refunded(company, owner_membership):
+    """Codex round-3 P2: an ERROR (rejected) refund is kept as durable evidence
+    but MUST NOT skew the order's total_refunded — a persisted negative payload
+    would otherwise show a wrong (even negative) refunded total."""
+    from shopify_connector.serializers import ShopifyOrderSerializer
+
+    store = _shopify_setup(company)
+    order = _make_order_row(company, store, order_id="9900080", total="100.00")
+    ShopifyRefund.objects.create(
+        company=company,
+        order=order,
+        shopify_refund_id=9900081,
+        amount=Decimal("10.00"),
+        currency="EGP",
+        shopify_created_at="2026-05-04T00:00:00Z",
+        status=ShopifyRefund.Status.PROCESSED,
+    )
+    ShopifyRefund.objects.create(
+        company=company,
+        order=order,
+        shopify_refund_id=9900082,
+        amount=Decimal("-5.00"),
+        currency="EGP",
+        shopify_created_at="2026-05-04T00:00:00Z",
+        status=ShopifyRefund.Status.ERROR,
+    )
+
+    # Un-annotated instance exercises the serializer's direct-sum fallback path.
+    fresh = ShopifyOrder.objects.get(pk=order.pk)
+    data = ShopifyOrderSerializer(fresh).data
+    # Compare numerically — the fallback path str()s the raw Sum (no fixed scale).
+    # The point is the ERROR -5 is excluded (10, not 5).
+    assert Decimal(data["total_refunded"]) == Decimal("10.00"), "ERROR refund must be excluded from total_refunded"
