@@ -240,8 +240,12 @@ def persist_orphan_review_flags_for_posted_event(company, event) -> None:
         return
 
     data = event.get_data() or {}
-    external_system = str(data.get("external_system") or "shopify").strip().lower()
-    lookup = _KNOWN_ORDER_LOOKUPS.get(external_system)
+    # Codex round-11: dispatch ONLY on an explicitly-present system — no
+    # provider default in core. A missing/blank external_system writes no
+    # flags, exactly like an unregistered one (the importer layer always
+    # stamps the system into the event payload, so real events are explicit).
+    external_system = str(data.get("external_system") or "").strip().lower()
+    lookup = _KNOWN_ORDER_LOOKUPS.get(external_system) if external_system else None
     if lookup is None:
         return
     provider_code = str(data.get("provider_normalized_code") or "")

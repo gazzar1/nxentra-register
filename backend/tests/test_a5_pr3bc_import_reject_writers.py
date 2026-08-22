@@ -865,6 +865,20 @@ def test_orphan_flag_writer_is_provider_neutral(company):
     import_rejects.persist_orphan_review_flags_for_posted_event(company, stub_event)
     assert ImportRejectedRow.objects.count() == 0
 
+    # Codex round-11: a MISSING/blank external_system must not default to any
+    # provider — no flags, exactly like an unregistered system.
+    missing_system_event = SimpleNamespace(
+        id=987654322,
+        metadata={"filename": "x.csv"},
+        get_data=lambda: {
+            "provider_normalized_code": "paymob",
+            "payout_batch_id": "B-2",
+            "line_items": [{"order_id": "12345", "gross": "10.00"}],
+        },
+    )
+    import_rejects.persist_orphan_review_flags_for_posted_event(company, missing_system_event)
+    assert ImportRejectedRow.objects.count() == 0
+
 
 def test_bank_commit_refuses_tampered_rejects(company, user, owner_membership, merchant_bank, api_client):
     """Codex round-8: altered/fabricated descriptors no longer verify against
