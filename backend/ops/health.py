@@ -376,8 +376,10 @@ def compute_alert_state() -> dict:
             total_lag += total - processed
 
     healthy = (
-        unresolved <= max_failures
-        and unresolved_rejects <= max_failures
+        # Combined pool vs the threshold (Codex P2): projection failures and import
+        # rejects are both unresolved financial exceptions — a max of N must bound
+        # their TOTAL, not each independently.
+        (unresolved + unresolved_rejects) <= max_failures
         and total_lag <= lag_threshold
         and paused == 0
         and errored == 0

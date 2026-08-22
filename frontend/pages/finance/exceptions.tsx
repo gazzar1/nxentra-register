@@ -220,12 +220,13 @@ export default function ExceptionsPage() {
   const handleResolveReject = async (row: ImportRejectedRow) => {
     setResolvingRejectId(row.id);
     try {
-      await importRejectedRowsService.resolve(row.id, resolutionNote);
+      // The reject UI collects no note — never leak the projection-failure
+      // `resolutionNote` onto an unrelated reject's audit trail (Codex P2).
+      await importRejectedRowsService.resolve(row.id);
       toast({
         title: "Import rejection resolved",
         description: `${row.source_kind} row ${row.row_index} (${row.reason_code})`,
       });
-      setResolutionNote("");
       await fetchAll();
     } catch (err) {
       toast({

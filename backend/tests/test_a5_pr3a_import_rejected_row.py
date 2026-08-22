@@ -87,6 +87,41 @@ def test_health_fold_unresolved_reject_makes_unhealthy(company, settings):
     assert state["status"] == "unhealthy"
 
 
+def test_health_threshold_combines_failures_and_rejects(company, settings):
+    """Codex round-3 P2: the alert threshold must bound the COMBINED unresolved
+    pool (projection failures + import rejects), not each independently."""
+    import uuid as _uuid
+
+    from events.models import BusinessEvent, CompanyEventCounter
+    from ops.health import compute_alert_state
+    from projections.models import ProjectionFailureLog
+
+    settings.ALERT_UNRESOLVED_FAILURES_MAX = 1
+
+    # One reject alone is within the threshold → healthy.
+    _make_reject(company)
+    assert compute_alert_state()["status"] == "healthy"
+
+    # Add one projection failure → combined 2 > 1 → unhealthy (independent
+    # thresholds would have wrongly stayed healthy at 1 each).
+    counter, _ = CompanyEventCounter.objects.get_or_create(company=company)
+    counter.last_sequence += 1
+    counter.save()
+    ev = BusinessEvent.objects.create(
+        company=company,
+        event_type="test.event",
+        aggregate_type="T",
+        aggregate_id="1",
+        company_sequence=counter.last_sequence,
+        idempotency_key=f"t:{_uuid.uuid4()}",
+        data={},
+    )
+    ProjectionFailureLog.objects.create(
+        company=company, projection_name="p", event=ev, event_type="test.event", message="x"
+    )
+    assert compute_alert_state()["status"] == "unhealthy"
+
+
 def test_list_view_and_filters(company, user, owner_membership, api_client):
     _make_reject(company, source_kind="SETTLEMENT")
     _make_reject(company, source_kind="BANK", provider_code="", dedup_hash=uuid.uuid4().hex)
