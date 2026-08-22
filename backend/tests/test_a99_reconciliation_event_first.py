@@ -137,11 +137,11 @@ def manual_match_setup(db, company, merchant_bank, revenue_account, actor):
 
 @pytest.mark.django_db
 def test_manual_match_does_not_directly_flip_journal_line_reconciled(company, manual_match_setup, actor):
-    """If the projection is stubbed, manual_match must still emit the
-    event but JournalLine.reconciled must NOT flip — proving the command
-    has no direct-write fallback. Previously (pre-A99) the command did
-    `JournalLine.objects.filter(...).update(reconciled=True)` directly,
-    so this test would fail.
+    """If the projection is stubbed, JournalLine.reconciled must NOT flip —
+    proving the command has no direct-write fallback. Previously (pre-A99)
+    the command did `JournalLine.objects.filter(...).update(reconciled=True)`
+    directly, so this test would fail. A5-PR3c: the command now also reports
+    the unapplied state honestly and rolls the unconfirmed event back.
     """
     bank_line = manual_match_setup["bank_line"]
     journal_line = manual_match_setup["journal_line"]
@@ -166,16 +166,17 @@ def test_manual_match_does_not_directly_flip_journal_line_reconciled(company, ma
     # change, and the command now says so honestly instead of reporting a
     # false success — the event-first contract below is unchanged.
     assert not result.success, "canonical state did not change — the command must not claim success"
-    assert "/finance/exceptions" in (result.error or ""), result.error
+    assert "rolled back" in (result.error or ""), result.error
 
-    # Event WAS emitted (committed despite the honest failure — the async
-    # projection pass retries it).
+    # Codex round-2: a confirm event that did not confirm must NOT linger (a
+    # later pass would apply it by overwriting whatever pairing exists by then,
+    # leaving the other journal line reconciled). The whole command rolls back.
     events_after = BusinessEvent.objects.filter(
         company=company,
         event_type=EventTypes.RECONCILIATION_MATCH_CONFIRMED,
     ).count()
-    assert events_after == events_before + 1, (
-        "manual_match must emit ReconciliationMatchConfirmed regardless of projection state."
+    assert events_after == events_before, (
+        "a MatchConfirmed event whose canonical apply did not land must be rolled back with the command"
     )
 
     # JL.reconciled did NOT flip — proves no direct-write fallback.
@@ -240,13 +241,14 @@ def test_unmatch_line_does_not_directly_clear_difference_fields(company, manual_
     # have cleared — the command reports that honestly now (no false success).
     assert not result.success, "canonical state did not change — the command must not claim success"
 
-    # Event WAS emitted (committed; retried by the async projection pass).
+    # Codex round-2: the unmatch event rolls back with the command — a stale
+    # unmatch must not linger to clear a match the operator later re-confirms.
     events_after = BusinessEvent.objects.filter(
         company=company,
         event_type=EventTypes.RECONCILIATION_MATCH_UNMATCHED,
     ).count()
-    assert events_after == events_before + 1, (
-        "unmatch_line must emit ReconciliationMatchUnmatched regardless of projection state."
+    assert events_after == events_before, (
+        "an Unmatched event whose canonical apply did not land must be rolled back with the command"
     )
 
     # JL.reconciled stays True — projection was stubbed, no direct un-flip.

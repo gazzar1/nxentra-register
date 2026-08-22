@@ -1206,8 +1206,14 @@ def import_settlement_csv(
             )
             # A5-PR3b (founder-approved 0042): durable per-line review flag —
             # QUARANTINED, not REJECTED, because the line POSTED. Written
-            # OUTSIDE the emit atomic (it closed above) so a re-upload of the
-            # deduplicated batch still refreshes the evidence idempotently.
+            # OUTSIDE the emit atomic (it closed above). Codex round-2: gate on
+            # a FRESHLY emitted event — a deduplicated re-upload posts NOTHING
+            # (the emitter returns the original immutable event), so writing
+            # flags from the NEW upload's rows would fabricate evidence about
+            # rows that never became canonical. The original import already
+            # flagged the canonical rows.
+            if already_existed:
+                continue
             unknown_set = set(unknown_order_ids)
             orphan_rejects = []
             for li_index, li in enumerate(batch.get("line_items") or [], start=1):

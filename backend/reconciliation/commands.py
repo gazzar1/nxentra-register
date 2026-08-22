@@ -139,26 +139,29 @@ def _canonical_match_state_error(
     given, the exact ``matched_journal_line`` the current action must produce
     (``None`` for unmatch/exclude — the projection clears the FK).
 
-    Returns an error message on mismatch, else None. The caller returns
-    ``CommandResult.fail`` WITHOUT rolling back: the emitted event and the
-    ProjectionFailureLog stay committed, so the async projection pass retries
-    and a transient failure self-heals — the operator just never sees a false
-    success in the meantime.
+    Returns an error message on mismatch, else None. The caller must treat a
+    non-None return as fatal for the WHOLE command atomic
+    (``transaction.set_rollback(True)`` + ``CommandResult.fail``): Codex
+    round-2 (PR #129) showed that RETAINING the just-emitted event after a
+    detected mismatch is unsafe — the next projection pass would apply the
+    stale confirm by OVERWRITING the bank line's pairing while the previously
+    matched journal line stays reconciled and its ReconciliationLink stays
+    CONFIRMED. Rolling back leaves no stale confirm/unmatch event behind;
+    these are operator-interactive commands, so the failure surfaces in the
+    HTTP response and the operator simply retries the action.
     """
     bank_line.refresh_from_db()
     if bank_line.match_status not in expected_statuses:
         return (
-            f"The {action} was recorded but could not be applied — the bank line is "
-            f"{bank_line.match_status}, expected {' or '.join(expected_statuses)}. See "
-            "/finance/exceptions; a transient failure retries automatically on the next "
-            "projection pass."
+            f"The {action} could not be applied — the bank line is {bank_line.match_status}, "
+            f"expected {' or '.join(expected_statuses)}. Nothing was recorded (the action was "
+            "rolled back); retry, and if it keeps failing the reconciliation projection "
+            "handler is erroring and needs investigation."
         )
     if expected_matched_jl_id is not _JL_UNSET and bank_line.matched_journal_line_id != expected_matched_jl_id:
         return (
-            f"The {action} was recorded but the canonical pairing does not correspond to this "
-            "request (an earlier pending confirmation may have applied instead). See "
-            "/finance/exceptions; the remaining event retries automatically on the next "
-            "projection pass."
+            f"The {action} could not be applied — the canonical pairing does not correspond to "
+            "this request. Nothing was recorded (the action was rolled back); refresh and retry."
         )
     return None
 
@@ -1406,6 +1409,9 @@ def _manual_match_settlement_ebd(
         action="manual match",
     )
     if err:
+        # Roll the WHOLE command back — including the clearance JE posted
+        # above, so no orphan clearance survives a confirm that didn't confirm.
+        transaction.set_rollback(True)
         return CommandResult.fail(err)
 
     return CommandResult.ok(
@@ -1432,6 +1438,14 @@ def manual_match(
     flag-flip match.
     """
     require(actor, "accounting.reconciliation")
+
+    # A5-PR3c (D#9, Codex round-2): drain pending reconciliation events BEFORE
+    # evaluating the precondition, so the already-matched guard below reads
+    # fully-applied canonical state. Without this, a stale pending confirmation
+    # for the same bank line would pass the guard, this command would emit a
+    # SECOND confirm, and whichever applies later would overwrite the other's
+    # pairing while its journal line stayed reconciled.
+    _run_reconciliation_projection_sync(actor.company)
 
     try:
         # A165: select_for_update serializes concurrent double-submits
@@ -1497,6 +1511,9 @@ def manual_match(
         action="manual match",
     )
     if err:
+        # Roll the WHOLE command back (event included) — a confirm event that
+        # did not confirm must not linger to overwrite a later pairing.
+        transaction.set_rollback(True)
         return CommandResult.fail(err)
 
     return CommandResult.ok(
@@ -1783,6 +1800,10 @@ def unmatch_line(
     # enforced by the SERIALIZED @requires_capability(UNSAFE_BANK_MATCH)
     # decorator above (outermost, over @translate_posted_journal_invalid).
 
+    # A5-PR3c (D#9, Codex round-2): drain pending reconciliation events before
+    # the precondition, so the not-matched guard reads fully-applied state.
+    _run_reconciliation_projection_sync(actor.company)
+
     try:
         bank_line = BankStatementLine.objects.get(
             id=bank_line_id,
@@ -1828,6 +1849,9 @@ def unmatch_line(
         action="unmatch",
     )
     if err:
+        # Roll back everything — including the reversal JEs — so a failed
+        # unmatch leaves the original match fully intact, not half-reversed.
+        transaction.set_rollback(True)
         return CommandResult.fail(err)
 
     return CommandResult.ok()
@@ -1916,6 +1940,10 @@ def exclude_line(
     """
     require(actor, "accounting.reconciliation")
 
+    # A5-PR3c (D#9, Codex round-2): drain pending reconciliation events before
+    # reading the line's match state, so the reversal below sees applied truth.
+    _run_reconciliation_projection_sync(actor.company)
+
     try:
         bank_line = BankStatementLine.objects.get(
             id=bank_line_id,
@@ -1957,6 +1985,9 @@ def exclude_line(
         action="exclude",
     )
     if err:
+        # Roll back everything — a failed exclude leaves the line exactly as
+        # it was, with no stale unmatch event pending.
+        transaction.set_rollback(True)
         return CommandResult.fail(err)
 
     return CommandResult.ok()

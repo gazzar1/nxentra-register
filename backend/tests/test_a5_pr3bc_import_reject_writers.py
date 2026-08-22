@@ -321,6 +321,30 @@ def test_settlement_orphan_order_id_writes_quarantined_review_flag(shopify_setup
     ).exists()
 
 
+def test_settlement_dedup_reupload_writes_no_orphan_flags(shopify_setup, company):
+    """Codex round-2 P2: a deduplicated re-upload posts NOTHING (the emitter
+    returns the original immutable event), so a changed re-upload must not
+    fabricate review flags for rows that never became canonical."""
+    csv_v1 = b"""order_id,gross,fee,net,payout_batch_id,payout_date
+9999,300.00,9.00,291.00,PR3B-DEDUP,2026-04-25
+"""
+    # Same batch id, DIFFERENT orphan row — dedups at the event store.
+    csv_v2 = b"""order_id,gross,fee,net,payout_batch_id,payout_date
+7777,500.00,15.00,485.00,PR3B-DEDUP,2026-04-25
+"""
+    import_settlement_csv(
+        company=company, provider_normalized_code="paymob", file_content=csv_v1, source_filename="v1.csv"
+    )
+    results = import_settlement_csv(
+        company=company, provider_normalized_code="paymob", file_content=csv_v2, source_filename="v2.csv"
+    )
+    assert results[0]["deduplicated"] is True
+
+    flags = ImportRejectedRow.objects.filter(company=company, reason_code=ImportRejectedRow.ReasonCode.ORPHAN_ORDER_ID)
+    assert flags.count() == 1, "only the ORIGINAL (canonical) import writes review flags"
+    assert flags.get().raw_row.get("order_id") == "9999"
+
+
 def test_settlement_http_response_carries_reject_summary(shopify_setup, company, user, owner_membership, api_client):
     from django.core.files.uploadedfile import SimpleUploadedFile
 
@@ -535,6 +559,55 @@ def test_bank_commit_http_passthrough(company, user, owner_membership, merchant_
     assert reject.row_index == 3
 
 
+def test_bank_commit_refuses_nonlist_parse_rejects(company, user, owner_membership, merchant_bank, api_client):
+    """Codex round-2 P2: malformed/oversized parse_rejects must refuse loudly,
+    never coerce or truncate evidence silently."""
+    api_client.force_authenticate(user=user)
+    body = {
+        "account_id": merchant_bank.id,
+        "statement_date": "2026-04-25",
+        "period_start": "2026-04-23",
+        "period_end": "2026-04-27",
+        "opening_balance": "0",
+        "closing_balance": "10.00",
+        "currency": "EGP",
+        "lines": [{"line_date": "2026-04-25", "amount": "10.00", "description": "ok", "reference": ""}],
+        "parse_rejects": "not-a-list",
+    }
+    resp = api_client.post("/api/accounting/bank-statements/", body, format="json")
+    assert resp.status_code == 400
+    assert "list" in resp.data["error"]
+    assert ImportRejectedRow.objects.count() == 0
+    from accounting.models import BankStatement
+
+    assert not BankStatement.objects.filter(company=company).exists()
+
+
+def test_bank_commit_refuses_oversized_parse_rejects(
+    company, user, owner_membership, merchant_bank, api_client, monkeypatch
+):
+    import accounting.bank_views as bank_views_module
+
+    monkeypatch.setattr(bank_views_module, "_MAX_PARSE_REJECTS", 2)
+    api_client.force_authenticate(user=user)
+    desc = {"row_index": 1, "raw_row": {"Amount": "x"}, "reason_code": "UNPARSEABLE_AMOUNT", "reason_message": "x"}
+    body = {
+        "account_id": merchant_bank.id,
+        "statement_date": "2026-04-25",
+        "period_start": "2026-04-23",
+        "period_end": "2026-04-27",
+        "opening_balance": "0",
+        "closing_balance": "10.00",
+        "currency": "EGP",
+        "lines": [{"line_date": "2026-04-25", "amount": "10.00", "description": "ok", "reference": ""}],
+        "parse_rejects": [desc, desc, desc],
+    }
+    resp = api_client.post("/api/accounting/bank-statements/", body, format="json")
+    assert resp.status_code == 400
+    assert "max 2" in resp.data["error"]
+    assert ImportRejectedRow.objects.count() == 0
+
+
 # =============================================================================
 # D#9 — canonical post-check on manual match / unmatch / exclude
 # =============================================================================
@@ -602,7 +675,8 @@ def _break_reconciliation_projection(monkeypatch):
 
 
 def test_manual_match_reports_failure_when_projection_swallows(company, actor, manual_match_targets, monkeypatch):
-    from projections.models import ProjectionFailureLog
+    from events.models import BusinessEvent
+    from events.types import EventTypes
     from reconciliation.commands import manual_match
 
     _break_reconciliation_projection(monkeypatch)
@@ -610,21 +684,29 @@ def test_manual_match_reports_failure_when_projection_swallows(company, actor, m
     result = manual_match(actor, manual_match_targets["bank_line"].id, manual_match_targets["journal_line"].id)
 
     assert not result.success, "the API must NOT report matched while canonical is UNMATCHED (D#9)"
-    assert "exceptions" in (result.error or "").lower() or "/finance/exceptions" in (result.error or "")
+    assert "rolled back" in (result.error or ""), result.error
     bank_line = manual_match_targets["bank_line"]
     bank_line.refresh_from_db()
     assert bank_line.match_status == BankStatementLine.MatchStatus.UNMATCHED
-    # The failure is durable + retryable: event committed, failure log written.
-    assert ProjectionFailureLog.objects.filter(company=company, resolved=False).exists()
+    # Codex round-2: the unconfirmed event must NOT linger — a later projection
+    # pass would apply it by overwriting whatever pairing exists by then. The
+    # whole command (event included) rolls back; the operator simply retries.
+    assert not BusinessEvent.objects.filter(
+        company=company, event_type=EventTypes.RECONCILIATION_MATCH_CONFIRMED
+    ).exists()
 
 
 def test_manual_match_rejects_wrong_pairing_from_earlier_pending_event(
     company, actor, manual_match_targets, merchant_bank, revenue_account, monkeypatch
 ):
-    """Codex round-1 P2: an EARLIER pending confirmation for the same bank line
-    applies (a different pairing) and processing stops before THIS command's
-    event — the status changed, but not to THIS request's pairing. The command
-    must fail, not report the other pairing as this match's success."""
+    """Codex round-1/2 P2: an EARLIER pending confirmation for the same bank
+    line exists when the operator manual-matches a different pairing. The
+    round-2 fix drains pending events BEFORE the precondition, so the earlier
+    pairing applies first and the already-matched guard refuses this request —
+    no second confirm event is ever emitted (previously the second confirm
+    would later overwrite pairing A while JL-A stayed reconciled)."""
+    from events.models import BusinessEvent
+    from events.types import EventTypes
     from reconciliation.commands import CONFIDENCE_EXACT, _emit_match_confirmed, manual_match
     from reconciliation.projections import ReconciliationProjection
 
@@ -671,7 +753,8 @@ def test_manual_match_rejects_wrong_pairing_from_earlier_pending_event(
         confirmation_kind="manual",
     )
 
-    # The projection applies the earlier event normally but fails on THIS one.
+    # The projection applies the earlier event normally but would fail on a
+    # JL-B event — with drain-first, a JL-B event must never even be emitted.
     real_handle = ReconciliationProjection.handle
 
     def selective(self, event):
@@ -685,10 +768,18 @@ def test_manual_match_rejects_wrong_pairing_from_earlier_pending_event(
     result = manual_match(actor, bank_line.id, jl_b.id)
 
     assert not result.success, "the canonical pairing is JL-A, not this request's JL-B"
-    assert "pairing" in (result.error or "")
+    assert "already matched" in (result.error or ""), result.error
     bank_line.refresh_from_db()
-    assert bank_line.matched_journal_line_id == jl_a.id  # the earlier event applied
+    assert bank_line.matched_journal_line_id == jl_a.id  # the earlier pending event applied first
     assert bank_line.match_status == BankStatementLine.MatchStatus.MANUAL_MATCHED
+    # No second confirm event was emitted for JL-B — the overwrite hazard is
+    # structurally closed (Codex round-2).
+    jl_b_events = [
+        ev
+        for ev in BusinessEvent.objects.filter(company=company, event_type=EventTypes.RECONCILIATION_MATCH_CONFIRMED)
+        if str(ev.get_data().get("journal_line_public_id") or "") == str(jl_b.public_id)
+    ]
+    assert jl_b_events == []
 
 
 def test_manual_match_success_path_unchanged(company, actor, manual_match_targets):

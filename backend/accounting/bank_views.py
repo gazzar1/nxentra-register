@@ -30,6 +30,11 @@ from .models import (
 
 logger = logging.getLogger(__name__)
 
+# A5-PR3c: abuse ceiling for the client-echoed parse-reject descriptors on the
+# commit endpoint. Far above any real statement (a few thousand rows); beyond it
+# the commit REFUSES loudly (400) rather than silently truncating evidence.
+_MAX_PARSE_REJECTS = 10_000
+
 
 # =============================================================================
 # Bank Statements
@@ -110,13 +115,27 @@ class BankStatementListCreateView(APIView):
 
         # A5-PR3c: parse-time reject descriptors echoed back from the parse-csv
         # response — the commit is the moment they become durable evidence.
-        # Bounded + shape/reason-validated downstream (persist_import_rejects
-        # drops anything malformed); a client omitting them just loses evidence,
-        # which is no worse than the pre-PR3c behavior.
+        # Shape/reason-validated downstream (persist_import_rejects drops
+        # malformed entries); a client omitting them just loses evidence, which
+        # is no worse than the pre-PR3c behavior. Codex round-2: NEVER truncate
+        # silently — evidence beyond a cap must refuse loudly, not vanish.
         parse_rejects = d.get("parse_rejects") or []
         if not isinstance(parse_rejects, list):
-            parse_rejects = []
-        parse_rejects = parse_rejects[:1000]
+            return Response(
+                {"error": "parse_rejects must be a list of reject descriptors."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(parse_rejects) > _MAX_PARSE_REJECTS:
+            return Response(
+                {
+                    "error": (
+                        f"parse_rejects has {len(parse_rejects)} entries (max {_MAX_PARSE_REJECTS}). "
+                        "The file's rejected-row count is pathological — fix the column mapping or "
+                        "the file before importing, so no evidence has to be dropped."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         result = bank_import.import_bank_statement(
             actor=actor,
