@@ -36,6 +36,24 @@ class ShopifyConnectorConfig(AppConfig):
 
         connector_registry.register(ShopifyConnector())
 
+        # A5-PR3b (Codex round-10): the ADAPTER registers how to resolve which
+        # order ids exist locally, so the core orphan-flag writer never imports
+        # provider code (AGENTS.md dependency direction — adapter depends on
+        # core, never the reverse).
+        from accounting.import_rejects import register_known_order_lookup
+
+        def _known_shopify_order_ids(company, digit_order_ids):
+            from shopify_connector.models import ShopifyOrder
+
+            return {
+                str(oid)
+                for oid in ShopifyOrder.objects.filter(
+                    company=company, shopify_order_id__in=digit_order_ids
+                ).values_list("shopify_order_id", flat=True)
+            }
+
+        register_known_order_lookup("shopify", _known_shopify_order_ids)
+
         module_registry.register(
             "shopify_connector",
             label="Shopify",

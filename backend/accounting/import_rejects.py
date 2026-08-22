@@ -184,7 +184,23 @@ def persist_import_rejects(
 # Settlement orphan-order review flags (Codex round-9: provider-NEUTRAL home —
 # the projection must not depend on the CSV-adapter module settlement_imports;
 # this module is the reject write path and knows no parser).
+#
+# Codex round-10: the ORDER LOOKUP is provider knowledge, so it is INVERTED —
+# adapters register how to resolve which order ids exist locally for their
+# external system (the register_settlement_parser precedent; AGENTS.md:
+# adapters depend on the core, the core never imports an adapter). No lookup
+# registered for an event's external_system ⇒ the core cannot determine
+# orphan-ness and writes NO flags (guessing would false-page).
 # ---------------------------------------------------------------------------
+
+_KNOWN_ORDER_LOOKUPS: dict[str, object] = {}
+
+
+def register_known_order_lookup(external_system: str, lookup) -> None:
+    """Adapter registration point: ``lookup(company, digit_order_ids) -> set[str]``
+    returns which of the given digit order ids exist locally for this external
+    system. Called from the adapter's AppConfig.ready()."""
+    _KNOWN_ORDER_LOOKUPS[(external_system or "").strip().lower()] = lookup
 
 
 def orphan_review_import_batch_id(company_id: int, event_id: int):
@@ -210,19 +226,23 @@ def persist_orphan_review_flags_for_posted_event(company, event) -> None:
     deduplication and concurrent-upload races (Codex rounds 2-3), and a replay
     of the same event just bumps occurrence_count.
 
-    Digit ids only: the A26 lookup only ever checks digit ids against
-    ShopifyOrder (shopify_order_id is numeric), so only a digit id can be a
-    genuinely orphaned Shopify reference; non-digit refs (Bosta shipment /
-    tracking ids like "ORD-1") are ALWAYS "unknown" by construction and would
-    page a false review flag for every COD row.
+    Digit ids only: adapter lookups match on numeric platform order ids, so
+    only a digit id can be a genuinely orphaned order reference; non-digit refs
+    (Bosta shipment / tracking ids like "ORD-1") are ALWAYS "unknown" by
+    construction and would page a false review flag for every COD row.
+
+    Provider-neutral (Codex round-10): the order lookup is dispatched through
+    the adapter-registered ``register_known_order_lookup`` registry — this
+    module imports no adapter and carries no provider branch. An event whose
+    external_system has no registered lookup writes NO flags.
     """
     if event is None:
         return
 
-    from accounting.import_rejects import persist_import_rejects
-
     data = event.get_data() or {}
-    if (data.get("external_system") or "shopify") != "shopify":
+    external_system = str(data.get("external_system") or "shopify").strip().lower()
+    lookup = _KNOWN_ORDER_LOOKUPS.get(external_system)
+    if lookup is None:
         return
     provider_code = str(data.get("provider_normalized_code") or "")
     import_batch_id = orphan_review_import_batch_id(company.pk, event.id)
@@ -237,17 +257,7 @@ def persist_orphan_review_flags_for_posted_event(company, event) -> None:
     )
     if not digit_ids:
         return
-    try:
-        from shopify_connector.models import ShopifyOrder
-
-        known = {
-            str(oid)
-            for oid in ShopifyOrder.objects.filter(company=company, shopify_order_id__in=digit_ids).values_list(
-                "shopify_order_id", flat=True
-            )
-        }
-    except ImportError:
-        known = set()
+    known = {str(oid) for oid in (lookup(company, digit_ids) or set())}
 
     orphan_rejects = []
     for li_index, li in enumerate(line_items, start=1):

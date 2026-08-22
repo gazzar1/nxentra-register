@@ -836,6 +836,36 @@ def test_settlement_replay_backfills_orphan_flags_for_already_posted_event(shopi
     assert flag.status == ImportRejectedRow.Status.QUARANTINED
 
 
+def test_orphan_flag_writer_is_provider_neutral(company):
+    """Codex round-10: the core flag writer imports no adapter and carries no
+    provider branch — the order lookup is adapter-registered, and an event
+    whose external_system has no registered lookup writes NO flags."""
+    import inspect
+    from types import SimpleNamespace
+
+    from accounting import import_rejects
+
+    source = inspect.getsource(import_rejects)
+    assert "shopify_connector" not in source, "core module must not reference an adapter"
+    assert '== "shopify"' not in source, "core module must not branch on a provider"
+    assert "shopify" in import_rejects._KNOWN_ORDER_LOOKUPS, "the adapter registers its lookup at ready()"
+
+    # An external system with no registered lookup → the core cannot determine
+    # orphan-ness and must write nothing (never guess).
+    stub_event = SimpleNamespace(
+        id=987654321,
+        metadata={"filename": "x.csv"},
+        get_data=lambda: {
+            "external_system": "unregistered_system",
+            "provider_normalized_code": "other",
+            "payout_batch_id": "B-1",
+            "line_items": [{"order_id": "12345", "gross": "10.00"}],
+        },
+    )
+    import_rejects.persist_orphan_review_flags_for_posted_event(company, stub_event)
+    assert ImportRejectedRow.objects.count() == 0
+
+
 def test_bank_commit_refuses_tampered_rejects(company, user, owner_membership, merchant_bank, api_client):
     """Codex round-8: altered/fabricated descriptors no longer verify against
     the server-signed hash — evidence stays bound to the parsed bytes."""
