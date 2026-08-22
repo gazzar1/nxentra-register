@@ -25,7 +25,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from accounts.authz import resolve_actor
+from accounts.authz import require, resolve_actor
 from projections.models import ProjectionFailureLog
 
 
@@ -282,6 +282,9 @@ class ImportRejectedRowListView(APIView):
         from accounting.models import ImportRejectedRow
 
         actor = resolve_actor(request)
+        # raw_row carries financial import evidence — gate on the same read
+        # permission as other report/audit views (Codex P2).
+        require(actor, "reports.view")
         qs = (
             ImportRejectedRow.objects.filter(company=actor.company)
             .select_related("resolved_by")
@@ -302,7 +305,7 @@ class ImportRejectedRowListView(APIView):
             qs = qs.filter(reason_code=reason_code)
 
         try:
-            limit = min(int(request.query_params.get("limit", 100)), 500)
+            limit = min(max(int(request.query_params.get("limit", 100)), 1), 500)
             offset = max(int(request.query_params.get("offset", 0)), 0)
         except (ValueError, TypeError):
             limit, offset = 100, 0

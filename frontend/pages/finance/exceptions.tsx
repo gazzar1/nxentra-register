@@ -43,6 +43,10 @@ import {
   type ProjectionFailureDetail,
   type ProjectionFailureSummary,
 } from "@/services/projection-failures.service";
+import {
+  importRejectedRowsService,
+  type ImportRejectedRow,
+} from "@/services/import-rejected-rows.service";
 
 // =============================================================================
 // Visual helpers
@@ -107,6 +111,11 @@ export default function ExceptionsPage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
+  // A5-PR3: durable per-row import rejections (settlement / bank CSV).
+  const [importRejects, setImportRejects] = useState<ImportRejectedRow[]>([]);
+  const [importRejectsCount, setImportRejectsCount] = useState(0);
+  const [resolvingRejectId, setResolvingRejectId] = useState<number | null>(null);
+
   // Filters
   const [resolvedFilter, setResolvedFilter] = useState<"true" | "false" | "all">(
     "false"
@@ -127,7 +136,7 @@ export default function ExceptionsPage() {
 
   const fetchAll = async () => {
     try {
-      const [sum, list] = await Promise.all([
+      const [sum, list, rejects] = await Promise.all([
         projectionFailuresService.summary(),
         projectionFailuresService.list({
           resolved: resolvedFilter,
@@ -135,10 +144,13 @@ export default function ExceptionsPage() {
           category: (categoryFilter || undefined) as FailureCategory | undefined,
           limit: 100,
         }),
+        importRejectedRowsService.list({ resolved: resolvedFilter, limit: 100 }),
       ]);
       setSummary(sum);
       setItems(list.results);
       setTotalCount(list.total_count);
+      setImportRejects(rejects.results);
+      setImportRejectsCount(rejects.total_count);
     } catch (err) {
       toast({
         title: "Failed to load exceptions",
@@ -204,6 +216,27 @@ export default function ExceptionsPage() {
     }
   };
 
+  const handleResolveReject = async (row: ImportRejectedRow) => {
+    setResolvingRejectId(row.id);
+    try {
+      await importRejectedRowsService.resolve(row.id, resolutionNote);
+      toast({
+        title: "Import rejection resolved",
+        description: `${row.source_kind} row ${row.row_index} (${row.reason_code})`,
+      });
+      setResolutionNote("");
+      await fetchAll();
+    } catch (err) {
+      toast({
+        title: "Failed to resolve",
+        description: (err as Error).message,
+        variant: "destructive",
+      });
+    } finally {
+      setResolvingRejectId(null);
+    }
+  };
+
   // =========================================================================
   // Summary cards (per-category counts)
   // =========================================================================
@@ -230,7 +263,7 @@ export default function ExceptionsPage() {
       <div className="space-y-6 p-6">
         <PageHeader
           title="Exceptions"
-          subtitle="Projection failures that need operator attention"
+          subtitle="Projection failures and import rejections that need operator attention"
           actions={
             <Button
               variant="outline"
@@ -407,6 +440,91 @@ export default function ExceptionsPage() {
             </CardContent>
           </Card>
         )}
+
+        {/* A5-PR3: durable per-row import rejections (settlement / bank CSV) —
+            rows dropped at ingest with no event, so they have no
+            ProjectionFailureLog. Surfaced here alongside projection failures. */}
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-sm font-medium">
+              <AlertTriangle className="h-4 w-4" />
+              Import rejections
+              <Badge variant={importRejectsCount === 0 ? "outline" : "warning"}>
+                {importRejectsCount}
+              </Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="p-0">
+            {importRejects.length === 0 ? (
+              <p className="px-4 py-6 text-sm text-muted-foreground">
+                No dropped settlement/bank import rows.
+              </p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50">
+                  <tr>
+                    <th className="px-3 py-2 text-left">Source</th>
+                    <th className="px-3 py-2 text-left">File</th>
+                    <th className="px-3 py-2 text-right">Row</th>
+                    <th className="px-3 py-2 text-left">Reason</th>
+                    <th className="px-3 py-2 text-left">Detail</th>
+                    <th className="px-3 py-2 text-right">Occurrences</th>
+                    <th className="px-3 py-2 text-right">Last seen</th>
+                    <th className="px-3 py-2 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {importRejects.map((r) => (
+                    <tr key={r.id} className="border-t hover:bg-muted/30">
+                      <td className="px-3 py-2 align-top">
+                        {r.source_kind}
+                        {r.provider_code ? ` · ${r.provider_code}` : ""}
+                      </td>
+                      <td className="px-3 py-2 align-top font-mono text-xs">
+                        {r.source_filename || "—"}
+                      </td>
+                      <td className="px-3 py-2 align-top text-right tabular-nums">
+                        {r.row_index}
+                      </td>
+                      <td className="px-3 py-2 align-top">
+                        <Badge variant="warning">{r.reason_code}</Badge>
+                      </td>
+                      <td className="px-3 py-2 align-top max-w-md">
+                        <div className="line-clamp-2">{r.reason_message}</div>
+                      </td>
+                      <td className="px-3 py-2 align-top text-right tabular-nums">
+                        {r.occurrence_count}
+                      </td>
+                      <td className="px-3 py-2 align-top text-right text-muted-foreground">
+                        {timeAgo(r.last_seen_at)}
+                      </td>
+                      <td className="px-3 py-2 align-top text-right">
+                        {r.resolved ? (
+                          <Badge variant="outline">Resolved</Badge>
+                        ) : isAdmin ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleResolveReject(r)}
+                            disabled={resolvingRejectId === r.id}
+                          >
+                            {resolvingRejectId === r.id ? (
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                            ) : (
+                              "Mark resolved"
+                            )}
+                          </Button>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">Admin only</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </CardContent>
+        </Card>
       </div>
     </AppLayout>
   );

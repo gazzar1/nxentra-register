@@ -3145,9 +3145,12 @@ class ImportRejectedRow(models.Model):
         "accounting.BankStatement",
         null=True,
         blank=True,
-        on_delete=models.CASCADE,
+        # SET_NULL (not CASCADE): deleting a bank statement (e.g. via
+        # unmatch_and_delete_statement) must NOT erase the durable reject evidence
+        # — the reject row survives, only its statement link clears (Codex P1).
+        on_delete=models.SET_NULL,
         related_name="rejected_rows",
-        help_text="Bank commit-time rejects link their statement; null for settlement / parse-time.",
+        help_text="Bank commit-time rejects link their statement; null for settlement / parse-time / deleted statement.",
     )
     row_index = models.PositiveIntegerField(help_text="1-based position of the row in the source file")
     raw_row = models.JSONField(default=dict, help_text="Full original row as parsed (K#3: keep the evidence)")

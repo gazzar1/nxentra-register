@@ -100,6 +100,29 @@ def test_list_view_and_filters(company, user, owner_membership, api_client):
     assert resp_bank.data["total_count"] == 1
 
 
+def test_statement_fk_is_set_null_not_cascade():
+    """Codex P1: deleting a bank statement must NOT erase its reject evidence.
+    The statement FK is SET_NULL (nullable) so the reject row survives a
+    statement delete, clearing only the link."""
+    from django.db.models import deletion
+
+    from accounting.models import ImportRejectedRow
+
+    field = ImportRejectedRow._meta.get_field("statement")
+    assert field.null is True
+    assert field.remote_field.on_delete is deletion.SET_NULL
+
+
+def test_list_view_clamps_negative_limit(company, user, owner_membership, api_client):
+    """Codex P2: a negative ?limit must not produce a negative queryset slice
+    (which 500s with 'Negative indexing not supported')."""
+    _make_reject(company)
+    api_client.force_authenticate(user=user)
+    resp = api_client.get("/api/reports/import-rejected-rows/?limit=-1")
+    assert resp.status_code == 200
+    assert resp.data["total_count"] == 1
+
+
 def test_resolve_view_owner_ok(company, user, owner_membership, api_client):
     row = _make_reject(company)
     api_client.force_authenticate(user=user)
