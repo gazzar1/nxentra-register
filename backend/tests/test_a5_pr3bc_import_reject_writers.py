@@ -836,11 +836,15 @@ def test_settlement_replay_backfills_orphan_flags_for_already_posted_event(shopi
     assert flag.status == ImportRejectedRow.Status.QUARANTINED
     assert flag.occurrence_count == 1, "a replay backfill is not a re-import"
 
-    # Codex round-12: replay CONVERGES — re-replaying the same event leaves the
-    # flag byte-identical (no occurrence bump; that counter counts re-IMPORTS).
+    # Codex rounds 12-13: replay CONVERGES — re-replaying the same event leaves
+    # the flag byte-identical: no occurrence bump (that counter counts
+    # re-IMPORTS) and no last_seen_at refresh (an existing flag is not saved
+    # at all in projection-derived mode).
+    seen_before = flag.last_seen_at
     PaymentSettlementProjection().handle(event)
     flag.refresh_from_db()
     assert flag.occurrence_count == 1
+    assert flag.last_seen_at == seen_before, "replay must not touch operator-visible timestamps"
 
 
 def test_orphan_flag_writer_is_provider_neutral(company):

@@ -163,27 +163,33 @@ def persist_import_rejects(
             reason_code=reason_code,
             raw_row=raw_row,
         )
-        _row, created = ImportRejectedRow.objects.update_or_create(
-            company=company,
-            dedup_hash=dedup_hash,
-            defaults={
-                "source_kind": source_kind,
-                "provider_code": provider_code,
-                "source_filename": source_filename,
-                "import_batch_id": import_batch_id,
-                "statement": statement,
-                "row_index": row_index,
-                "raw_row": raw_row,
-                "reason_code": reason_code,
-                "reason_message": reason_message,
-                "status": status,
-            },
-        )
-        if not created and bump_occurrence:
-            # Re-sighting via a real re-import: bump the counter atomically
-            # (update_or_create already refreshed the mutable fields +
-            # last_seen_at). resolved is NOT cleared — see the module docstring.
-            ImportRejectedRow.objects.filter(pk=_row.pk).update(occurrence_count=F("occurrence_count") + 1)
+        row_fields = {
+            "source_kind": source_kind,
+            "provider_code": provider_code,
+            "source_filename": source_filename,
+            "import_batch_id": import_batch_id,
+            "statement": statement,
+            "row_index": row_index,
+            "raw_row": raw_row,
+            "reason_code": reason_code,
+            "reason_message": reason_message,
+            "status": status,
+        }
+        if bump_occurrence:
+            _row, created = ImportRejectedRow.objects.update_or_create(
+                company=company, dedup_hash=dedup_hash, defaults=row_fields
+            )
+            if not created:
+                # Re-sighting via a real re-import: bump the counter atomically
+                # (update_or_create already refreshed the mutable fields +
+                # last_seen_at). resolved is NOT cleared — see the module docstring.
+                ImportRejectedRow.objects.filter(pk=_row.pk).update(occurrence_count=F("occurrence_count") + 1)
+        else:
+            # Projection-derived replay mode (Codex rounds 12-13): ensure the
+            # flag EXISTS; an existing row is left completely untouched — no
+            # save() at all, so neither occurrence_count nor the auto_now
+            # last_seen_at moves and replay/rebuild converges byte-identically.
+            ImportRejectedRow.objects.get_or_create(company=company, dedup_hash=dedup_hash, defaults=row_fields)
         written += 1
     return written
 
