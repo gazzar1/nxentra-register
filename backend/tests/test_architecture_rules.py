@@ -687,6 +687,7 @@ def test_apply_boundary_codes_disjoint_from_canonical_set():
         pja.APPLY_ENTRY_REF_INVALID,
         pja.APPLY_DELETE_TARGET_POSTED,
         pja.APPLY_CHUNKED_JOURNAL_UNSUPPORTED,
+        pja.APPLY_REVERSAL_TARGET_MISSING,
     }
     assert not (apply_codes & JE_VIOLATION_CODES)
 

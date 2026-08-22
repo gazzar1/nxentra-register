@@ -179,12 +179,19 @@ class AccountBalance(ProjectionOwnedModel):
 
         account_public_id = str(self.account.public_id)
 
+        # A3-PR3 (Codex round-11 P1): account-derived memo classification —
+        # verifying against the raw payload flag would disagree with the
+        # apply boundary and the balance consumers whenever the flag lies.
+        from accounting.posted_journal_apply import line_is_memo, memo_account_public_ids
+
+        memo_ids = memo_account_public_ids(self.company)
+
         for event in events:
             lines = event.get_data().get("lines", [])
             for line_data in lines:
                 if line_data.get("account_public_id") != account_public_id:
                     continue
-                if line_data.get("is_memo_line", False):
+                if line_is_memo(line_data, memo_ids):
                     continue
 
                 debit = Decimal(line_data.get("debit", "0"))

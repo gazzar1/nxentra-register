@@ -380,6 +380,48 @@ class TestSiblingGuards:
         original.refresh_from_db()
         assert original.status == JournalEntry.Status.REVERSED
 
+    def test_reversal_over_quarantined_post_quarantines(self, company, user, cash_account, revenue_account):
+        """Codex round-11 P1: when the reversal entry's own posted event was
+        terminally QUARANTINED (marker present, row absent), the REVERSED
+        event must quarantine too — flipping the original to REVERSED with
+        no reversal row would leave status and balances contradictory."""
+        from accounting.posted_journal_apply import APPLY_REVERSAL_TARGET_MISSING
+
+        original = self._post_entry(company, user, cash_account, revenue_account)
+
+        reversal_id = uuid4()
+        rev_payload = _posted_payload(reversal_id, user, revenue_account, cash_account)
+        rev_event = _emit_posted(company, user, rev_payload)
+        corrupted = dict(rev_payload)
+        corrupted["lines"] = [dict(rev_payload["lines"][0]), dict(rev_payload["lines"][1], credit="1.00")]
+        _corrupt(rev_event, corrupted)  # unbalanced → will quarantine
+
+        reversed_event = emit_event(
+            company=company,
+            event_type=EventTypes.JOURNAL_ENTRY_REVERSED,
+            aggregate_type="JournalEntry",
+            aggregate_id=str(original.public_id),
+            data={
+                "original_entry_public_id": str(original.public_id),
+                "reversal_entry_public_id": str(reversal_id),
+                "reversed_at": "2026-01-07T12:00:00",
+                "reversed_by_id": user.id,
+                "reversed_by_email": user.email,
+            },
+            caused_by_user=user,
+            idempotency_key=f"apply-test:qrev:{original.public_id}",
+        )
+
+        projection = JournalEntryProjection()
+        projection.process_pending(company)
+
+        # The reversal post quarantined; the REVERSED event quarantined too.
+        assert ProjectionFailureLog.objects.filter(company=company, event_id=rev_event.id).exists()
+        log = ProjectionFailureLog.objects.get(company=company, event_id=reversed_event.id)
+        assert APPLY_REVERSAL_TARGET_MISSING in log.message
+        original.refresh_from_db()
+        assert original.status == JournalEntry.Status.POSTED  # never flipped
+
     def test_delete_of_posted_entry_quarantines(self, company, user, cash_account, revenue_account):
         entry = self._post_entry(company, user, cash_account, revenue_account)
 
@@ -1354,6 +1396,11 @@ class TestMemoClassificationAtApply:
         cash = AccountBalance.objects.get(company=company, account=cash_account)
         assert cash.debit_total == Decimal("100.00")
         assert not ProjectionFailureLog.objects.filter(company=company).exists()
+        # Codex round-11 P1: the verification family must agree with the
+        # consumers (account-derived memo), or a lying flag makes
+        # verify_integrity report a healthy balance as corrupt.
+        verdict = cash.verify_integrity()
+        assert verdict["is_valid"], verdict
 
     def test_memo_account_line_flagged_false_stays_out_of_balances(self, company, user, cash_account, revenue_account):
         """The inverse: a MEMO-account line whose flag says False is memo by

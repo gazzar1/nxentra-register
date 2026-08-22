@@ -38,7 +38,10 @@ same read models carry boundary-local guards (founder decision D5):
 
 - ``journal_entry.reversed`` — the payload's entry references must be
   well-formed UUIDs (a malformed payload previously KeyError-halted the
-  whole projection stream);
+  whole projection stream), and once no post is pending BOTH referenced
+  entries must exist — a reversal over a quarantined post quarantines too
+  (``APPLY_REVERSAL_TARGET_MISSING``), never a silent status flip against
+  missing rows;
 - ``journal_entry.deleted`` — deleting a POSTED/REVERSED entry from the read
   model is refused (posted financial history must never vanish from the read
   model while the event stream still asserts it; the delete command only
@@ -90,6 +93,7 @@ APPLY_UNREADABLE_PAYLOAD = "APPLY_UNREADABLE_PAYLOAD"
 APPLY_ENTRY_REF_INVALID = "APPLY_ENTRY_REF_INVALID"
 APPLY_DELETE_TARGET_POSTED = "APPLY_DELETE_TARGET_POSTED"
 APPLY_CHUNKED_JOURNAL_UNSUPPORTED = "APPLY_CHUNKED_JOURNAL_UNSUPPORTED"
+APPLY_REVERSAL_TARGET_MISSING = "APPLY_REVERSAL_TARGET_MISSING"
 
 _REPAIR_HINT = (
     "The event is quarantined, not lost: repair the cause (event payload at "
@@ -475,6 +479,42 @@ def _readable_payload(event: BusinessEvent) -> dict:
     return data
 
 
+def memo_account_public_ids(company) -> frozenset[str]:
+    """Canonical public ids of the company's memo/non-financial accounts —
+    THE account-derived memo classification for payload READERS (the
+    event-fold report views, AccountBalance verification): a line is memo
+    iff its RESOLVED account is memo, exactly as the invariant and the
+    balance consumers decide (Codex round-11 P1 — a reader trusting the raw
+    ``is_memo_line`` flag disagrees with the accepted journal and the
+    projected balances whenever a historical/foreign flag lies). An
+    unresolvable reference is never memo, per the invariant's rule."""
+    from django.db.models import Q as _Q
+
+    from accounting.journal_invariant import canonical_account_id
+    from accounting.models import Account
+
+    rows = (
+        Account.objects.filter(company=company)
+        .filter(
+            _Q(account_type=Account.AccountType.MEMO)
+            | _Q(ledger_domain__in=(Account.LedgerDomain.STATISTICAL, Account.LedgerDomain.OFF_BALANCE))
+        )
+        .values_list("public_id", flat=True)
+    )
+    return frozenset(cid for cid in (canonical_account_id(pid) for pid in rows) if cid is not None)
+
+
+def line_is_memo(line: object, memo_ids: frozenset[str]) -> bool:
+    """Account-derived memo verdict for one payload line (see
+    :func:`memo_account_public_ids`). The raw flag is never consulted."""
+    from accounting.journal_invariant import canonical_account_id
+
+    if not isinstance(line, dict):
+        return False
+    cid = canonical_account_id(line.get("account_public_id"))
+    return cid is not None and cid in memo_ids
+
+
 def _canonical_uuid(value: object) -> str | None:
     """Canonical lowercase-hyphenated spelling, or None for a non-UUID —
     identity comparisons in this module are ALWAYS canonical (Codex round-10
@@ -513,6 +553,18 @@ def validate_reversed_journal_apply(event: BusinessEvent) -> None:
                 "reversal references a journal entry whose own posted event is still "
                 "pending materialization — deferring so the lifecycle applies in order"
             )
+    # Codex round-11 P1: with no pending post left to wait for, both entry
+    # rows must EXIST before the handler runs — a reversal whose referenced
+    # post was terminally QUARANTINED (marker present, row absent) would
+    # otherwise flip the original to REVERSED while the reversal row and its
+    # offsetting balance movements do not exist, leaving journal status and
+    # balances contradictory. Visible quarantine, never a silent no-op.
+    from accounting.models import JournalEntry
+
+    for key in ("original_entry_public_id", "reversal_entry_public_id"):
+        ref = _canonical_uuid(data[key])
+        if ref is None or not JournalEntry.objects.filter(company=event.company, public_id=ref).exists():
+            raise PostedJournalApplyInvalid(event.event_type, [APPLY_REVERSAL_TARGET_MISSING])
 
 
 def validate_deleted_journal_apply(event: BusinessEvent) -> None:

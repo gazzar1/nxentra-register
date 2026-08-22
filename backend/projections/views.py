@@ -239,6 +239,13 @@ class TrialBalanceView(DimensionFilterMixin, APIView):
         ).order_by("company_sequence")
 
         # Process events
+        # A3-PR3 (Codex round-11 P1): memo classification for event-fold
+        # readers comes from the RESOLVED ACCOUNT (the invariant's rule),
+        # never the raw payload flag — otherwise these reports disagree
+        # with the accepted journal and the projected balances.
+        from accounting.posted_journal_apply import line_is_memo, memo_account_public_ids
+
+        memo_ids = memo_account_public_ids(actor.company)
         for event in events:
             entry_date_str = event.get_data().get("date")
             if not entry_date_str:
@@ -254,7 +261,7 @@ class TrialBalanceView(DimensionFilterMixin, APIView):
                 if not account_public_id or account_public_id not in account_data:
                     continue
 
-                if line.get("is_memo_line", False):
+                if line_is_memo(line, memo_ids):
                     continue
 
                 # Check dimension filters
@@ -697,6 +704,13 @@ class BalanceSheetView(DimensionFilterMixin, APIView):
         ).order_by("company_sequence")
 
         # Process events
+        # A3-PR3 (Codex round-11 P1): memo classification for event-fold
+        # readers comes from the RESOLVED ACCOUNT (the invariant's rule),
+        # never the raw payload flag — otherwise these reports disagree
+        # with the accepted journal and the projected balances.
+        from accounting.posted_journal_apply import line_is_memo, memo_account_public_ids
+
+        memo_ids = memo_account_public_ids(actor.company)
         for event in events:
             entry_date_str = event.get_data().get("date")
             if not entry_date_str:
@@ -719,7 +733,7 @@ class BalanceSheetView(DimensionFilterMixin, APIView):
                 if not account_public_id or account_public_id not in account_data:
                     continue
 
-                if line.get("is_memo_line", False):
+                if line_is_memo(line, memo_ids):
                     continue
 
                 # Check dimension filters
@@ -1194,6 +1208,13 @@ class IncomeStatementView(DimensionFilterMixin, APIView):
         _debug_sample_tags = []
 
         # Process events
+        # A3-PR3 (Codex round-11 P1): memo classification for event-fold
+        # readers comes from the RESOLVED ACCOUNT (the invariant's rule),
+        # never the raw payload flag — otherwise these reports disagree
+        # with the accepted journal and the projected balances.
+        from accounting.posted_journal_apply import line_is_memo, memo_account_public_ids
+
+        memo_ids = memo_account_public_ids(actor.company)
         for event in events:
             entry_date_str = event.get_data().get("date")
             if not entry_date_str:
@@ -1213,7 +1234,7 @@ class IncomeStatementView(DimensionFilterMixin, APIView):
                 if not account_public_id or account_public_id not in account_data:
                     continue
 
-                if line.get("is_memo_line", False):
+                if line_is_memo(line, memo_ids):
                     continue
 
                 _debug_lines_total += 1
@@ -2106,6 +2127,13 @@ class DimensionPLComparisonView(DimensionFilterMixin, APIView):
             event_type=EventTypes.JOURNAL_ENTRY_POSTED,
         ).order_by("company_sequence")
 
+        # A3-PR3 (Codex round-11 P1): memo classification for event-fold
+        # readers comes from the RESOLVED ACCOUNT (the invariant's rule),
+        # never the raw payload flag — otherwise these reports disagree
+        # with the accepted journal and the projected balances.
+        from accounting.posted_journal_apply import line_is_memo, memo_account_public_ids
+
+        memo_ids = memo_account_public_ids(actor.company)
         for event in events:
             entry_date_str = event.get_data().get("date")
             if not entry_date_str:
@@ -2121,7 +2149,7 @@ class DimensionPLComparisonView(DimensionFilterMixin, APIView):
                 if not account_public_id or account_public_id not in account_lookup:
                     continue
 
-                if line.get("is_memo_line", False):
+                if line_is_memo(line, memo_ids):
                     continue
 
                 account = account_lookup[account_public_id]
@@ -3402,6 +3430,13 @@ class DashboardChartsView(APIView):
         # Track account activity for top accounts
         account_activity = defaultdict(lambda: {"debits": Decimal("0.00"), "credits": Decimal("0.00"), "count": 0})
 
+        # A3-PR3 (Codex round-11 P1): memo classification for event-fold
+        # readers comes from the RESOLVED ACCOUNT (the invariant's rule),
+        # never the raw payload flag — otherwise these reports disagree
+        # with the accepted journal and the projected balances.
+        from accounting.posted_journal_apply import line_is_memo, memo_account_public_ids
+
+        memo_ids = memo_account_public_ids(actor.company)
         for event in events:
             entry_date_str = event.get_data().get("date")
             if not entry_date_str:
@@ -3416,7 +3451,7 @@ class DashboardChartsView(APIView):
                 if not account_public_id:
                     continue
 
-                if line.get("is_memo_line", False):
+                if line_is_memo(line, memo_ids):
                     continue
 
                 debit = Decimal(line.get("debit", "0"))
@@ -3637,6 +3672,13 @@ class DashboardWidgetsView(APIView):
             ).order_by("-company_sequence")[:10]
 
             recent_activity = []
+            # A3-PR3 (Codex round-11 P1): memo classification for event-fold
+            # readers comes from the RESOLVED ACCOUNT (the invariant's rule),
+            # never the raw payload flag — otherwise these reports disagree
+            # with the accepted journal and the projected balances.
+            from accounting.posted_journal_apply import line_is_memo, memo_account_public_ids
+
+            memo_ids = memo_account_public_ids(actor.company)
             for event in recent_events:
                 ev_data = event.get_data()
                 entry_date = ev_data.get("date", "")
@@ -3644,7 +3686,7 @@ class DashboardWidgetsView(APIView):
                 entry_number = ev_data.get("entry_number", "")
                 source = ev_data.get("source", "manual")
                 lines = ev_data.get("lines", [])
-                total_debit = sum(Decimal(l.get("debit", "0")) for l in lines if not l.get("is_memo_line"))
+                total_debit = sum(Decimal(l.get("debit", "0")) for l in lines if not line_is_memo(l, memo_ids))
 
                 recent_activity.append(
                     {

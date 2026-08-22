@@ -344,6 +344,12 @@ class AccountBalanceProjection(BaseProjection):
             event_type=EventTypes.JOURNAL_ENTRY_POSTED,
         ).order_by("company_sequence")
 
+        # A3-PR3 (Codex round-11 P1): account-derived memo classification —
+        # the raw payload flag would disagree with the projected balances.
+        from accounting.posted_journal_apply import line_is_memo, memo_account_public_ids
+
+        memo_ids = memo_account_public_ids(company)
+
         for event in events:
             # Use get_data() for LEPH compatibility
             data = event.get_data()
@@ -352,7 +358,7 @@ class AccountBalanceProjection(BaseProjection):
                 account_public_id = line_data.get("account_public_id")
                 if not account_public_id:
                     continue
-                if line_data.get("is_memo_line", False):
+                if line_is_memo(line_data, memo_ids):
                     continue
 
                 debit = Decimal(line_data.get("debit", "0"))
