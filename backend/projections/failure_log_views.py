@@ -236,3 +236,115 @@ class ProjectionFailureSummaryView(APIView):
                 "by_category": by_category,
             }
         )
+
+
+# =============================================================================
+# A5-PR3: durable per-row import-reject records (settlement / bank CSV) — a
+# sibling operator queue on /finance/exceptions for rows dropped at ingest with
+# no event (so no ProjectionFailureLog can hold them).
+# =============================================================================
+
+
+def _serialize_reject(row) -> dict:
+    return {
+        "id": row.id,
+        "public_id": str(row.public_id),
+        "source_kind": row.source_kind,
+        "provider_code": row.provider_code,
+        "source_filename": row.source_filename,
+        "import_batch_id": str(row.import_batch_id),
+        "row_index": row.row_index,
+        "reason_code": row.reason_code,
+        "reason_message": row.reason_message,
+        "status": row.status,
+        "raw_row": row.raw_row,
+        "occurrence_count": row.occurrence_count,
+        "first_seen_at": row.first_seen_at.isoformat() if row.first_seen_at else None,
+        "last_seen_at": row.last_seen_at.isoformat() if row.last_seen_at else None,
+        "resolved": row.resolved,
+        "resolved_at": row.resolved_at.isoformat() if row.resolved_at else None,
+        "resolved_by_id": row.resolved_by_id,
+        "resolution_note": row.resolution_note,
+    }
+
+
+class ImportRejectedRowListView(APIView):
+    """GET /api/reports/import-rejected-rows/
+
+    List durable per-row import rejections for the current company (settlement +
+    bank-CSV rows dropped at ingest). Filters: resolved (default false),
+    source_kind, reason_code. Pagination: limit (default 100, max 500), offset.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from accounting.models import ImportRejectedRow
+
+        actor = resolve_actor(request)
+        qs = (
+            ImportRejectedRow.objects.filter(company=actor.company)
+            .select_related("resolved_by")
+            .order_by("-last_seen_at")
+        )
+
+        resolved_param = request.query_params.get("resolved")
+        if resolved_param == "true":
+            qs = qs.filter(resolved=True)
+        elif resolved_param == "false" or resolved_param is None:
+            qs = qs.filter(resolved=False)
+
+        source_kind = request.query_params.get("source_kind")
+        if source_kind:
+            qs = qs.filter(source_kind=source_kind)
+        reason_code = request.query_params.get("reason_code")
+        if reason_code:
+            qs = qs.filter(reason_code=reason_code)
+
+        try:
+            limit = min(int(request.query_params.get("limit", 100)), 500)
+            offset = max(int(request.query_params.get("offset", 0)), 0)
+        except (ValueError, TypeError):
+            limit, offset = 100, 0
+
+        total_count = qs.count()
+        page = qs[offset : offset + limit]
+        return Response(
+            {
+                "results": [_serialize_reject(r) for r in page],
+                "total_count": total_count,
+                "limit": limit,
+                "offset": offset,
+            }
+        )
+
+
+class ImportRejectedRowResolveView(APIView):
+    """POST /api/reports/import-rejected-rows/<id>/resolve/
+
+    Operator ack (owner/admin) — a claim of handling (corrected via re-upload or a
+    manual journal), NOT proof of reprocessing (rejected rows never replay).
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        from accounting.models import ImportRejectedRow
+
+        actor = resolve_actor(request)
+        if not (request.user.is_staff or request.user.is_superuser or actor.is_admin):
+            return Response(
+                {"detail": "Owner/admin access required to resolve import rejections."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        try:
+            row = ImportRejectedRow.objects.get(pk=pk, company=actor.company)
+        except ImportRejectedRow.DoesNotExist:
+            return Response({"detail": "Import-rejected row not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if row.resolved:
+            return Response({"detail": "Already resolved.", **_serialize_reject(row)}, status=status.HTTP_200_OK)
+
+        note = (request.data.get("resolution_note") or "").strip()[:2000]
+        row.mark_resolved(request.user, note=note)
+        return Response(_serialize_reject(row))

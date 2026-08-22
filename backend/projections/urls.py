@@ -34,6 +34,8 @@ Admin Projection Management (staff/superuser only):
 from django.urls import path
 
 from .failure_log_views import (
+    ImportRejectedRowListView,
+    ImportRejectedRowResolveView,
     ProjectionFailureDetailView,
     ProjectionFailureListView,
     ProjectionFailureResolveView,
@@ -376,5 +378,17 @@ urlpatterns = [
         "projection-failures/<int:pk>/resolve/",
         ProjectionFailureResolveView.as_view(),
         name="projection-failure-resolve",
+    ),
+    # A5-PR3: durable per-row import rejections (settlement / bank CSV) —
+    # sibling operator queue on /finance/exceptions.
+    path(
+        "import-rejected-rows/",
+        ImportRejectedRowListView.as_view(),
+        name="import-rejected-row-list",
+    ),
+    path(
+        "import-rejected-rows/<int:pk>/resolve/",
+        ImportRejectedRowResolveView.as_view(),
+        name="import-rejected-row-resolve",
     ),
 ]

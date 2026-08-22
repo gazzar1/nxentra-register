@@ -3096,6 +3096,108 @@ class PeriodOverrideAudit(models.Model):
         super().save(*args, **kwargs)
 
 
+class ImportRejectedRow(models.Model):
+    """A5-PR3: durable, per-row REJECTED record for settlement / bank-CSV imports.
+
+    A source row that cannot become a canonical fact (unparseable amount/date,
+    empty batch id, malformed numeric cell, ...) is dropped at parse/commit time
+    BEFORE any BusinessEvent exists — so ``ProjectionFailureLog`` (event-keyed)
+    cannot record it and the row would otherwise vanish with no trace. This table
+    gives every such row a durable, operator-visible terminal REJECTED outcome,
+    keyed by import identity so a re-import is idempotent.
+
+    Operational write-model (NOT a projection read model): written directly by the
+    settlement/bank importers at ingest and by operators (resolve/ack) — the
+    ``ProjectionFailureLog`` precedent. It records the ABSENCE of a canonical fact
+    (no journal, no event, no balance), so it is not a second writer of a canonical
+    fact and does not touch the A3 emit boundary or the read-model write barrier.
+    Being a SEPARATE table, it is excluded from every financial reader by
+    construction (no reader change needed).
+
+    Writers land in A5-PR3b (settlement) / A5-PR3c (bank); this PR is the model +
+    migration + operator visibility.
+    """
+
+    class SourceKind(models.TextChoices):
+        SETTLEMENT = "SETTLEMENT", "Settlement import"
+        BANK = "BANK", "Bank statement import"
+
+    class ReasonCode(models.TextChoices):
+        EMPTY_BATCH_ID = "EMPTY_BATCH_ID", "Empty settlement batch id"
+        MALFORMED_NUMERIC = "MALFORMED_NUMERIC", "Malformed numeric cell"
+        UNPARSEABLE_AMOUNT = "UNPARSEABLE_AMOUNT", "Unparseable amount"
+        UNPARSEABLE_DATE = "UNPARSEABLE_DATE", "Unparseable date"
+        ZERO_AMOUNT = "ZERO_AMOUNT", "Zero amount"
+        DUPLICATE = "DUPLICATE", "Duplicate row"
+
+    class Status(models.TextChoices):
+        REJECTED = "REJECTED", "Rejected"
+        QUARANTINED = "QUARANTINED", "Quarantined"
+
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="import_rejected_rows")
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+
+    source_kind = models.CharField(max_length=20, choices=SourceKind.choices)
+    provider_code = models.CharField(max_length=50, blank=True, help_text="paymob/bosta; blank for bank")
+    source_filename = models.CharField(max_length=255, blank=True)
+    import_batch_id = models.UUIDField(db_index=True, help_text="One id per upload; groups a file's rejects")
+    statement = models.ForeignKey(
+        "accounting.BankStatement",
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="rejected_rows",
+        help_text="Bank commit-time rejects link their statement; null for settlement / parse-time.",
+    )
+    row_index = models.PositiveIntegerField(help_text="1-based position of the row in the source file")
+    raw_row = models.JSONField(default=dict, help_text="Full original row as parsed (K#3: keep the evidence)")
+
+    reason_code = models.CharField(max_length=30, choices=ReasonCode.choices)
+    reason_message = models.TextField(blank=True)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.REJECTED)
+
+    dedup_hash = models.CharField(
+        max_length=64,
+        help_text="Stable per (company, import identity, row) so a re-import bumps occurrence_count",
+    )
+    occurrence_count = models.PositiveIntegerField(default=1)
+    first_seen_at = models.DateTimeField(auto_now_add=True)
+    last_seen_at = models.DateTimeField(auto_now=True)
+
+    resolved = models.BooleanField(default=False, db_index=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    resolved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    resolution_note = models.TextField(blank=True, default="")
+
+    class Meta:
+        db_table = "import_rejected_row"
+        verbose_name = "Import-rejected row"
+        verbose_name_plural = "Import-rejected rows"
+        constraints = [
+            models.UniqueConstraint(fields=("company", "dedup_hash"), name="uniq_import_rejected_row"),
+        ]
+        indexes = [
+            models.Index(fields=["company", "resolved", "-last_seen_at"], name="idx_irr_company_unresolved"),
+            models.Index(fields=["company", "source_kind", "import_batch_id"], name="idx_irr_company_kind_batch"),
+        ]
+
+    def __str__(self):
+        return f"[{self.source_kind}:{self.reason_code}] row {self.row_index} of {self.source_filename or self.import_batch_id}"
+
+    def mark_resolved(self, user=None, note: str = ""):
+        """Operator ack — a claim of handling (e.g. corrected via re-upload or a
+        manual journal), NOT proof of reprocessing (rows never replay)."""
+        from django.utils import timezone
+
+        self.resolved = True
+        self.resolved_at = timezone.now()
+        self.resolved_by = user
+        self.resolution_note = note or "Operator-resolved."
+        self.save(update_fields=["resolved", "resolved_at", "resolved_by", "resolution_note"])
+
+
 # Import ModuleAccountMapping so Django discovers it for migrations.
 from accounting.mappings import ModuleAccountMapping  # noqa: F401
 
