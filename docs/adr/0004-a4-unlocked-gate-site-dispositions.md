@@ -126,12 +126,26 @@ A4 runtime gates — the same "writes state below the gates" hazard as
 available (the `--dry-run`-equivalent carve-out `import_tenant_events` already
 uses).
 
-Disposition: identical to the six original operator-CLI refusals. The command's
-`--apply` path calls the deployment-wide gate (`deployment_has_pilot()` →
+Disposition: identical to the six original operator-CLI refusals — a
+point-in-time `Command.handle`-entry refusal **paired with a named preflight
+drift backstop** (the two-part shape this ADR's admission criterion requires).
+The `--apply` path calls the deployment-wide gate (`deployment_has_pilot()` →
 `CommandError`) at `Command.handle` entry, and the site
 `platform_connectors/management/commands/backfill_platform_settlement_dims.py::Command.handle`
 is added to `A4_OPERATOR_CLI_REFUSAL_SITES`. Effective membership of that set is
 now **seven**; total admitted unlocked sites across both witnessed sets, **eight**.
-Behavior pinned by
+
+The point-in-time race this leaves — an `--apply` admitted on a cached `NONE`
+profile that commits after a concurrent `activate_pilot_profile` — is closed by a
+new named drift backstop, exactly as `seeded_event_residue` backstops the seed
+CLIs: the backfill stamps every `JOURNAL_LINE_ANALYSIS_SET` event it emits with
+`metadata.source="backfill_platform_settlement_dims"`, and the
+**`backfill_settlement_dims_residue`** preflight check
+(`_backfill_dims_residue_violations` in `accounts/pilot_preflight.py`) makes
+activation — and every post-sync/import drift check — refuse whenever any such
+event exists. The event is the canonical marker (a legitimate posting-time
+projection also writes `JournalLineAnalysis` rows, so only the event metadata
+distinguishes backfill residue). Behavior pinned by
 `test_backfill_platform_settlement_dims_refuses_apply_on_pilot_deployment` (and
-the report-only counterpart) in `backend/tests/test_a4_dispositions.py`.
+the report-only counterpart) and `test_preflight_detects_backfill_settlement_dims_residue`
+in `backend/tests/test_a4_dispositions.py`.

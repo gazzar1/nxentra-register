@@ -720,6 +720,27 @@ def test_preflight_detects_seeded_events(company, owner_membership):
 
 
 @pytest.mark.django_db
+def test_preflight_detects_backfill_settlement_dims_residue(company, owner_membership):
+    """ADR-0004 amendment: the settlement-dimension backfill's point-in-time
+    handle()-entry refusal is backstopped by this residue check — a backfill
+    event on a pilot database blocks activation and every drift check."""
+    from events.models import BusinessEvent
+
+    _make_pilot(company)
+    BusinessEvent.objects.create(
+        company=company,
+        event_type="journal_line.analysis_set",
+        aggregate_type="JournalEntry",
+        aggregate_id="je-1",
+        idempotency_key="a4-backfill-residue-1",
+        company_sequence=990301,
+        data={},
+        metadata={"source": "backfill_platform_settlement_dims"},
+    )
+    assert "backfill_settlement_dims_residue" in _run_preflight(company)
+
+
+@pytest.mark.django_db
 def test_preflight_detects_rebuild_in_flight(company, owner_membership):
     from projections.models import ProjectionStatus
 
@@ -753,6 +774,7 @@ def test_preflight_clean_company_fires_none_of_the_new_codes(company, user, owne
         "external_api_key_present",
         "seeded_event_residue",
         "projection_rebuild_in_flight",
+        "backfill_settlement_dims_residue",
     }
     assert not (codes & new_codes), codes & new_codes
 

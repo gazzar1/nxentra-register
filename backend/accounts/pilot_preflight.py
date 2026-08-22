@@ -147,6 +147,7 @@ def run_preflight(company, *, phase: str = "go-live", for_activation: bool = Fal
         v += _vertical_module_violations(company)
         v += _external_ingest_violations(company)
         v += _seeded_event_violations(company)
+        v += _backfill_dims_residue_violations(company)
         v += _projection_rebuild_violations(company)
 
     return v
@@ -1143,6 +1144,32 @@ def _seeded_event_violations(company) -> list[Violation]:
                 "seeded_event_residue",
                 f"{n} seeded demo/test event(s) exist (metadata.source demo_seed/test_csv_pack); "
                 "seeded databases must not carry a pilot.",
+            )
+        ]
+    return []
+
+
+def _backfill_dims_residue_violations(company) -> list[Violation]:
+    """A4 (ADR-0004 amendment): ``backfill_platform_settlement_dims --apply``
+    stamps every ``JOURNAL_LINE_ANALYSIS_SET`` event it emits with
+    ``metadata.source="backfill_platform_settlement_dims"`` — the durable marker
+    of a run that wrote below the A4 gates. Its ``handle()``-entry refusal is
+    point-in-time (deployment-wide, no single row to admission-lock), so this is
+    its NAMED drift backstop: an ``--apply`` that slipped through a race with
+    ``activate_pilot_profile`` leaves this residue, and any tagged event makes
+    activation and every drift check refuse. The event is the canonical marker
+    (the derived ``JournalLineAnalysis`` rows a legitimate posting-time projection
+    also writes are indistinguishable without it)."""
+    from events.models import BusinessEvent
+
+    n = BusinessEvent.objects.filter(company=company, metadata__source="backfill_platform_settlement_dims").count()
+    if n:
+        return [
+            Violation(
+                "backfill_settlement_dims_residue",
+                f"{n} settlement-dimension backfill event(s) exist "
+                "(metadata.source backfill_platform_settlement_dims); the backfill "
+                "writes below the A4 gates and must not run on a pilot database.",
             )
         ]
     return []
