@@ -360,6 +360,11 @@ export default function ImportStatementPage() {
                     setHeaders([]);
                     setSampleRows([]);
                     setParsedLines([]);
+                    // A5-PR3c (Codex round-5): clear the previous file's reject
+                    // state too — otherwise the reject-only action could persist
+                    // file A's evidence while file B is selected.
+                    setParseRejects([]);
+                    setParseFilename("");
                   }}
                 />
               </div>
