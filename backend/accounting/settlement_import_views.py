@@ -156,8 +156,8 @@ class SettlementCSVImportView(APIView):
         # round-8: review flags are written by the PROJECTION after the JE
         # posts, grouped under a deterministic per-event id — so they appear
         # here only when the inline projection run above actually posted.
+        from accounting.import_rejects import orphan_review_import_batch_id
         from accounting.models import ImportRejectedRow
-        from accounting.settlement_imports import orphan_review_import_batch_id
 
         rejected_qs = ImportRejectedRow.objects.filter(
             company=actor.company,

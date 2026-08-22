@@ -162,9 +162,13 @@ export default function SettlementImportPage() {
       if (descriptionParts.length > 0) {
         descriptionParts.push("Details under Finance → Exceptions.");
       }
+      // Codex round-9: a reject-only commit (zero batches, N rejects recorded)
+      // must not read as "all were already imported".
+      const rejectOnlyCommit = result.batches.length === 0 && rejectedRows > 0;
       toast({
-        title:
-          newBatches > 0
+        title: rejectOnlyCommit
+          ? `Recorded ${rejectedRows} rejected row(s) — nothing posted.`
+          : newBatches > 0
             ? `Imported ${newBatches} batch(es) from ${pendingProvider}${
                 override ? " (period overridden)" : ""
               }${rejectedRows > 0 ? ` — ${rejectedRows} row(s) rejected` : ""}.`

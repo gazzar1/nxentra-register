@@ -793,6 +793,49 @@ def test_bank_commit_refuses_rejects_without_token(company, user, owner_membersh
     assert ImportRejectedRow.objects.count() == 0
 
 
+def test_bank_commit_refuses_lines_not_from_the_parsed_file(company, user, owner_membership, merchant_bank, api_client):
+    """Codex round-9: the token binds the SURVIVING lines too — rejects from
+    file A cannot ride a commit of unrelated lines."""
+    api_client.force_authenticate(user=user)
+    parse_data = _parse_bank_csv_over_http(api_client, BANK_HTTP_CSV)
+    body = _bank_commit_body(merchant_bank, parse_data)
+    body["lines"] = body["lines"] + [
+        {"line_date": "2026-04-27", "description": "unrelated line from file B", "amount": "999.00", "reference": ""}
+    ]
+    resp = api_client.post("/api/accounting/bank-statements/", body, format="json")
+    assert resp.status_code == 400
+    assert "match" in resp.data["error"]
+    assert ImportRejectedRow.objects.count() == 0
+
+
+def test_settlement_replay_backfills_orphan_flags_for_already_posted_event(shopify_setup, company):
+    """Codex round-9: a replay/rebuild reaching an event whose JE posted before
+    the flag-writer existed reconciles the flags via the already-posted guard."""
+    from events.models import BusinessEvent
+    from events.types import EventTypes
+
+    csv = b"""order_id,gross,fee,net,payout_batch_id,payout_date
+9999,300.00,9.00,291.00,PR3B-BACKFILL,2026-04-25
+"""
+    import_settlement_csv(
+        company=company, provider_normalized_code="paymob", file_content=csv, source_filename="bf.csv"
+    )
+    _run_settlement_projection(company)
+    assert ImportRejectedRow.objects.filter(company=company).count() == 1
+
+    # Simulate pre-PR3bc history: the JE exists but the flag never did.
+    ImportRejectedRow.objects.all().delete()
+
+    from accounting.payment_settlement_projection import PaymentSettlementProjection
+
+    event = BusinessEvent.objects.get(company=company, event_type=EventTypes.PAYMENT_SETTLEMENT_RECEIVED)
+    PaymentSettlementProjection().handle(event)  # replay → already-posted guard
+
+    flag = ImportRejectedRow.objects.get(company=company)
+    assert flag.reason_code == ImportRejectedRow.ReasonCode.ORPHAN_ORDER_ID
+    assert flag.status == ImportRejectedRow.Status.QUARANTINED
+
+
 def test_bank_commit_refuses_tampered_rejects(company, user, owner_membership, merchant_bank, api_client):
     """Codex round-8: altered/fabricated descriptors no longer verify against
     the server-signed hash — evidence stays bound to the parsed bytes."""

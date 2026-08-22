@@ -186,6 +186,13 @@ class PaymentSettlementProjection(BaseProjection):
             source_document=source_document,
             status=JournalEntry.Status.POSTED,
         ).exists():
+            # A5-PR3b (Codex round-9): the posted JE is CONFIRMED here, so a
+            # replay/rebuild reaching an event posted BEFORE the flag-writer
+            # existed still reconciles its orphan review flags (idempotent —
+            # a re-sight of existing flags just bumps occurrence_count).
+            from accounting.import_rejects import persist_orphan_review_flags_for_posted_event
+
+            persist_orphan_review_flags_for_posted_event(company, event)
             logger.info(
                 "Settlement %s already posted for company %s — skipping",
                 source_document,
@@ -534,7 +541,9 @@ class PaymentSettlementProjection(BaseProjection):
             # so a flag saying "the JE posted" exists IFF the posting it
             # describes committed. Batches that quarantine, fail, or are handled
             # without posting (all-zero / fully-credited) write NO flags.
-            from accounting.settlement_imports import persist_orphan_review_flags_for_posted_event
+            # (Codex round-9: imported from the provider-neutral reject module,
+            # not the CSV-adapter module.)
+            from accounting.import_rejects import persist_orphan_review_flags_for_posted_event
 
             persist_orphan_review_flags_for_posted_event(company, event)
 

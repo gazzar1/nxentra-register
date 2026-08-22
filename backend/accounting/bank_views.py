@@ -121,6 +121,10 @@ class BankStatementListCreateView(APIView):
             )
 
         lines_data = d.get("lines", [])
+        # Codex round-9: capture the canonical hash of the SUBMITTED lines
+        # BEFORE the in-place date coercion below mutates them — the parse
+        # token binds rejects AND surviving lines to one parsed file.
+        submitted_lines_hash = _parse_rejects_hash(lines_data if isinstance(lines_data, list) else [])
         # Parse line dates
         for ld in lines_data:
             if isinstance(ld.get("line_date"), str):
@@ -176,6 +180,10 @@ class BankStatementListCreateView(APIView):
                 claims.get("company_id") != actor.company.pk
                 or claims.get("filename") != source_filename
                 or claims.get("rejects_sha256") != _parse_rejects_hash(parse_rejects)
+                # Codex round-9: the surviving lines must ALSO be the ones this
+                # parse produced — rejects from file A cannot ride a commit of
+                # unrelated lines.
+                or claims.get("lines_sha256") != submitted_lines_hash
             ):
                 return Response(
                     {
@@ -318,6 +326,9 @@ class BankStatementCSVImportView(APIView):
                 "company_id": actor.company.pk,
                 "filename": source_filename,
                 "rejects_sha256": _parse_rejects_hash(rejected_rows),
+                # Codex round-9: bind the SURVIVING lines too, so rejects from
+                # file A cannot be committed alongside unrelated lines.
+                "lines_sha256": _parse_rejects_hash(lines),
             },
             salt=_PARSE_REJECTS_SALT,
         )
