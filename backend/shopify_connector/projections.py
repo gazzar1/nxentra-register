@@ -1175,10 +1175,10 @@ class ShopifyAccountingHandler(BaseProjection):
                     f"produced no invoice (e.g. it fell in a closed period and was quarantined), "
                     f"so this refund has nothing to credit against.",
                     fix_hint=(
-                        "Resolve the order's own failure first (e.g. reopen the period and re-run "
-                        "the Shopify sync so its invoice posts), then re-run the sync to re-ingest "
-                        "this refund; or book the refund manually and resolve this from "
-                        "/finance/exceptions."
+                        "Re-running the sync will NOT repost this order or re-ingest this refund "
+                        "(both events are already applied and the pilot's rebuild is disabled). "
+                        "Book the refund — and correct the order's own quarantined entry — with "
+                        "manual journals, then resolve this from /finance/exceptions."
                     ),
                 )
 

@@ -406,6 +406,15 @@ def test_process_refund_negative_amount_persists_rejected_marker(company, owner_
     assert refund.event_id is None
     assert not BusinessEvent.objects.filter(company=company, idempotency_key="shopify.refund.created:9900061").exists()
 
+    # Codex round-4 P2: the ERROR row is durable evidence but isn't itself
+    # surfaced anywhere, so a negative refund must also raise an operator-visible
+    # notification.
+    from accounts.models import Notification
+
+    assert Notification.objects.filter(
+        company=company, source_module="shopify_connector", title__icontains="rejected"
+    ).exists(), "a negative refund must raise an operator-visible notification"
+
 
 def test_error_refund_excluded_from_total_refunded(company, owner_membership):
     """Codex round-3 P2: an ERROR (rejected) refund is kept as durable evidence

@@ -1517,6 +1517,23 @@ def process_refund(store: ShopifyStore, payload: dict) -> CommandResult:
                 status=ShopifyRefund.Status.ERROR,
                 error_message=(f"Refund amount is negative ({refund_amount}); invalid provider data — not accounted."),
             )
+        # A5 (Codex round-4 P2): the ERROR row is durable evidence but is not itself
+        # surfaced in any operator view, so raise an operator-visible alert (the
+        # notifications surface) — the ingress has no projection through which to
+        # emit a /finance/exceptions failure log.
+        from accounts.models import Notification
+
+        Notification.notify_company_admins(
+            company=store.company,
+            title="Shopify refund rejected — invalid amount",
+            message=(
+                f"Refund {shopify_refund_id} on order {order_id} arrived with a negative amount "
+                f"({refund_amount}) and was rejected — no journal was posted. Kept as a "
+                f"ShopifyRefund (status=ERROR) for evidence; correct it with a manual journal if real."
+            ),
+            level=Notification.Level.ERROR,
+            source_module="shopify_connector",
+        )
         return CommandResult.fail(f"Refund amount is negative ({refund_amount}).")
 
     refund_date_str = payload.get("created_at", "")
