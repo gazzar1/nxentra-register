@@ -333,6 +333,7 @@ def compute_alert_state() -> dict:
     """
     from django.conf import settings
 
+    from accounting.models import ImportRejectedRow
     from accounts.rls import rls_bypass
     from events.models import BusinessEvent, EventBookmark
     from projections.base import projection_registry
@@ -343,6 +344,9 @@ def compute_alert_state() -> dict:
 
     with rls_bypass():
         unresolved = ProjectionFailureLog.objects.filter(resolved=False).count()
+        # A5-PR3: a dropped settlement/bank source row is a real financial
+        # exception with no event (so no ProjectionFailureLog) — page on it too.
+        unresolved_rejects = ImportRejectedRow.objects.filter(resolved=False).count()
 
         total_lag = 0
         paused = 0
@@ -371,10 +375,19 @@ def compute_alert_state() -> dict:
                 processed = 0
             total_lag += total - processed
 
-    healthy = unresolved <= max_failures and total_lag <= lag_threshold and paused == 0 and errored == 0
+    healthy = (
+        # Combined pool vs the threshold (Codex P2): projection failures and import
+        # rejects are both unresolved financial exceptions — a max of N must bound
+        # their TOTAL, not each independently.
+        (unresolved + unresolved_rejects) <= max_failures
+        and total_lag <= lag_threshold
+        and paused == 0
+        and errored == 0
+    )
     return {
         "status": "healthy" if healthy else "unhealthy",
         "unresolved_failures": unresolved,
+        "unresolved_import_rejects": unresolved_rejects,
         "total_lag": total_lag,
         "paused_consumers": paused,
         "errored_consumers": errored,
