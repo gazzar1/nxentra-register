@@ -102,6 +102,15 @@ _REPAIR_HINT = (
     "then rebuild the affected projections to re-apply it."
 )
 
+# The framework-owned message signature every boundary quarantine carries —
+# written only by PostedJournalApplyInvalid below (operators write notes,
+# never log messages). The fold-disposition logic uses it to tell a
+# QUARANTINE log (event consumed WITHOUT applying) from an OPERATIONAL
+# failure log (a halt whose event only ever gains an applied-marker through
+# a later SUCCESSFUL apply) — the distinction that keeps legacy
+# operator-resolved halt logs from eclipsing applied journals (round 16).
+QUARANTINE_MESSAGE_SIGNATURE = "failed the canonical apply invariant"
+
 
 class PostedJournalApplyInvalid(ProjectionTerminalSkip):
     """Quarantine signal carrying the structured violation codes.
@@ -117,7 +126,7 @@ class PostedJournalApplyInvalid(ProjectionTerminalSkip):
         self.codes = list(codes)
         unique_codes = ", ".join(dict.fromkeys(self.codes))
         super().__init__(
-            f"{event_type} event failed the canonical apply invariant: {unique_codes}",
+            f"{event_type} event {QUARANTINE_MESSAGE_SIGNATURE}: {unique_codes}",
             fix_hint=_REPAIR_HINT,
         )
 
@@ -513,49 +522,63 @@ def posted_event_accepted_for_apply(
     the fold, and ``excluded_ids`` (from :func:`excluded_posted_event_ids`)
     so batch folds pay ONE disposition query instead of one per event
     (Codex round-14 P2)."""
-    if excluded_ids is not None:
-        if event.id in excluded_ids:
-            return False
-    else:
-        from projections.account_balance import AccountBalanceProjection
-        from projections.models import SELF_HEALED_RESOLUTION_NOTE, ProjectionFailureLog
-
-        if (
-            ProjectionFailureLog.objects.filter(
-                company=event.company,
-                event=event,
-                projection_name=AccountBalanceProjection().name,
-            )
-            .exclude(resolved=True, resolution_note=SELF_HEALED_RESOLUTION_NOTE)
-            .exists()
-        ):
-            return False
+    if excluded_ids is None:
+        excluded_ids = excluded_posted_event_ids(event.company)
+    if event.id in excluded_ids:
+        return False
     return not evaluate_posted_journal_for_apply(event, facts_cache)
 
 
 def excluded_posted_event_ids(company) -> frozenset:
     """Event ids with a disqualifying persisted disposition — the batch
-    preload for event-fold readers.
+    preload for event-fold readers, and the ONE implementation of the
+    disposition rule.
 
     Scoped to the BALANCE projection's logs (Codex round-15 P1): every
     reader folds amount semantics that mirror ``account_balance``, and the
     canonical apply quarantine stamps every consumer including it — while an
     UNRELATED consumer's operational failure (e.g. the JE read model halting
     on a malformed ``posted_at`` the invariant does not govern) must not
-    eclipse a journal the balance projection actually applied. Disqualifying
-    = any log that is not SELF-HEALED (the framework-owned resolution-note
-    sentinel)."""
-    from projections.account_balance import AccountBalanceProjection
-    from projections.models import SELF_HEALED_RESOLUTION_NOTE, ProjectionFailureLog
+    eclipse a journal the balance projection actually applied.
 
-    return frozenset(
-        ProjectionFailureLog.objects.filter(
-            company=company,
-            projection_name=AccountBalanceProjection().name,
-        )
-        .exclude(resolved=True, resolution_note=SELF_HEALED_RESOLUTION_NOTE)
-        .values_list("event_id", flat=True)
+    Disqualifying, per log (Codex round-16 P1 — legacy compatibility without
+    a migration):
+
+    - UNRESOLVED — the event is failing or quarantined, not in balances;
+    - resolved but NOT self-healed, carrying the boundary QUARANTINE message
+      signature — the event was consumed WITHOUT applying, and an operator
+      resolution does not re-apply it;
+    - resolved but NOT self-healed, an OPERATIONAL failure (no quarantine
+      signature) — disqualifying ONLY when no ``account_balance``
+      applied-marker exists: within this projection's scope an operational
+      failure gains a marker only through a later SUCCESSFUL apply, so
+      marker-present means the retry landed the amounts even if a legacy
+      operator resolution pre-dates the pre-PR3 self-heal stamp (the old
+      self-heal update skipped already-resolved rows)."""
+    from projections.account_balance import AccountBalanceProjection
+    from projections.models import SELF_HEALED_RESOLUTION_NOTE, ProjectionAppliedEvent, ProjectionFailureLog
+
+    balance_name = AccountBalanceProjection().name
+    logs = ProjectionFailureLog.objects.filter(company=company, projection_name=balance_name)
+
+    unresolved = set(logs.filter(resolved=False).values_list("event_id", flat=True))
+    operator_resolved = logs.filter(resolved=True).exclude(resolution_note=SELF_HEALED_RESOLUTION_NOTE)
+    boundary_quarantines = set(
+        operator_resolved.filter(message__contains=QUARANTINE_MESSAGE_SIGNATURE).values_list("event_id", flat=True)
     )
+    operational = set(
+        operator_resolved.exclude(message__contains=QUARANTINE_MESSAGE_SIGNATURE).values_list("event_id", flat=True)
+    )
+    if operational:
+        applied = set(
+            ProjectionAppliedEvent.objects.filter(
+                company=company,
+                projection_name=balance_name,
+                event_id__in=operational,
+            ).values_list("event_id", flat=True)
+        )
+        operational -= applied
+    return frozenset(unresolved | boundary_quarantines | operational)
 
 
 def memo_account_public_ids(company) -> frozenset[str]:

@@ -296,6 +296,41 @@ class TestPostedApplyEnforcement:
         verdict = revenue.verify_integrity()
         assert verdict["is_valid"], verdict
 
+    def test_legacy_operator_resolved_halt_does_not_eclipse_applied_event(
+        self, company, user, cash_account, revenue_account
+    ):
+        """Codex round-16 P1 (legacy compatibility): pre-upgrade, an operator
+        could resolve an OPERATIONAL failure before the retry succeeded, and
+        the old self-heal update skipped already-resolved rows — leaving an
+        operator note on an event that IS in the balances. Such a log (no
+        quarantine signature) with the applied-marker present must not
+        exclude the event from folds."""
+        from projections.models import ProjectionFailureLog as PFL
+        from projections.write_barrier import projection_writes_allowed
+
+        entry_id = uuid4()
+        event = _emit_posted(company, user, _posted_payload(entry_id, user, cash_account, revenue_account))
+        balances = AccountBalanceProjection()
+        balances.process_pending(company)
+        revenue = AccountBalance.objects.get(company=company, account=revenue_account)
+        assert revenue.credit_total == Decimal("100.00")
+
+        # The legacy shape: an operational halt log (no quarantine message
+        # signature), operator-resolved, alongside the success marker.
+        with projection_writes_allowed():
+            log = PFL.objects.create(
+                company=company,
+                projection_name=balances.name,
+                event=event,
+                event_type=event.event_type,
+                category=PFL.Category.UNEXPECTED,
+                message="ValueError: transient boom before the successful retry",
+            )
+        log.mark_resolved(user, note="fixed the transient issue")
+
+        verdict = revenue.verify_integrity()
+        assert verdict["is_valid"], verdict  # the applied event stays folded
+
     def test_operator_note_cannot_forge_self_heal(self, company, user, cash_account, revenue_account):
         """Codex round-15 P1: the self-heal signature is framework-owned —
         mark_resolved (and the queue endpoint routing through it) replaces a
