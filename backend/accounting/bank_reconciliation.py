@@ -132,6 +132,8 @@ def preview_bank_statement_import(
     for ld in lines_data:
         try:
             amount = Decimal(str(ld["amount"]))
+            if not amount.is_finite():
+                raise InvalidOperation  # Codex round-15: NaN/Infinity are invalid
         except (KeyError, InvalidOperation, TypeError):
             invalid_rows += 1
             continue
@@ -308,6 +310,12 @@ def import_bank_statement(
         for line_index, ld in enumerate(lines_data, start=1):
             try:
                 amount = Decimal(str(ld["amount"]))
+                if not amount.is_finite():
+                    # Codex round-15: Decimal("NaN") parses without raising but
+                    # explodes at the amount >= 0 comparison (a 500 instead of
+                    # the promised count-and-skip); infinities must never reach
+                    # the database either.
+                    raise InvalidOperation
             except (KeyError, InvalidOperation, TypeError):
                 # A5-PR3c: previously a bare `continue` with no counter (and
                 # TypeError — a non-dict/None entry — 500'd while the preview
@@ -540,6 +548,10 @@ def parse_csv_statement_full(
             try:
                 debit_val = Decimal(debit) if debit else Decimal("0")
                 credit_val = Decimal(credit) if credit else Decimal("0")
+                if not debit_val.is_finite() or not credit_val.is_finite():
+                    # Codex round-15: Decimal accepts "NaN"/"Infinity" without
+                    # raising — treat non-finite exactly like malformed.
+                    raise InvalidOperation
             except InvalidOperation:
                 rejects.append(
                     reject_descriptor(
@@ -557,6 +569,8 @@ def parse_csv_statement_full(
             raw = row.get(amount_column, "").strip().replace(",", "")
             try:
                 amount = Decimal(raw)
+                if not amount.is_finite():
+                    raise InvalidOperation  # Codex round-15: NaN/Infinity are malformed
             except InvalidOperation:
                 rejects.append(
                     reject_descriptor(

@@ -687,6 +687,37 @@ def test_bank_reject_only_commit_creates_statement_and_evidence(company, actor, 
     assert not empty.success
 
 
+def test_bank_nonfinite_amounts_counted_not_500(company, actor, merchant_bank):
+    """Codex round-15: Decimal("NaN") parses without raising but explodes at
+    the amount >= 0 comparison — it must be counted and skipped like any other
+    invalid line, and infinities must never reach the database."""
+    result = _import_bank(
+        actor,
+        merchant_bank,
+        [
+            {"line_date": date(2026, 4, 25), "amount": "50.00", "description": "ok", "reference": ""},
+            {"line_date": date(2026, 4, 25), "amount": "NaN", "description": "nan", "reference": ""},
+            {"line_date": date(2026, 4, 25), "amount": "Infinity", "description": "inf", "reference": ""},
+        ],
+    )
+    assert result.success, result.error
+    assert result.data["lines_created"] == 1
+    assert result.data["lines_invalid"] == 2
+    assert ImportRejectedRow.objects.count() == 0
+
+    # Parse + settlement sides of the same class:
+    lines, rejects = parse_csv_statement_full(
+        "Date,Description,Amount,Reference\n2026-04-25,nan row,NaN,R1\n2026-04-26,ok,10.00,R2\n"
+    )
+    assert len(lines) == 1
+    assert rejects[0]["reason_code"] == "UNPARSEABLE_AMOUNT"
+
+    from accounting.settlement_imports import _to_decimal_flagged
+
+    assert _to_decimal_flagged("NaN") == (Decimal("0"), True)
+    assert _to_decimal_flagged("Infinity") == (Decimal("0"), True)
+
+
 def test_bank_duplicates_stay_counter_only(company, actor, merchant_bank):
     lines = [
         {"line_date": date(2026, 4, 25), "amount": "100.00", "description": "wire", "reference": "R1"},

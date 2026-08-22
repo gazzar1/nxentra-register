@@ -74,9 +74,14 @@ def _to_decimal_flagged(value) -> tuple[Decimal, bool]:
     if not s:
         return Decimal("0"), False
     try:
-        return Decimal(s), False
+        parsed = Decimal(s)
     except (InvalidOperation, ValueError):
         return Decimal("0"), True
+    if not parsed.is_finite():
+        # Codex round-15: Decimal accepts "NaN"/"Infinity" without raising, but
+        # they poison every later comparison/quantize — MALFORMED, not money.
+        return Decimal("0"), True
+    return parsed, False
 
 
 def _to_decimal(value) -> Decimal:
