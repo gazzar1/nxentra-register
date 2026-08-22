@@ -1012,6 +1012,81 @@ class TestLifecycleOrderingUnderDefer:
             company=company, projection_name=projection.name, event=analysis_event
         ).exists()
 
+    def test_draft_row_does_not_mask_pending_post(self, company, user, cash_account, revenue_account):
+        """Codex round-9 P1: the normal lifecycle materializes a DRAFT row
+        from CREATED before the post — a row-existence check would declare
+        'nothing pending' while the post defers, and the analysis event
+        would be consumed against draft lines the retried post replaces
+        (tags permanently lost). Pending must derive from the posted EVENT
+        and its marker."""
+        from projections.accounting import AccountProjection
+
+        lag_id = self._emit_lagging_account(company, user, code="1085")
+        entry_id = uuid4()
+        emit_event(
+            company=company,
+            event_type=EventTypes.JOURNAL_ENTRY_CREATED,
+            aggregate_type="JournalEntry",
+            aggregate_id=str(entry_id),
+            data={
+                "entry_public_id": str(entry_id),
+                "date": date.today().isoformat(),
+                "memo": "draft before post",
+                "status": "DRAFT",
+                "period": 1,
+                "line_count": 2,
+                "created_by_id": user.id,
+                "created_by_email": user.email,
+                "lines": [
+                    {
+                        "line_no": 1,
+                        "account_public_id": str(cash_account.public_id),
+                        "debit": "100.00",
+                        "credit": "0.00",
+                    },
+                    {
+                        "line_no": 2,
+                        "account_public_id": str(revenue_account.public_id),
+                        "debit": "0.00",
+                        "credit": "100.00",
+                    },
+                ],
+            },
+            caused_by_user=user,
+            idempotency_key=f"apply-test:draft-mask:{entry_id}",
+        )
+        projection = JournalEntryProjection()
+        projection.process_pending(company)
+        assert JournalEntry.objects.filter(company=company, public_id=entry_id).exists()  # DRAFT row
+
+        payload = _posted_payload(entry_id, user, cash_account, revenue_account)
+        payload["lines"][0]["account_public_id"] = str(lag_id)
+        _emit_posted(company, user, payload)
+        analysis_event = emit_event(
+            company=company,
+            event_type=EventTypes.JOURNAL_LINE_ANALYSIS_SET,
+            aggregate_type="JournalEntry",
+            aggregate_id=str(entry_id),
+            data={"entry_public_id": str(entry_id), "line_no": 1, "analysis_tags": []},
+            caused_by_user=user,
+            idempotency_key=f"apply-test:draft-mask-analysis:{entry_id}",
+        )
+
+        projection.process_pending(company)
+        # The draft row must NOT mask the pending post: analysis deferred.
+        assert not ProjectionAppliedEvent.objects.filter(
+            company=company, projection_name=projection.name, event=analysis_event
+        ).exists()
+
+        AccountProjection().process_pending(company)
+        projection.process_pending(company)
+
+        entry = JournalEntry.objects.get(company=company, public_id=entry_id)
+        assert entry.status == JournalEntry.Status.POSTED
+        assert ProjectionAppliedEvent.objects.filter(
+            company=company, projection_name=projection.name, event=analysis_event
+        ).exists()
+
     def test_pending_post_found_by_payload_identity(self, company, user, cash_account, revenue_account):
         """Codex round-6 P2: a posted event whose aggregate metadata names a
         DIFFERENT id (external ingest legitimately does this) must still be

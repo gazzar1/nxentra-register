@@ -270,35 +270,35 @@ def is_deferrable_apply_verdict(event: BusinessEvent, codes: list[str]) -> bool:
 
 
 def _entry_pending_materialization(event: BusinessEvent, entry_public_id: object) -> bool:
-    """True iff the referenced journal entry's row is absent while its OWN
-    JOURNAL_ENTRY_POSTED event sits EARLIER in the stream, payload-verified
-    and not yet consumed by the JournalEntry read model — the deferred-post
-    case (Codex round-5 P1). Applies the same accumulated rules as the
-    account probe: payload identity beats aggregate metadata; a consumed
-    marker triggers a row re-resolution (the round-4 stale-read rule) and
-    counts as pending only if the row exists now; consumed-without-row (a
-    quarantined/partial prior post) is NOT pending — the sibling handler's
-    tolerant behavior for genuinely absent referents stays unchanged."""
+    """True iff a payload-verified JOURNAL_ENTRY_POSTED event for this entry
+    sits EARLIER in the stream, NOT yet consumed by the JournalEntry read
+    model — the deferred-post case (Codex round-5 P1).
+
+    Decided purely from the posted EVENT and its applied-marker, NEVER from
+    row existence (Codex round-9 P1): the normal lifecycle materializes a
+    DRAFT row from JOURNAL_ENTRY_CREATED before the post, so a row-existence
+    check would declare "nothing pending" while the post is deferred — a
+    line-analysis event would then be consumed against draft lines that the
+    retried post deletes and recreates, permanently losing the tags, and a
+    delete could slip through before the post re-decides it.
+
+    Candidates are matched by PAYLOAD identity as well as aggregate metadata
+    in BOTH storage strategies (Codex rounds 6+7 P2): external ingest
+    legitimately carries a different aggregate_id, and a >64 KiB ingested
+    payload stores {} inline, so the payload_ref__payload arm is what finds
+    it; the payload-verification loop stays the authority for everything
+    the query returns. A CONSUMED prior post (materialized or quarantined)
+    is not pending — the guard then decides against the real current rows,
+    and the handlers' tolerant behavior for genuinely absent referents
+    stays unchanged."""
     from django.db.models import Q
 
-    from accounting.models import JournalEntry
     from events.models import BusinessEvent as _BusinessEvent
     from events.types import EventTypes
     from projections.accounting import JournalEntryProjection
     from projections.models import ProjectionAppliedEvent
 
     target = str(entry_public_id)
-    if JournalEntry.objects.filter(company=event.company, public_id=target).exists():
-        return False  # the row exists — nothing pending
-    # Candidates by PAYLOAD identity as well as aggregate metadata (Codex
-    # rounds 6+7 P2): the evaluator and the handler key on the payload's
-    # entry_public_id — external ingest legitimately carries a different
-    # aggregate_id — so an aggregate-only query would miss a genuinely
-    # pending post and let the lifecycle event no-op-consume. The payload
-    # arm covers BOTH storage strategies: inline JSON and external storage
-    # (a >64 KiB ingested payload stores {} inline, so the
-    # payload_ref__payload arm is what finds it). The payload-verification
-    # loop below remains the authority for everything the query returns.
     candidates = _BusinessEvent.objects.filter(
         Q(aggregate_id=target) | Q(data__entry_public_id=target) | Q(payload_ref__payload__entry_public_id=target),
         company=event.company,
@@ -318,12 +318,7 @@ def _entry_pending_materialization(event: BusinessEvent, entry_public_id: object
             projection_name=je_read_model,
             event=prior,
         ).exists():
-            # Consumed — re-resolve the row (stale-read rule): present now
-            # means the retry will see it; still absent means the prior post
-            # was quarantined/partial, which is not pending.
-            if JournalEntry.objects.filter(company=event.company, public_id=target).exists():
-                return True
-            continue
+            continue  # consumed — the guard decides against the current rows
         return True  # unconsumed prior posted event — genuinely pending
     return False
 
