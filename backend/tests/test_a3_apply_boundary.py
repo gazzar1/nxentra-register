@@ -1510,6 +1510,90 @@ class TestLifecycleOrderingUnderDefer:
         original = JournalEntry.objects.get(company=company, public_id=original_id)
         assert original.status == JournalEntry.Status.REVERSED
 
+    def test_transient_error_in_entry_probe_propagates(self, company, user, cash_account, revenue_account, monkeypatch):
+        """Codex round-21 P1: a transient DB error while reading a candidate
+        prior post must PROPAGATE as a retryable halt — swallowing it would
+        erase pending evidence and let a sibling no-op-consume."""
+        from django.db import OperationalError
+
+        from accounting.posted_journal_apply import _entry_pending_materialization
+        from events.models import BusinessEvent as BE
+
+        lag_id = self._emit_lagging_account(company, user, code="1080")
+        entry_id = uuid4()
+        payload = _posted_payload(entry_id, user, cash_account, revenue_account)
+        payload["lines"][0]["account_public_id"] = str(lag_id)
+        posted = _emit_posted(company, user, payload)
+        reversed_probe_event = emit_event(
+            company=company,
+            event_type=EventTypes.JOURNAL_ENTRY_REVERSED,
+            aggregate_type="JournalEntry",
+            aggregate_id=str(entry_id),
+            data={
+                "original_entry_public_id": str(entry_id),
+                "reversal_entry_public_id": str(uuid4()),
+                "reversed_at": "2026-01-09T12:00:00",
+                "reversed_by_id": user.id,
+                "reversed_by_email": user.email,
+            },
+            caused_by_user=user,
+            idempotency_key=f"apply-test:transient-rev:{entry_id}",
+        )
+
+        real_get_data = BE.get_data
+
+        def _flaky(self):
+            if self.pk == posted.pk:
+                raise OperationalError("statement timeout")
+            return real_get_data(self)
+
+        monkeypatch.setattr(BE, "get_data", _flaky)
+        with pytest.raises(OperationalError):
+            _entry_pending_materialization(reversed_probe_event, str(entry_id))
+
+    def test_transient_error_in_account_probe_propagates(
+        self, company, user, cash_account, revenue_account, monkeypatch
+    ):
+        """Codex round-21 P2: same rule for the account-evidence probe — a
+        transient error on the prior account event must not terminally
+        quarantine an otherwise replayable journal."""
+        from django.db import OperationalError
+
+        from accounting.posted_journal_apply import _unknown_accounts_are_pending_materialization
+        from events.models import BusinessEvent as BE
+
+        lag_id = uuid4()
+        acct_event = emit_event(
+            company=company,
+            event_type=EventTypes.ACCOUNT_CREATED,
+            aggregate_type="Account",
+            aggregate_id=str(lag_id),
+            data={
+                "account_public_id": str(lag_id),
+                "code": "1079",
+                "name": "Flaky-read account",
+                "account_type": "ASSET",
+                "normal_balance": "DEBIT",
+                "is_header": False,
+            },
+            caused_by_user=user,
+            idempotency_key=f"apply-test:flaky-acct:{lag_id}",
+        )
+        payload = _posted_payload(uuid4(), user, cash_account, revenue_account)
+        payload["lines"][0]["account_public_id"] = str(lag_id)
+        event = _emit_posted(company, user, payload)
+
+        real_get_data = BE.get_data
+
+        def _flaky(self):
+            if self.pk == acct_event.pk:
+                raise OperationalError("statement timeout")
+            return real_get_data(self)
+
+        monkeypatch.setattr(BE, "get_data", _flaky)
+        with pytest.raises(OperationalError):
+            _unknown_accounts_are_pending_materialization(BE.objects.get(pk=event.pk))
+
     def test_consumed_first_post_does_not_hide_deferred_repost(self, company, user, cash_account, revenue_account):
         """Codex round-20 P1: two posts can carry the same entry id — a
         consumed earlier post must not end the pending scan while a later

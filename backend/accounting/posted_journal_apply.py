@@ -309,6 +309,7 @@ def _entry_pending_materialization(event: BusinessEvent, entry_public_id: object
     prior post (materialized or quarantined) is not pending — the guard
     then decides against the real current rows, and the handlers' tolerant
     behavior for genuinely absent referents stays unchanged."""
+    from django.db import IntegrityError
     from django.db.models import Q
 
     from events.models import BusinessEvent as _BusinessEvent
@@ -331,7 +332,12 @@ def _entry_pending_materialization(event: BusinessEvent, entry_public_id: object
         retries. Pending wins if ANY matching prior lacks the marker."""
         try:
             prior_data = prior.get_data()
-        except Exception:
+        except (IntegrityError, ValueError):
+            # Documented payload-integrity failures only — at-rest corruption
+            # is genuinely not evidence. A TRANSIENT database error (e.g. an
+            # OperationalError on the lazy external-payload fetch) must
+            # PROPAGATE as a retryable halt instead of erasing pending
+            # evidence and letting a sibling no-op-consume (Codex round-21).
             return None
         if not isinstance(prior_data, dict) or _canonical_uuid(prior_data.get("entry_public_id")) != target:
             return None
@@ -376,13 +382,18 @@ def _unknown_accounts_are_pending_materialization(event: BusinessEvent) -> bool:
     quarantining it. Runs only on the failure path (zero cost for valid
     events). Ids that resolve on this re-check (materialized between
     evaluations) also count as pending — the retry will succeed."""
+    from django.db import IntegrityError
+
     from accounting.journal_invariant import canonical_account_id, load_account_facts
     from events.models import BusinessEvent as _BusinessEvent
     from events.types import EventTypes
 
     try:
         data = event.get_data()
-    except Exception:
+    except (IntegrityError, ValueError):
+        # Narrowed like the evaluator (Codex round-21): integrity failures
+        # are not pending evidence; transient DB errors propagate as
+        # retryable halts instead of terminally quarantining a valid event.
         return False
     raw_lines = data.get("lines") if isinstance(data, dict) else None
     line_iter = raw_lines if isinstance(raw_lines, list) else []
@@ -429,7 +440,10 @@ def _unknown_accounts_are_pending_materialization(event: BusinessEvent) -> bool:
             operator-repairable halt does (the A41 dependency contract)."""
             try:
                 prior_data = prior.get_data()
-            except Exception:
+            except (IntegrityError, ValueError):
+                # Same narrowing (Codex round-21): only documented
+                # payload-integrity failures negate evidence; transient DB
+                # errors propagate as retryable halts.
                 return False
             if not isinstance(prior_data, dict):
                 return False
