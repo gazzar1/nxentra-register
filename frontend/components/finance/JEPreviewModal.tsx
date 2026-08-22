@@ -142,6 +142,28 @@ export function JEPreviewModal({
           {/* Summary totals */}
           <SummaryTotals preview={preview} />
 
+          {/* A5-PR3b (Codex round-6): rows the parser dropped/flagged — they
+              will be EXCLUDED from posting and recorded as durable import
+              rejections on commit, so the operator confirms with full truth. */}
+          {(preview.summary.rejected_row_count ?? 0) > 0 && (
+            <div className="rounded border border-amber-500 bg-amber-500/10 p-3 text-sm">
+              <div className="mb-2 font-medium">
+                {preview.summary.rejected_row_count} source row(s) will be rejected
+              </div>
+              <ul className="space-y-1 pl-6">
+                {(preview.summary.rejected_rows ?? []).slice(0, 10).map((r, i) => (
+                  <li key={i} className="list-disc">
+                    Row {r.row_index}: {r.reason_code} — {r.reason_message}
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-2 text-xs text-muted-foreground">
+                Rejected rows are excluded from the posted totals and recorded under
+                Finance → Exceptions on import.
+              </p>
+            </div>
+          )}
+
           {/* Periods affected */}
           <PeriodsAffected preview={preview} />
 

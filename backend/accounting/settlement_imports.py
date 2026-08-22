@@ -949,46 +949,12 @@ def import_settlement_csv(
                 if _cur:
                     require_pilot_currency(company, _cur, context=f"Settlement rejected row {_desc.get('row_index')}")
 
-    if not batches:
-        # Every row was dropped (e.g. all blank batch ids): there is nothing to
-        # import — and nothing for the BATCH-level gates below to gate (the
-        # reject-row currency sweep above already ran) — but the dropped rows
-        # must not vanish. Persist the evidence, then return.
-        persist_import_rejects(
-            company,
-            source_kind="SETTLEMENT",
-            provider_code=code,
-            source_filename=source_filename,
-            import_batch_id=batch_uuid,
-            rejects=parse_rejects,
-        )
-        return []
-
-    # A4: the constrained pilot ingests its home currency (EGP) only. Reject any
-    # foreign-currency batch up-front — before a single PAYMENT_SETTLEMENT_RECEIVED
-    # event is emitted — so no FX conversion is ever booked and no partial import
-    # is left behind.
-    #
-    # A4 RUNTIME-ADMISSION-SERIALIZATION RESIDUAL (design-deferred): this importer
-    # commits each batch in its OWN top-level transaction (the per-batch
-    # `with transaction.atomic()` below; the caller opens no outer atomic), so no
-    # single Company admission lock can span the whole authoritative import. This
-    # up-front currency sweep therefore runs UNLOCKED (point-in-time). Serializing
-    # it would require either collapsing the deliberate per-batch commit /
-    # partial-import model into one all-or-nothing transaction, or per-batch
-    # admission locking that turns whole-file rejection into per-batch rejection —
-    # both are behavior changes out of scope here. Tracked as a residual; see
-    # docs/status/constrained_pilot_status.md (A4 residuals).
-    from accounts.pilot_policy import require_pilot_currency
-
-    for _batch in batches:
-        _cur = (
-            str(_batch.get("currency") or "").strip().upper() or company.functional_currency or company.default_currency
-        )
-        require_pilot_currency(company, _cur, context=f"Settlement batch {_batch.get('payout_batch_id')}")
-
     # A85 chunk 3b: validate override params before emitting anything.
     # If validation fails, raise SettlementImportError (caller surfaces to user).
+    # Codex round-6: this block sits ABOVE the all-rejected early return so a
+    # request carrying an INVALID override (bad permission, short reason,
+    # closed/missing target period) refuses even when every row was rejected —
+    # request-level admission gates must run before ANY durable write.
     override_active = bool(period_override and fiscal_year_override)
     if override_active:
         if not override_user:
@@ -1035,6 +1001,45 @@ def import_settlement_csv(
                 f"Target override period {period_override}/{fiscal_year_override} "
                 f"is {target_fp.status}; can only override to an OPEN period."
             )
+
+    if not batches:
+        # Every row was dropped (e.g. all blank batch ids): there is nothing to
+        # import — and nothing for the BATCH-level gates below to gate (the
+        # reject-row currency sweep and override validation above already ran)
+        # — but the dropped rows must not vanish. Persist the evidence, then
+        # return.
+        persist_import_rejects(
+            company,
+            source_kind="SETTLEMENT",
+            provider_code=code,
+            source_filename=source_filename,
+            import_batch_id=batch_uuid,
+            rejects=parse_rejects,
+        )
+        return []
+
+    # A4: the constrained pilot ingests its home currency (EGP) only. Reject any
+    # foreign-currency batch up-front — before a single PAYMENT_SETTLEMENT_RECEIVED
+    # event is emitted — so no FX conversion is ever booked and no partial import
+    # is left behind.
+    #
+    # A4 RUNTIME-ADMISSION-SERIALIZATION RESIDUAL (design-deferred): this importer
+    # commits each batch in its OWN top-level transaction (the per-batch
+    # `with transaction.atomic()` below; the caller opens no outer atomic), so no
+    # single Company admission lock can span the whole authoritative import. This
+    # up-front currency sweep therefore runs UNLOCKED (point-in-time). Serializing
+    # it would require either collapsing the deliberate per-batch commit /
+    # partial-import model into one all-or-nothing transaction, or per-batch
+    # admission locking that turns whole-file rejection into per-batch rejection —
+    # both are behavior changes out of scope here. Tracked as a residual; see
+    # docs/status/constrained_pilot_status.md (A4 residuals).
+    from accounts.pilot_policy import require_pilot_currency
+
+    for _batch in batches:
+        _cur = (
+            str(_batch.get("currency") or "").strip().upper() or company.functional_currency or company.default_currency
+        )
+        require_pilot_currency(company, _cur, context=f"Settlement batch {_batch.get('payout_batch_id')}")
 
     # A5-PR3b: every whole-file gate has passed — the import WILL proceed, so
     # the parser's dropped/flagged rows become durable evidence now. Outside

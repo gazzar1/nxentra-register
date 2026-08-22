@@ -142,13 +142,21 @@ export default function SettlementImportPage() {
 
       const newBatches = result.batches.filter((b) => !b.deduplicated).length;
       const dupBatches = result.batches.length - newBatches;
+      // A5-PR3b (Codex round-6): a partial import must never read as wholly
+      // successful — surface the rejected-row count alongside the batch count.
+      const rejectedRows = result.rejected_row_count ?? 0;
       toast({
         title:
           newBatches > 0
             ? `Imported ${newBatches} batch(es) from ${pendingProvider}${
                 override ? " (period overridden)" : ""
-              }.`
+              }${rejectedRows > 0 ? ` — ${rejectedRows} row(s) rejected` : ""}.`
             : `No new batches — all ${dupBatches} were already imported.`,
+        description:
+          rejectedRows > 0
+            ? "Rejected rows were excluded from posting and are listed under Finance → Exceptions."
+            : undefined,
+        variant: rejectedRows > 0 ? "destructive" : undefined,
       });
 
       setPreviewModalOpen(false);
@@ -318,6 +326,29 @@ function ProviderUploader({
         {state.result && state.result.batches.length === 0 && (
           <div className="rounded-md border bg-muted/40 p-3 text-xs text-muted-foreground italic">
             No batches found in this CSV.
+          </div>
+        )}
+
+        {/* A5-PR3b (Codex round-6): a partial import must never read as wholly
+            successful — surface the rows that were rejected/excluded. */}
+        {state.result && (state.result.rejected_row_count ?? 0) > 0 && (
+          <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+            <div>
+              <p className="font-medium">
+                {state.result.rejected_row_count} source row(s) rejected — excluded from posting.
+              </p>
+              <ul className="mt-1 space-y-0.5">
+                {(state.result.rejected_rows ?? []).slice(0, 5).map((r, i) => (
+                  <li key={i}>
+                    Row {r.row_index}: {r.reason_code} — {r.reason_message}
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-1 text-muted-foreground">
+                Full list under Finance → Exceptions.
+              </p>
+            </div>
           </div>
         )}
 

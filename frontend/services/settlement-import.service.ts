@@ -48,6 +48,16 @@ export interface PreviewedPeriod {
   journal_entries: number;
 }
 
+// A5-PR3b: a source row the parser dropped/flagged — durable ImportRejectedRow
+// evidence on commit, surfaced here so a partial import is never presented as
+// wholly successful.
+export interface SettlementRejectedRow {
+  row_index: number;
+  reason_code: string;
+  reason_message: string;
+  status?: string;
+}
+
 export interface SettlementImportPreview {
   provider: SettlementProvider;
   filename: string;
@@ -61,6 +71,8 @@ export interface SettlementImportPreview {
     total_gross: string;
     total_fees: string;
     total_net: string;
+    rejected_row_count: number;
+    rejected_rows: SettlementRejectedRow[];
   };
 }
 
@@ -90,6 +102,11 @@ export interface CommitResult {
     unknown_order_ids: string[];
   }>;
   batch_count: number;
+  // A5-PR3b: this upload's durable reject evidence (grouped by import_batch_id;
+  // listed under Finance → Exceptions).
+  import_batch_id: string;
+  rejected_row_count: number;
+  rejected_rows: SettlementRejectedRow[];
 }
 
 export interface OpenFiscalPeriod {

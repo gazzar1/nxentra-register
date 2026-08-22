@@ -28,6 +28,16 @@ export interface SettlementImportResponse {
   filename: string;
   batches: SettlementImportBatch[];
   batch_count: number;
+  // A5-PR3b: durable per-row reject evidence for this upload (excluded from
+  // posting; listed under Finance → Exceptions, grouped by import_batch_id).
+  import_batch_id: string;
+  rejected_row_count: number;
+  rejected_rows: Array<{
+    row_index: number;
+    reason_code: string;
+    reason_message: string;
+    status?: string;
+  }>;
 }
 
 export type SettlementProviderCode = "paymob" | "bosta";

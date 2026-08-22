@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { GetServerSideProps } from "next";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useRouter } from "next/router";
@@ -86,6 +86,11 @@ export default function ImportStatementPage() {
   const [parsingLines, setParsingLines] = useState(false);
   const [importing, setImporting] = useState(false);
   const [mapDialogOpen, setMapDialogOpen] = useState(false);
+  // A5-PR3c (Codex round-6): monotonic parse generation. Selecting a new file
+  // (or account) bumps it; an in-flight parse response captured under an older
+  // generation is DISCARDED, so a slow response for file A can never repopulate
+  // state (and re-enable the reject-only action) after file B was selected.
+  const parseGenRef = useRef(0);
 
   // Bank/cash accounts only
   const bankAccounts =
@@ -95,6 +100,7 @@ export default function ImportStatementPage() {
 
   // Reset parsed state when account changes — saved mapping is per-account.
   useEffect(() => {
+    parseGenRef.current += 1;
     setHeaders([]);
     setSampleRows([]);
     setMapping(null);
@@ -105,11 +111,13 @@ export default function ImportStatementPage() {
 
   const handleParseHeaders = async () => {
     if (!csvFile) return;
+    const gen = parseGenRef.current;
     setParsingHeaders(true);
     try {
       const formData = new FormData();
       formData.append("file", csvFile);
       const { data } = await bankReconciliationService.parseCSVHeaders(formData);
+      if (gen !== parseGenRef.current) return; // stale file — discard
       setHeaders(data.headers);
       setSampleRows(data.sample_rows);
       setMapDialogOpen(true);
@@ -124,6 +132,7 @@ export default function ImportStatementPage() {
     setMapping(m);
     saveMapping(form.account_id, m);
     if (!csvFile) return;
+    const gen = parseGenRef.current;
     setParsingLines(true);
     try {
       const formData = new FormData();
@@ -137,6 +146,7 @@ export default function ImportStatementPage() {
       formData.append("date_format", m.date_format);
 
       const { data } = await bankReconciliationService.parseCSV(formData);
+      if (gen !== parseGenRef.current) return; // a different file was selected mid-flight — discard
       setParsedLines(
         data.lines.map((l: Record<string, string>) => ({
           line_date: l.line_date || "",
@@ -356,6 +366,10 @@ export default function ImportStatementPage() {
                   type="file"
                   accept=".csv"
                   onChange={(e) => {
+                    // A5-PR3c (Codex round-6): invalidate any in-flight parse
+                    // for the previous file — a slow response must not
+                    // repopulate state after this reset.
+                    parseGenRef.current += 1;
                     setCsvFile(e.target.files?.[0] || null);
                     setHeaders([]);
                     setSampleRows([]);
