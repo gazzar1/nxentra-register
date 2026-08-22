@@ -107,5 +107,49 @@ purge gate-before-delete test, and the auto-fetch no-network deny test).
 
 ## Exception scope
 
-Exactly the seven sites named above. Any additional member of either set
-requires amending this ADR (or a new one); membership may shrink freely.
+Exactly the seven sites named above, together with any sites added under
+**Amendments** below. Any additional member of either set requires amending this
+ADR (or a new one); membership may shrink freely.
+
+## Amendments
+
+### 2026-08-22 — add `backfill_platform_settlement_dims` to `A4_OPERATOR_CLI_REFUSAL_SITES`
+
+The A5 Step-0 durable-outcome assessment found one further ungated operator CLI
+of the same class:
+`platform_connectors/management/commands/backfill_platform_settlement_dims.py`
+(the A139 retro-tag of platform charge/refund clearing lines). Its `--apply`
+mode emits `JOURNAL_LINE_ANALYSIS_SET` events **and** writes
+`JournalLineAnalysis` rows across every company under `rls_bypass()`, below the
+A4 runtime gates — the same "writes state below the gates" hazard as
+`import_tenant_events`. Its report-only default is a pure read and is left
+available (the `--dry-run`-equivalent carve-out `import_tenant_events` already
+uses).
+
+Disposition: identical to the six original operator-CLI refusals — a
+point-in-time `Command.handle`-entry refusal **paired with a named preflight
+drift backstop** (the two-part shape this ADR's admission criterion requires).
+The `--apply` path calls the deployment-wide gate (`deployment_has_pilot()` →
+`CommandError`) at `Command.handle` entry, and the site
+`platform_connectors/management/commands/backfill_platform_settlement_dims.py::Command.handle`
+is added to `A4_OPERATOR_CLI_REFUSAL_SITES`. Effective membership of that set is
+now **seven**; total admitted unlocked sites across both witnessed sets, **eight**.
+
+The point-in-time race this leaves — an `--apply` admitted on a cached `NONE`
+profile that commits after a concurrent `activate_pilot_profile` — is closed by a
+new named drift backstop, exactly as `seeded_event_residue` backstops the seed
+CLIs: the backfill stamps every `JOURNAL_LINE_ANALYSIS_SET` event it emits with
+`metadata.source="backfill_platform_settlement_dims"`, and the
+**`backfill_settlement_dims_residue`** preflight check
+(`_backfill_dims_residue_violations` in `accounts/pilot_preflight.py`) makes
+activation — and every post-sync/import drift check — refuse whenever any such
+event exists. The event is the canonical marker (a legitimate posting-time
+projection also writes `JournalLineAnalysis` rows, so only the event metadata
+distinguishes backfill residue), and the backfill commits each row and its
+marker event ATOMICALLY (`_tag_line_durably` wraps both in one
+`transaction.atomic()`), so a committed backfill row can never exist without its
+event — the event-keyed backstop catches every committed mutation and no partial
+write can hide from both the retry and the check. Behavior pinned by
+`test_backfill_platform_settlement_dims_refuses_apply_on_pilot_deployment` (and
+the report-only counterpart) and `test_preflight_detects_backfill_settlement_dims_residue`
+in `backend/tests/test_a4_dispositions.py`.

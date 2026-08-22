@@ -33,7 +33,8 @@ Usage:
 import hashlib
 import json
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
+from django.db import transaction
 from django.db.models import F
 
 from accounting.mappings import ModuleAccountMapping
@@ -65,38 +66,45 @@ def _untagged_lines(company, provider, clearing, dimension, revenue_account):
 
 
 def _tag_line_durably(company, line, dimension, value):
-    """Row now + JOURNAL_LINE_ANALYSIS_SET event (full tag union) for replay."""
-    with projection_writes_allowed():
-        JournalLineAnalysis.objects.projection().get_or_create(
-            journal_line=line,
-            dimension=dimension,
-            defaults={"company": company, "dimension_value": value},
-        )
+    """Row + JOURNAL_LINE_ANALYSIS_SET event (full tag union) for replay,
+    committed ATOMICALLY. A committed row without its marker event would be
+    invisible to BOTH the retry (``_untagged_lines`` excludes the now-tagged
+    row) AND the ``backfill_settlement_dims_residue`` preflight backstop (which
+    keys on the event's ``metadata.source``). The event is the canonical residue
+    marker, so a partial write must never persist: this atomic guarantees
+    row ⟺ event — either both land or neither does."""
+    with transaction.atomic():
+        with projection_writes_allowed():
+            JournalLineAnalysis.objects.projection().get_or_create(
+                journal_line=line,
+                dimension=dimension,
+                defaults={"company": company, "dimension_value": value},
+            )
 
-    tag_data = [
-        {
-            "dimension_public_id": str(a.dimension.public_id),
-            "dimension_code": a.dimension.code,
-            "value_public_id": str(a.dimension_value.public_id),
-            "value_code": a.dimension_value.code,
-        }
-        for a in line.analysis_tags.select_related("dimension", "dimension_value").order_by("dimension__code")
-    ]
-    entry_public_id = str(line.entry.public_id)
-    digest = hashlib.sha256(json.dumps(tag_data, sort_keys=True).encode()).hexdigest()[:16]
-    emit_event_no_actor(
-        company=company,
-        event_type=EventTypes.JOURNAL_LINE_ANALYSIS_SET,
-        aggregate_type="JournalEntry",
-        aggregate_id=entry_public_id,
-        idempotency_key=f"journal_line.analysis_set:{entry_public_id}:{line.line_no}:{digest}",
-        metadata={"source": "backfill_platform_settlement_dims"},
-        data=JournalLineAnalysisSetData(
-            entry_public_id=entry_public_id,
-            line_no=line.line_no,
-            analysis_tags=tag_data,
-        ),
-    )
+        tag_data = [
+            {
+                "dimension_public_id": str(a.dimension.public_id),
+                "dimension_code": a.dimension.code,
+                "value_public_id": str(a.dimension_value.public_id),
+                "value_code": a.dimension_value.code,
+            }
+            for a in line.analysis_tags.select_related("dimension", "dimension_value").order_by("dimension__code")
+        ]
+        entry_public_id = str(line.entry.public_id)
+        digest = hashlib.sha256(json.dumps(tag_data, sort_keys=True).encode()).hexdigest()[:16]
+        emit_event_no_actor(
+            company=company,
+            event_type=EventTypes.JOURNAL_LINE_ANALYSIS_SET,
+            aggregate_type="JournalEntry",
+            aggregate_id=entry_public_id,
+            idempotency_key=f"journal_line.analysis_set:{entry_public_id}:{line.line_no}:{digest}",
+            metadata={"source": "backfill_platform_settlement_dims"},
+            data=JournalLineAnalysisSetData(
+                entry_public_id=entry_public_id,
+                line_no=line.line_no,
+                analysis_tags=tag_data,
+            ),
+        )
 
 
 def backfill_company(company, apply: bool) -> list[dict]:
@@ -155,6 +163,24 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         apply = options["apply"]
+        # A4: refuse the WRITE on a pilot DEPLOYMENT. --apply emits
+        # JOURNAL_LINE_ANALYSIS_SET events and writes JournalLineAnalysis rows
+        # across every company under rls_bypass(), below the A4 runtime gates;
+        # on the pilot's single-tenant box that bypasses the whole A4 boundary.
+        # Report-only (no --apply) is a pure read and stays available, mirroring
+        # import_tenant_events' --dry-run carve-out. Deployment-wide (not
+        # per-company): a backfill into ANY company on the pilot database breaks
+        # the isolation invariant. (ADR-0004: A4_OPERATOR_CLI_REFUSAL_SITES.)
+        if apply:
+            from accounts.pilot_policy import deployment_has_pilot
+
+            if deployment_has_pilot():
+                raise CommandError(
+                    "Refusing to run backfill_platform_settlement_dims --apply: "
+                    "this deployment hosts a constrained-pilot company. The "
+                    "backfill emits events and writes analysis rows below the A4 "
+                    "runtime gates and must never run on a pilot deployment."
+                )
         with rls_bypass():
             companies = Company.objects.all()
             if options["company_id"]:

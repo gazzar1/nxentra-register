@@ -379,6 +379,36 @@ def test_import_tenant_events_refuses_on_pilot_deployment(tmp_path, company):
 
 
 @pytest.mark.django_db
+def test_backfill_platform_settlement_dims_refuses_apply_on_pilot_deployment(company):
+    """A5 Step-0 residual: --apply emits JOURNAL_LINE_ANALYSIS_SET events + writes
+    rows below the A4 gates, so it must refuse before any write on a pilot
+    deployment — no event may be emitted."""
+    from django.core.management import CommandError, call_command
+
+    from events.models import BusinessEvent
+
+    _make_pilot(company)
+    before = BusinessEvent.objects.filter(company=company).count()
+    with pytest.raises(CommandError, match="pilot"):
+        call_command("backfill_platform_settlement_dims", "--apply")
+    assert BusinessEvent.objects.filter(company=company).count() == before
+
+
+@pytest.mark.django_db
+def test_backfill_platform_settlement_dims_report_only_allowed_on_pilot(company):
+    """Report-only (no --apply) is a pure read and stays available on a pilot
+    deployment, mirroring import_tenant_events' --dry-run carve-out."""
+    from django.core.management import call_command
+
+    from events.models import BusinessEvent
+
+    _make_pilot(company)
+    before = BusinessEvent.objects.filter(company=company).count()
+    call_command("backfill_platform_settlement_dims")  # must not raise
+    assert BusinessEvent.objects.filter(company=company).count() == before
+
+
+@pytest.mark.django_db
 def test_purge_orphan_je_events_refuses_before_any_delete(company):
     from django.core.management import CommandError, call_command
 
@@ -690,6 +720,27 @@ def test_preflight_detects_seeded_events(company, owner_membership):
 
 
 @pytest.mark.django_db
+def test_preflight_detects_backfill_settlement_dims_residue(company, owner_membership):
+    """ADR-0004 amendment: the settlement-dimension backfill's point-in-time
+    handle()-entry refusal is backstopped by this residue check — a backfill
+    event on a pilot database blocks activation and every drift check."""
+    from events.models import BusinessEvent
+
+    _make_pilot(company)
+    BusinessEvent.objects.create(
+        company=company,
+        event_type="journal_line.analysis_set",
+        aggregate_type="JournalEntry",
+        aggregate_id="je-1",
+        idempotency_key="a4-backfill-residue-1",
+        company_sequence=990301,
+        data={},
+        metadata={"source": "backfill_platform_settlement_dims"},
+    )
+    assert "backfill_settlement_dims_residue" in _run_preflight(company)
+
+
+@pytest.mark.django_db
 def test_preflight_detects_rebuild_in_flight(company, owner_membership):
     from projections.models import ProjectionStatus
 
@@ -723,6 +774,7 @@ def test_preflight_clean_company_fires_none_of_the_new_codes(company, user, owne
         "external_api_key_present",
         "seeded_event_residue",
         "projection_rebuild_in_flight",
+        "backfill_settlement_dims_residue",
     }
     assert not (codes & new_codes), codes & new_codes
 

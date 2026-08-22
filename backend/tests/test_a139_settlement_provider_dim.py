@@ -399,6 +399,35 @@ def test_backfill_tags_survive_projection_replay(client, company, stripe_ready):
 
 
 @pytest.mark.django_db
+def test_backfill_tag_row_and_event_commit_atomically(client, company, stripe_ready, monkeypatch):
+    """Codex round-2 P2: the analysis row and its JOURNAL_LINE_ANALYSIS_SET marker
+    must commit atomically. A committed row without its event would be invisible
+    to BOTH the retry (_untagged_lines excludes the tagged row) and the
+    backfill_settlement_dims_residue backstop (event-keyed) — a below-gate
+    mutation that hides from every detector. If the event emit fails, the row
+    write must roll back with it."""
+    from accounting.models import JournalLineAnalysis
+    from platform_connectors.management.commands import backfill_platform_settlement_dims as cmd
+
+    assert _post_webhook(client, _charge_event("ch_atomic")).status_code == 200
+    _process_platform_projection(company)
+    # Simulate pre-A139 untagged rows so the backfill has a line to tag.
+    JournalLineAnalysis.objects.filter(company=company).delete()
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("event emit failed mid-backfill")
+
+    monkeypatch.setattr(cmd, "emit_event_no_actor", _boom)
+
+    with pytest.raises(RuntimeError):
+        cmd.backfill_company(company, apply=True)
+
+    # The row write must have rolled back with the failed event — no partial,
+    # undetectable state survives.
+    assert not JournalLineAnalysis.objects.filter(company=company).exists()
+
+
+@pytest.mark.django_db
 def test_attach_dimensions_compat_import(client, company, stripe_ready):
     """shopify_connector imports _attach_dimensions inside a broad try/except —
     if the symbol disappears, restock JEs silently lose all dims. Pin both the
