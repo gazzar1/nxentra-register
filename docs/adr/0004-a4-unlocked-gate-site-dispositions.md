@@ -107,5 +107,31 @@ purge gate-before-delete test, and the auto-fetch no-network deny test).
 
 ## Exception scope
 
-Exactly the seven sites named above. Any additional member of either set
-requires amending this ADR (or a new one); membership may shrink freely.
+Exactly the seven sites named above, together with any sites added under
+**Amendments** below. Any additional member of either set requires amending this
+ADR (or a new one); membership may shrink freely.
+
+## Amendments
+
+### 2026-08-22 — add `backfill_platform_settlement_dims` to `A4_OPERATOR_CLI_REFUSAL_SITES`
+
+The A5 Step-0 durable-outcome assessment found one further ungated operator CLI
+of the same class:
+`platform_connectors/management/commands/backfill_platform_settlement_dims.py`
+(the A139 retro-tag of platform charge/refund clearing lines). Its `--apply`
+mode emits `JOURNAL_LINE_ANALYSIS_SET` events **and** writes
+`JournalLineAnalysis` rows across every company under `rls_bypass()`, below the
+A4 runtime gates — the same "writes state below the gates" hazard as
+`import_tenant_events`. Its report-only default is a pure read and is left
+available (the `--dry-run`-equivalent carve-out `import_tenant_events` already
+uses).
+
+Disposition: identical to the six original operator-CLI refusals. The command's
+`--apply` path calls the deployment-wide gate (`deployment_has_pilot()` →
+`CommandError`) at `Command.handle` entry, and the site
+`platform_connectors/management/commands/backfill_platform_settlement_dims.py::Command.handle`
+is added to `A4_OPERATOR_CLI_REFUSAL_SITES`. Effective membership of that set is
+now **seven**; total admitted unlocked sites across both witnessed sets, **eight**.
+Behavior pinned by
+`test_backfill_platform_settlement_dims_refuses_apply_on_pilot_deployment` (and
+the report-only counterpart) in `backend/tests/test_a4_dispositions.py`.

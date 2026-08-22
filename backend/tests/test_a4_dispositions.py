@@ -379,6 +379,36 @@ def test_import_tenant_events_refuses_on_pilot_deployment(tmp_path, company):
 
 
 @pytest.mark.django_db
+def test_backfill_platform_settlement_dims_refuses_apply_on_pilot_deployment(company):
+    """A5 Step-0 residual: --apply emits JOURNAL_LINE_ANALYSIS_SET events + writes
+    rows below the A4 gates, so it must refuse before any write on a pilot
+    deployment — no event may be emitted."""
+    from django.core.management import CommandError, call_command
+
+    from events.models import BusinessEvent
+
+    _make_pilot(company)
+    before = BusinessEvent.objects.filter(company=company).count()
+    with pytest.raises(CommandError, match="pilot"):
+        call_command("backfill_platform_settlement_dims", "--apply")
+    assert BusinessEvent.objects.filter(company=company).count() == before
+
+
+@pytest.mark.django_db
+def test_backfill_platform_settlement_dims_report_only_allowed_on_pilot(company):
+    """Report-only (no --apply) is a pure read and stays available on a pilot
+    deployment, mirroring import_tenant_events' --dry-run carve-out."""
+    from django.core.management import call_command
+
+    from events.models import BusinessEvent
+
+    _make_pilot(company)
+    before = BusinessEvent.objects.filter(company=company).count()
+    call_command("backfill_platform_settlement_dims")  # must not raise
+    assert BusinessEvent.objects.filter(company=company).count() == before
+
+
+@pytest.mark.django_db
 def test_purge_orphan_je_events_refuses_before_any_delete(company):
     from django.core.management import CommandError, call_command
 

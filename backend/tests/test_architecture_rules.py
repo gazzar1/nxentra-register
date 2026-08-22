@@ -1907,6 +1907,12 @@ A4_OPERATOR_CLI_REFUSAL_SITES: frozenset[str] = frozenset(
         "shopify_connector/management/commands/seed_test_payout.py::Command.handle",
         "stripe_connector/management/commands/seed_stripe_demo.py::Command.handle",
         "tenant/management/commands/import_tenant_events.py::Command.handle",
+        # A5 Step-0 assessment (2026-08-22): the A139 retro-tag backfill emits
+        # JOURNAL_LINE_ANALYSIS_SET events + writes JournalLineAnalysis rows
+        # below the gates on --apply (report-only stays available). Same
+        # operator-CLI entry-refusal disposition as the six above — see
+        # ADR-0004 Amendments.
+        "platform_connectors/management/commands/backfill_platform_settlement_dims.py::Command.handle",
     }
 )
 
