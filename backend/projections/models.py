@@ -193,6 +193,8 @@ class AccountBalance(ProjectionOwnedModel):
         apply_facts_cache: dict = {}
         apply_excluded_ids = excluded_posted_event_ids(self.company)
 
+        from accounting.posted_journal_apply import canonical_line_account_id
+
         for event in events:
             # A3-PR3 (Codex round-12 P1): fold only apply-accepted events —
             # see AccountBalanceProjection.verify_all_balances.
@@ -200,7 +202,8 @@ class AccountBalance(ProjectionOwnedModel):
                 continue
             lines = event.get_data().get("lines", [])
             for line_data in lines:
-                if line_data.get("account_public_id") != account_public_id:
+                # Codex round-18 P1: canonical identity comparison.
+                if canonical_line_account_id(line_data) != account_public_id:
                     continue
                 if line_is_memo(line_data, memo_ids):
                     continue

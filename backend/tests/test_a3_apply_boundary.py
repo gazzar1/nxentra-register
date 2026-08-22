@@ -296,6 +296,55 @@ class TestPostedApplyEnforcement:
         verdict = revenue.verify_integrity()
         assert verdict["is_valid"], verdict
 
+    def test_uppercase_line_spelling_agrees_across_balance_and_verification(
+        self, company, user, cash_account, revenue_account
+    ):
+        """Codex round-18 P1: an accepted payload spelling its line account
+        ids in uppercase lands in balances (UUIDField canonicalizes) — the
+        verification fold must compare canonically too, or it reports a
+        false mismatch on a healthy balance."""
+        payload = _posted_payload(uuid4(), user, cash_account, revenue_account)
+        payload["lines"][0]["account_public_id"] = str(cash_account.public_id).upper()
+        payload["lines"][1]["account_public_id"] = str(revenue_account.public_id).upper()
+        _emit_posted(company, user, payload)
+
+        balances = AccountBalanceProjection()
+        balances.process_pending(company)
+
+        cash = AccountBalance.objects.get(company=company, account=cash_account)
+        assert cash.debit_total == Decimal("100.00")
+        verdict = cash.verify_integrity()
+        assert verdict["is_valid"], verdict
+
+    def test_recent_activity_returns_ten_accepted_entries(
+        self, company, user, owner_membership, cash_account, revenue_account
+    ):
+        """Codex round-18 P2: the widget slices AFTER the acceptance filter —
+        a quarantined newest event must not shrink the list while older
+        accepted journals exist."""
+        from django.urls import reverse
+        from rest_framework.test import APIClient
+
+        user.active_company = company
+        user.save()
+
+        for _ in range(11):
+            _emit_posted(company, user, _posted_payload(uuid4(), user, cash_account, revenue_account, amount="10.00"))
+        # Newest event: quarantined (unbalanced after corruption).
+        payload = _posted_payload(uuid4(), user, cash_account, revenue_account, amount="20.00")
+        bad_event = _emit_posted(company, user, payload)
+        corrupted = dict(payload)
+        corrupted["lines"] = [dict(payload["lines"][0]), dict(payload["lines"][1], credit="19.00")]
+        _corrupt(bad_event, corrupted)
+        JournalEntryProjection().process_pending(company)  # persists the quarantine disposition
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+        resp = client.get(reverse("projections:dashboard-widgets"))
+        assert resp.status_code == 200, resp.content
+        recent = resp.json().get("recent_activity", [])
+        assert len(recent) == 10, f"expected 10 accepted entries, got {len(recent)}"
+
     def test_legacy_operator_resolved_halt_does_not_eclipse_applied_event(
         self, company, user, cash_account, revenue_account
     ):

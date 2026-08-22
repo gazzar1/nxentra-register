@@ -606,6 +606,20 @@ def memo_account_public_ids(company) -> frozenset[str]:
     return frozenset(cid for cid in (canonical_account_id(pid) for pid in rows) if cid is not None)
 
 
+def canonical_line_account_id(line: object):
+    """Canonical account id of one payload line for READER lookups (Codex
+    round-18 P1): accepted payloads may spell UUIDs in any equivalent form,
+    and reader dictionaries key on canonical ``str(public_id)`` — a raw-text
+    lookup would silently drop the line's movement from reports and
+    verification while the balances include it. Returns the canonical
+    lowercase string, or None for a missing/malformed reference."""
+    from accounting.journal_invariant import canonical_account_id
+
+    if not isinstance(line, dict):
+        return None
+    return canonical_account_id(line.get("account_public_id"))
+
+
 def line_is_memo(line: object, memo_ids: frozenset[str]) -> bool:
     """Account-derived memo verdict for one payload line (see
     :func:`memo_account_public_ids`). The raw flag is never consulted."""

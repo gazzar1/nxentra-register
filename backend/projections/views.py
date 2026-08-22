@@ -244,6 +244,7 @@ class TrialBalanceView(DimensionFilterMixin, APIView):
         # never the raw payload flag — otherwise these reports disagree
         # with the accepted journal and the projected balances.
         from accounting.posted_journal_apply import (
+            canonical_line_account_id,
             excluded_posted_event_ids,
             line_is_memo,
             memo_account_public_ids,
@@ -269,7 +270,7 @@ class TrialBalanceView(DimensionFilterMixin, APIView):
 
             lines = event.get_data().get("lines", [])
             for line in lines:
-                account_public_id = line.get("account_public_id")
+                account_public_id = canonical_line_account_id(line)
                 if not account_public_id or account_public_id not in account_data:
                     continue
 
@@ -721,6 +722,7 @@ class BalanceSheetView(DimensionFilterMixin, APIView):
         # never the raw payload flag — otherwise these reports disagree
         # with the accepted journal and the projected balances.
         from accounting.posted_journal_apply import (
+            canonical_line_account_id,
             excluded_posted_event_ids,
             line_is_memo,
             memo_account_public_ids,
@@ -753,7 +755,7 @@ class BalanceSheetView(DimensionFilterMixin, APIView):
 
             lines = event.get_data().get("lines", [])
             for line in lines:
-                account_public_id = line.get("account_public_id")
+                account_public_id = canonical_line_account_id(line)
                 if not account_public_id or account_public_id not in account_data:
                     continue
 
@@ -1237,6 +1239,7 @@ class IncomeStatementView(DimensionFilterMixin, APIView):
         # never the raw payload flag — otherwise these reports disagree
         # with the accepted journal and the projected balances.
         from accounting.posted_journal_apply import (
+            canonical_line_account_id,
             excluded_posted_event_ids,
             line_is_memo,
             memo_account_public_ids,
@@ -1266,7 +1269,7 @@ class IncomeStatementView(DimensionFilterMixin, APIView):
 
             lines = event.get_data().get("lines", [])
             for line in lines:
-                account_public_id = line.get("account_public_id")
+                account_public_id = canonical_line_account_id(line)
                 if not account_public_id or account_public_id not in account_data:
                     continue
 
@@ -2168,6 +2171,7 @@ class DimensionPLComparisonView(DimensionFilterMixin, APIView):
         # never the raw payload flag — otherwise these reports disagree
         # with the accepted journal and the projected balances.
         from accounting.posted_journal_apply import (
+            canonical_line_account_id,
             excluded_posted_event_ids,
             line_is_memo,
             memo_account_public_ids,
@@ -2193,7 +2197,7 @@ class DimensionPLComparisonView(DimensionFilterMixin, APIView):
 
             lines = event.get_data().get("lines", [])
             for line in lines:
-                account_public_id = line.get("account_public_id")
+                account_public_id = canonical_line_account_id(line)
                 if not account_public_id or account_public_id not in account_lookup:
                     continue
 
@@ -3483,6 +3487,7 @@ class DashboardChartsView(APIView):
         # never the raw payload flag — otherwise these reports disagree
         # with the accepted journal and the projected balances.
         from accounting.posted_journal_apply import (
+            canonical_line_account_id,
             excluded_posted_event_ids,
             line_is_memo,
             memo_account_public_ids,
@@ -3507,7 +3512,7 @@ class DashboardChartsView(APIView):
 
             lines = event.get_data().get("lines", [])
             for line in lines:
-                account_public_id = line.get("account_public_id")
+                account_public_id = canonical_line_account_id(line)
                 if not account_public_id:
                     continue
 
@@ -3726,10 +3731,18 @@ class DashboardWidgetsView(APIView):
             # ═══════════════════════════════════════════════════════════════
             # 3. Recent Activity — last 10 posted journal entries
             # ═══════════════════════════════════════════════════════════════
-            recent_events = BusinessEvent.objects.filter(
-                company=actor.company,
-                event_type=EventTypes.JOURNAL_ENTRY_POSTED,
-            ).order_by("-company_sequence")[:10]
+            # Codex round-18 P2: slice AFTER the acceptance filter — the ten
+            # newest STORED events may include quarantined ones, and slicing
+            # first would shrink (or empty) the widget while older accepted
+            # journals exist. Iterate newest-first and stop at ten accepted.
+            recent_events = (
+                BusinessEvent.objects.filter(
+                    company=actor.company,
+                    event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+                )
+                .order_by("-company_sequence")
+                .iterator(chunk_size=50)
+            )
 
             recent_activity = []
             # A3-PR3 (Codex round-11 P1): memo classification for event-fold
@@ -3750,6 +3763,8 @@ class DashboardWidgetsView(APIView):
                 # A3-PR3 (Codex round-12 P1): fold only events the apply boundary
                 # ACCEPTS — a quarantined/deferred event is not in the canonical
                 # balances, and folding it would misstate the report.
+                if len(recent_activity) >= 10:
+                    break
                 if not posted_event_accepted_for_apply(event, apply_facts_cache, apply_excluded_ids):
                     continue
                 ev_data = event.get_data()

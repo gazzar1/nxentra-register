@@ -368,7 +368,12 @@ class AccountBalanceProjection(BaseProjection):
             data = event.get_data()
             lines = data.get("lines", [])
             for line_data in lines:
-                account_public_id = line_data.get("account_public_id")
+                # Codex round-18 P1: canonical identity for the aggregation
+                # key — accepted payloads may spell UUIDs in any equivalent
+                # form, and the comparison below keys on str(public_id).
+                from accounting.posted_journal_apply import canonical_line_account_id
+
+                account_public_id = canonical_line_account_id(line_data)
                 if not account_public_id:
                     continue
                 if line_is_memo(line_data, memo_ids):
