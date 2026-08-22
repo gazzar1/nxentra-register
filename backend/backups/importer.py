@@ -331,7 +331,37 @@ def _verify_restore(company, manifest, manifest_counts, stats, *, skip_invariant
         .select_related("payload_ref")
         .order_by("company_sequence")
     )
+    from events.models import EventBookmark
+    from projections.account_balance import AccountBalanceProjection
+    from projections.accounting import JournalEntryProjection
+    from projections.dimension_balance import DimensionBalanceProjection
     from projections.models import ProjectionAppliedEvent
+    from projections.period_balance import PeriodAccountBalanceProjection
+    from projections.subledger_balance import SubledgerBalanceProjection
+
+    # Codex round-19 P2: bookmarks are restored verbatim too. A backup
+    # captured MID-BATCH can hold a consumer bookmark already advanced past
+    # a deferred journal (the DeferEvent rewind only lands at batch end), so
+    # "no marker" alone does not prove the promised retry can happen — the
+    # restored consumer would start AFTER the event and never revisit it.
+    # The deferred disposition is accepted only when every posted-consuming
+    # bookmark is strictly BEFORE the event.
+    posted_consumer_names = [
+        cls().name
+        for cls in (
+            JournalEntryProjection,
+            AccountBalanceProjection,
+            PeriodAccountBalanceProjection,
+            SubledgerBalanceProjection,
+            DimensionBalanceProjection,
+        )
+    ]
+    max_consumer_bookmark_seq = -1
+    for bm in EventBookmark.objects.filter(company=company, consumer_name__in=posted_consumer_names).select_related(
+        "last_event"
+    ):
+        if bm.last_event is not None and bm.last_event.company_sequence > max_consumer_bookmark_seq:
+            max_consumer_bookmark_seq = bm.last_event.company_sequence
 
     for event in posted_events.iterator(chunk_size=500):
         codes = evaluate_posted_journal_for_apply(event, facts_cache=facts_cache)
@@ -347,6 +377,9 @@ def _verify_restore(company, manifest, manifest_counts, stats, *, skip_invariant
             # silently skipping the lagging lines). Accept the lag verdict
             # only when NO consumer marker exists; otherwise fail closed.
             and not ProjectionAppliedEvent.objects.filter(company=company, event=event).exists()
+            # Codex round-19 P2: ... and only when no consumer bookmark has
+            # already advanced past the event (see above).
+            and event.company_sequence > max_consumer_bookmark_seq
         ):
             # The read-model-lag case the apply choke point DEFERS on (same
             # shared predicate): the archive captured a posted event whose

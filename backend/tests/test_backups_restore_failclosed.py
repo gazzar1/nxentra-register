@@ -411,6 +411,77 @@ class TestApplyInvariantOnRestore:
         result = restore_company(company, zip_bytes)
         assert result["company"] == company.slug
 
+    def test_lag_state_with_advanced_bookmark_is_refused(self, company, user, cash_account, revenue_account):
+        """Codex round-19 P2: a mid-batch backup can hold a consumer bookmark
+        already past the deferred journal with no marker (the DeferEvent
+        rewind lands only at batch end, and the exporter snapshots bookmarks
+        first) — the restored consumer would start after the event and never
+        retry it, so that archive must be REFUSED."""
+        from events.emitter import emit_event
+        from events.models import EventBookmark
+        from events.types import EventTypes
+        from projections.account_balance import AccountBalanceProjection
+
+        lag_id = uuid4()
+        emit_event(
+            company=company,
+            event_type=EventTypes.ACCOUNT_CREATED,
+            aggregate_type="Account",
+            aggregate_id=str(lag_id),
+            data={
+                "account_public_id": str(lag_id),
+                "code": "1094",
+                "name": "Bookmark-passed lagging account",
+                "account_type": "ASSET",
+                "normal_balance": "DEBIT",
+                "is_header": False,
+            },
+            caused_by_user=user,
+            idempotency_key=f"restore-bm:acct:{lag_id}",
+        )
+        entry_id = uuid4()
+        posted = emit_event(
+            company=company,
+            event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+            aggregate_type="JournalEntry",
+            aggregate_id=str(entry_id),
+            data={
+                "entry_public_id": str(entry_id),
+                "entry_number": "JE-BM-1",
+                "date": "2026-03-13",
+                "memo": "bookmark-passed entry",
+                "kind": "NORMAL",
+                "period": 3,
+                "posted_at": "2026-03-13T12:00:00",
+                "posted_by_id": user.id,
+                "posted_by_email": user.email,
+                "total_debit": "30.00",
+                "total_credit": "30.00",
+                "lines": [
+                    {"line_no": 1, "account_public_id": str(lag_id), "debit": "30.00", "credit": "0.00"},
+                    {
+                        "line_no": 2,
+                        "account_public_id": str(revenue_account.public_id),
+                        "debit": "0.00",
+                        "credit": "30.00",
+                    },
+                ],
+            },
+            caused_by_user=user,
+            idempotency_key=f"restore-bm:posted:{entry_id}",
+        )
+        # The mid-batch shape: the balance consumer's bookmark sits AT the
+        # deferred journal (advanced past it), with no applied-marker.
+        EventBookmark.objects.update_or_create(
+            company=company,
+            consumer_name=AccountBalanceProjection().name,
+            defaults={"last_event": posted},
+        )
+
+        zip_bytes, _ = export_company(company)
+        with pytest.raises(RestoreError, match="apply invariant"):
+            restore_company(company, zip_bytes)
+
     def test_lag_state_with_applied_marker_is_refused(self, company, user, cash_account, revenue_account):
         """Codex round-2 P2: the deferred disposition promises a post-restore
         retry — but restore imports the archive's applied-markers verbatim
