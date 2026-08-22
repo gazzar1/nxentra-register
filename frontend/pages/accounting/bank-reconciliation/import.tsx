@@ -82,6 +82,7 @@ export default function ImportStatementPage() {
   // become durable ImportRejectedRow evidence (visible in /finance/exceptions).
   const [parseRejects, setParseRejects] = useState<ImportRejectDescriptor[]>([]);
   const [parseFilename, setParseFilename] = useState("");
+  const [parseToken, setParseToken] = useState("");
   const [parsingHeaders, setParsingHeaders] = useState(false);
   const [parsingLines, setParsingLines] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -107,6 +108,7 @@ export default function ImportStatementPage() {
     setParsedLines([]);
     setParseRejects([]);
     setParseFilename("");
+    setParseToken("");
   }, [form.account_id]);
 
   const handleParseHeaders = async () => {
@@ -157,6 +159,7 @@ export default function ImportStatementPage() {
       );
       setParseRejects(data.rejected_rows ?? []);
       setParseFilename(data.source_filename || csvFile.name || "");
+      setParseToken(data.parse_token || "");
       const rejectedCount = data.rejected_row_count ?? 0;
       if (data.count === 0 && rejectedCount > 0) {
         toast({
@@ -222,6 +225,7 @@ export default function ImportStatementPage() {
         // A5-PR3c: persist the parse-time drops as durable evidence.
         parse_rejects: parseRejects,
         source_filename: parseFilename,
+        parse_token: parseToken,
       });
       const skipped = data.lines_skipped_duplicate ?? 0;
       const rejected = data.lines_rejected ?? 0;
@@ -379,6 +383,7 @@ export default function ImportStatementPage() {
                     // file A's evidence while file B is selected.
                     setParseRejects([]);
                     setParseFilename("");
+                    setParseToken("");
                   }}
                 />
               </div>

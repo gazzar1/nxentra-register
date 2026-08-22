@@ -1238,35 +1238,38 @@ def import_settlement_csv(
                 ", ".join(unknown_order_ids[:10]),
             )
 
-        # A5-PR3b (founder-approved 0042): durable per-line orphan review flags,
-        # derived from the STORED event's payload — the canonical rows that
-        # actually post(ed). Codex rounds 2-3: an upload-derived flag fabricates
-        # evidence whenever the emitter deduplicates (sequential re-upload with
-        # changed contents, or the loser of two concurrent uploads racing the
-        # same batch id — already_existed is a pre-check and cannot see the
-        # race). Deriving from `event` is truthful in every case, and a re-sight
-        # of the same canonical rows just bumps occurrence_count.
-        _persist_orphan_flags_from_event(
-            company,
-            event,
-            provider_code=code,
-            import_batch_id=batch_uuid,
-            external_system=external_system,
-        )
+        # A5-PR3b (Codex round-8): the durable orphan review flags are NOT
+        # written here — the projection writes them AFTER the batch JE actually
+        # posts (persist_orphan_review_flags_for_posted_event, called inside
+        # PaymentSettlementProjection.handle's per-event atomic). Writing them
+        # at import time claimed "the JE posted" for batches that then
+        # quarantined, failed, or were handled without posting.
 
     return emitted
 
 
-def _persist_orphan_flags_from_event(
-    company,
-    event,
-    *,
-    provider_code: str,
-    import_batch_id,
-    external_system: str,
-) -> None:
+def orphan_review_import_batch_id(company_id: int, event_id: int):
+    """Deterministic reject-group id for one settlement event's orphan review
+    flags. The flags are written by the PROJECTION after the JE posts (Codex
+    round-8), where the upload's per-request UUID is not available — a
+    deterministic id keeps rebuild/replay idempotent and lets the import view
+    read the flags back for its HTTP response."""
+    import uuid as _uuid
+
+    return _uuid.uuid5(_uuid.NAMESPACE_URL, f"nxentra:settlement-orphan:{company_id}:{event_id}")
+
+
+def persist_orphan_review_flags_for_posted_event(company, event) -> None:
     """Write QUARANTINED ORPHAN_ORDER_ID review flags for the CANONICAL rows in
     ``event``'s payload whose digit order_id matches no local order.
+
+    Called by ``PaymentSettlementProjection.handle`` immediately AFTER the
+    batch JE posts, inside the same per-event atomic — so a flag claiming "the
+    JE posted" exists IFF the posting it describes committed (Codex round-8:
+    all-zero / fully-credited / quarantined / failed batches write NO flags).
+    Deriving from the stored event also makes the flags truthful under emitter
+    deduplication and concurrent-upload races (Codex rounds 2-3), and a replay
+    of the same event just bumps occurrence_count.
 
     Digit ids only: the A26 lookup only ever checks digit ids against
     ShopifyOrder (shopify_order_id is numeric), so only a digit id can be a
@@ -1274,12 +1277,16 @@ def _persist_orphan_flags_from_event(
     tracking ids like "ORD-1") are ALWAYS "unknown" by construction and would
     page a false review flag for every COD row.
     """
-    if event is None or external_system != "shopify":
+    if event is None:
         return
 
     from accounting.import_rejects import persist_import_rejects
 
     data = event.get_data() or {}
+    if (data.get("external_system") or "shopify") != "shopify":
+        return
+    provider_code = str(data.get("provider_normalized_code") or "")
+    import_batch_id = orphan_review_import_batch_id(company.pk, event.id)
     line_items = data.get("line_items") or []
     payout_batch_id = str(data.get("payout_batch_id") or "")
     # Canonical filename from the STORED event's metadata (not this upload's) —

@@ -210,9 +210,11 @@ export const bankReconciliationService = {
       reference?: string;
     }>;
     // A5-PR3c: echo the parse response's rejected_rows + source_filename so
-    // the commit persists them as durable ImportRejectedRow evidence.
+    // the commit persists them as durable ImportRejectedRow evidence, plus the
+    // server-signed parse_token binding them to the server-parsed file.
     parse_rejects?: ImportRejectDescriptor[];
     source_filename?: string;
+    parse_token?: string;
   }) =>
     apiClient.post<{
       id: number;
@@ -236,6 +238,8 @@ export const bankReconciliationService = {
       rejected_rows: ImportRejectDescriptor[];
       rejected_row_count: number;
       source_filename: string;
+      // Server-signed binding of the rejects to the parsed file — echo on commit.
+      parse_token: string;
     }>("/accounting/bank-statements/parse-csv/", formData, {
       headers: { "Content-Type": "multipart/form-data" },
     }),

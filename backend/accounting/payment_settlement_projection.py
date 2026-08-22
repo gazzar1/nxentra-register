@@ -529,6 +529,15 @@ class PaymentSettlementProjection(BaseProjection):
                 )
             entry = post_result.data
 
+            # A5-PR3b (Codex round-8): the orphan-order review flags are written
+            # HERE — after the batch JE actually posted, inside the same atomic —
+            # so a flag saying "the JE posted" exists IFF the posting it
+            # describes committed. Batches that quarantine, fail, or are handled
+            # without posting (all-zero / fully-credited) write NO flags.
+            from accounting.settlement_imports import persist_orphan_review_flags_for_posted_event
+
+            persist_orphan_review_flags_for_posted_event(company, event)
+
         logger.info(
             "PaymentSettlement: posted JE %s for %s batch %s (gross=%s net=%s fees=%s uncollected=%s)",
             entry.public_id,

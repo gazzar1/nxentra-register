@@ -35,6 +35,22 @@ logger = logging.getLogger(__name__)
 # the commit REFUSES loudly (400) rather than silently truncating evidence.
 _MAX_PARSE_REJECTS = 10_000
 
+# Codex round-8: the client is only the TRANSPORT for parse-reject evidence —
+# the descriptors must be bound to the bytes the server actually parsed. The
+# parse endpoint signs (company, filename, canonical reject hash); the commit
+# endpoint verifies the echoed descriptors against that signature, so a caller
+# cannot fabricate/alter reject evidence or re-attach it under another file.
+_PARSE_REJECTS_SALT = "bank-parse-rejects"
+_PARSE_TOKEN_MAX_AGE_SECONDS = 24 * 60 * 60
+
+
+def _parse_rejects_hash(rejects: list) -> str:
+    import hashlib
+    import json as _json
+
+    canonical = _json.dumps(rejects, sort_keys=True, default=str, ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
 
 # =============================================================================
 # Bank Statements
@@ -137,6 +153,40 @@ class BankStatementListCreateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        source_filename = str(d.get("source_filename") or "")[:255]
+        if parse_rejects:
+            # Codex round-8: the descriptors must be the ones the SERVER parsed —
+            # verify the parse-csv response's signed token over (company,
+            # filename, canonical reject hash) so no caller can attach
+            # fabricated/altered raw rows as durable bank evidence.
+            from django.core import signing
+
+            try:
+                claims = signing.loads(
+                    str(d.get("parse_token") or ""),
+                    salt=_PARSE_REJECTS_SALT,
+                    max_age=_PARSE_TOKEN_MAX_AGE_SECONDS,
+                )
+            except signing.BadSignature:
+                return Response(
+                    {"error": "parse_rejects require the parse_token issued by the parse-csv response."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if (
+                claims.get("company_id") != actor.company.pk
+                or claims.get("filename") != source_filename
+                or claims.get("rejects_sha256") != _parse_rejects_hash(parse_rejects)
+            ):
+                return Response(
+                    {
+                        "error": (
+                            "parse_rejects do not match the server-parsed file "
+                            "(token mismatch) — re-parse the CSV and retry."
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
         result = bank_import.import_bank_statement(
             actor=actor,
             account_id=account_id,
@@ -148,7 +198,7 @@ class BankStatementListCreateView(APIView):
             lines_data=lines_data,
             source=d.get("source", "CSV"),
             currency=d.get("currency", "USD"),
-            source_filename=str(d.get("source_filename") or "")[:255],
+            source_filename=source_filename,
             parse_rejects=parse_rejects,
         )
 
@@ -257,13 +307,29 @@ class BankStatementCSVImportView(APIView):
         # back on the COMMIT, which persists them as ImportRejectedRow.
         lines, rejected_rows = bank_import.parse_csv_statement_full(csv_content, **column_map)
 
+        # Codex round-8: sign what the SERVER parsed so the commit can verify
+        # the echoed descriptors are the ones this parse produced.
+        from django.core import signing
+
+        source_filename = getattr(csv_file, "name", "") or ""
+        parse_token = signing.dumps(
+            {
+                "v": 1,
+                "company_id": actor.company.pk,
+                "filename": source_filename,
+                "rejects_sha256": _parse_rejects_hash(rejected_rows),
+            },
+            salt=_PARSE_REJECTS_SALT,
+        )
+
         return Response(
             {
                 "lines": lines,
                 "count": len(lines),
                 "rejected_rows": rejected_rows,
                 "rejected_row_count": len(rejected_rows),
-                "source_filename": getattr(csv_file, "name", "") or "",
+                "source_filename": source_filename,
+                "parse_token": parse_token,
             }
         )
 

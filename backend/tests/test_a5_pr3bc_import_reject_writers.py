@@ -366,6 +366,7 @@ def test_settlement_identical_orphans_in_two_batches_stay_distinct(shopify_setup
     import_settlement_csv(
         company=company, provider_normalized_code="paymob", file_content=csv, source_filename="twins.csv"
     )
+    _run_settlement_projection(company)  # round-8: flags are projection-written after posting
     flags = ImportRejectedRow.objects.filter(
         company=company, reason_code=ImportRejectedRow.ReasonCode.ORPHAN_ORDER_ID
     ).order_by("id")
@@ -375,7 +376,8 @@ def test_settlement_identical_orphans_in_two_batches_stay_distinct(shopify_setup
 
 def test_settlement_orphan_order_id_writes_quarantined_review_flag(shopify_setup, company):
     """Founder-approved 0042: an orphan order_id row still POSTS, but leaves a
-    durable QUARANTINED review flag instead of only a transient response field."""
+    durable QUARANTINED review flag. Codex round-8: the flag is written by the
+    PROJECTION after the JE posts — never before."""
     csv = b"""order_id,gross,fee,net,payout_batch_id,payout_date
 9999,300.00,9.00,291.00,PR3B-ORPHAN,2026-04-25
 """
@@ -383,14 +385,9 @@ def test_settlement_orphan_order_id_writes_quarantined_review_flag(shopify_setup
         company=company, provider_normalized_code="paymob", file_content=csv, source_filename="orphan.csv"
     )
     assert results[0]["unknown_order_ids"] == ["9999"]
+    # Before the projection runs, NOTHING claims a posting happened.
+    assert not ImportRejectedRow.objects.filter(company=company).exists()
 
-    flag = ImportRejectedRow.objects.get(company=company)
-    assert flag.reason_code == ImportRejectedRow.ReasonCode.ORPHAN_ORDER_ID
-    assert flag.status == ImportRejectedRow.Status.QUARANTINED
-    assert flag.raw_row.get("order_id") == "9999"
-    assert "PR3B-ORPHAN" in flag.reason_message
-
-    # The JE still posts — the flag is a review marker, not a block.
     _run_settlement_projection(company)
     assert JournalEntry.objects.filter(
         company=company,
@@ -398,6 +395,41 @@ def test_settlement_orphan_order_id_writes_quarantined_review_flag(shopify_setup
         source_document="paymob:PR3B-ORPHAN",
         status=JournalEntry.Status.POSTED,
     ).exists()
+
+    flag = ImportRejectedRow.objects.get(company=company)
+    assert flag.reason_code == ImportRejectedRow.ReasonCode.ORPHAN_ORDER_ID
+    assert flag.status == ImportRejectedRow.Status.QUARANTINED
+    assert flag.raw_row.get("order_id") == "9999"
+    assert "PR3B-ORPHAN" in flag.reason_message
+
+
+def test_settlement_orphan_flag_not_written_when_batch_does_not_post(shopify_setup, company):
+    """Codex round-8's exact cases: an all-zero batch (handled_zero, no JE) and
+    an imbalance-quarantined batch must write NO orphan flags — evidence saying
+    'the JE posted' exists only when it did."""
+    from projections.models import ProjectionAppliedEvent
+
+    # All-zero batch with a digit unknown order id.
+    csv_zero = b"""order_id,gross,fee,net,payout_batch_id,payout_date
+7771,0,0,0,PR3B-ZERO-ORPH,2026-04-25
+"""
+    # Imbalanced batch (gross != net+fees+uncollected) with a digit unknown id.
+    csv_imbalance = b"""order_id,gross,fee,net,payout_batch_id,payout_date
+7772,100.00,3.00,50.00,PR3B-IMB-ORPH,2026-04-25
+"""
+    for csv in (csv_zero, csv_imbalance):
+        import_settlement_csv(
+            company=company, provider_normalized_code="paymob", file_content=csv, source_filename="np.csv"
+        )
+    _run_settlement_projection(company)
+
+    assert ProjectionAppliedEvent.objects.filter(
+        company=company, projection_name="payment_settlement:handled_zero"
+    ).exists()
+    assert not JournalEntry.objects.filter(company=company, source_module="payment_settlement").exists()
+    assert not ImportRejectedRow.objects.filter(
+        company=company, reason_code=ImportRejectedRow.ReasonCode.ORPHAN_ORDER_ID
+    ).exists(), "no posting happened — no flag may claim one did"
 
 
 def test_settlement_dedup_reupload_writes_no_orphan_flags(shopify_setup, company):
@@ -414,10 +446,12 @@ def test_settlement_dedup_reupload_writes_no_orphan_flags(shopify_setup, company
     import_settlement_csv(
         company=company, provider_normalized_code="paymob", file_content=csv_v1, source_filename="v1.csv"
     )
+    _run_settlement_projection(company)  # posts v1's batch; the projection writes its flag
     results = import_settlement_csv(
         company=company, provider_normalized_code="paymob", file_content=csv_v2, source_filename="v2.csv"
     )
     assert results[0]["deduplicated"] is True
+    _run_settlement_projection(company)  # no new event; already-posted guard — no new flags
 
     flags = ImportRejectedRow.objects.filter(company=company, reason_code=ImportRejectedRow.ReasonCode.ORPHAN_ORDER_ID)
     assert flags.count() == 1, "only the ORIGINAL (canonical) import writes review flags"
@@ -693,39 +727,83 @@ def test_bank_non_egp_whole_file_refusal_persists_nothing(company, actor, mercha
     assert not BankStatement.objects.filter(company=company).exists()
 
 
-def test_bank_commit_http_passthrough(company, user, owner_membership, merchant_bank, api_client):
-    """End-to-end: the commit endpoint accepts the parse response's rejected_rows
-    echo and reports what it persisted."""
-    api_client.force_authenticate(user=user)
+def _parse_bank_csv_over_http(api_client, csv_text: str, filename: str = "april.csv"):
+    from django.core.files.uploadedfile import SimpleUploadedFile
+
+    upload = SimpleUploadedFile(filename, csv_text.encode(), content_type="text/csv")
     resp = api_client.post(
-        "/api/accounting/bank-statements/",
-        {
-            "account_id": merchant_bank.id,
-            "statement_date": "2026-04-25",
-            "period_start": "2026-04-23",
-            "period_end": "2026-04-27",
-            "opening_balance": "0",
-            "closing_balance": "100.00",
-            "currency": "EGP",
-            "lines": [{"line_date": "2026-04-25", "amount": "100.00", "description": "ok", "reference": ""}],
-            "source_filename": "april.csv",
-            "parse_rejects": [
-                {
-                    "row_index": 3,
-                    "raw_row": {"Date": "2026-04-26", "Amount": "xx"},
-                    "reason_code": "UNPARSEABLE_AMOUNT",
-                    "reason_message": "Cell 'Amount'='xx' is not a number — row dropped.",
-                }
-            ],
-        },
-        format="json",
+        "/api/accounting/bank-statements/parse-csv/",
+        {"file": upload},
+        format="multipart",
+    )
+    assert resp.status_code == 200, resp.data
+    return resp.data
+
+
+def _bank_commit_body(merchant_bank, parse_data: dict) -> dict:
+    return {
+        "account_id": merchant_bank.id,
+        "statement_date": "2026-04-25",
+        "period_start": "2026-04-23",
+        "period_end": "2026-04-28",
+        "opening_balance": "0",
+        "closing_balance": "100.00",
+        "currency": "EGP",
+        "lines": parse_data["lines"],
+        "source_filename": parse_data["source_filename"],
+        "parse_rejects": parse_data["rejected_rows"],
+        "parse_token": parse_data["parse_token"],
+    }
+
+
+BANK_HTTP_CSV = """Date,Description,Amount,Reference
+2026-04-25,Good deposit,100.00,REF-1
+2026-04-26,Bad amount row,xx,REF-2
+"""
+
+
+def test_bank_commit_http_passthrough_end_to_end(company, user, owner_membership, merchant_bank, api_client):
+    """End-to-end: parse-csv issues the descriptors + the signed parse_token;
+    echoing them on the commit persists the evidence (Codex round-8: bound to
+    the server-parsed bytes)."""
+    api_client.force_authenticate(user=user)
+    parse_data = _parse_bank_csv_over_http(api_client, BANK_HTTP_CSV)
+    assert parse_data["rejected_row_count"] == 1
+    assert parse_data["parse_token"]
+
+    resp = api_client.post(
+        "/api/accounting/bank-statements/", _bank_commit_body(merchant_bank, parse_data), format="json"
     )
     assert resp.status_code == 201, resp.data
     assert resp.data["lines_rejected"] == 1
     assert resp.data["import_batch_id"]
     reject = ImportRejectedRow.objects.get(company=company)
     assert reject.source_filename == "april.csv"
-    assert reject.row_index == 3
+    assert reject.reason_code == ImportRejectedRow.ReasonCode.UNPARSEABLE_AMOUNT
+
+
+def test_bank_commit_refuses_rejects_without_token(company, user, owner_membership, merchant_bank, api_client):
+    api_client.force_authenticate(user=user)
+    parse_data = _parse_bank_csv_over_http(api_client, BANK_HTTP_CSV)
+    body = _bank_commit_body(merchant_bank, parse_data)
+    body.pop("parse_token")
+    resp = api_client.post("/api/accounting/bank-statements/", body, format="json")
+    assert resp.status_code == 400
+    assert "parse_token" in resp.data["error"]
+    assert ImportRejectedRow.objects.count() == 0
+
+
+def test_bank_commit_refuses_tampered_rejects(company, user, owner_membership, merchant_bank, api_client):
+    """Codex round-8: altered/fabricated descriptors no longer verify against
+    the server-signed hash — evidence stays bound to the parsed bytes."""
+    api_client.force_authenticate(user=user)
+    parse_data = _parse_bank_csv_over_http(api_client, BANK_HTTP_CSV)
+    body = _bank_commit_body(merchant_bank, parse_data)
+    body["parse_rejects"] = [dict(body["parse_rejects"][0], reason_message="FABRICATED EVIDENCE")]
+    resp = api_client.post("/api/accounting/bank-statements/", body, format="json")
+    assert resp.status_code == 400
+    assert "match" in resp.data["error"]
+    assert ImportRejectedRow.objects.count() == 0
 
 
 def test_bank_commit_refuses_nonlist_parse_rejects(company, user, owner_membership, merchant_bank, api_client):
