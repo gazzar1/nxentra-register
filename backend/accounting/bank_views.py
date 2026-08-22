@@ -249,9 +249,12 @@ class BankStatementListCreateView(APIView):
                 # what they uploaded.
                 "lines_skipped_duplicate": result.data.get("lines_skipped_duplicate", 0),
                 # A5-PR3c: durable per-row rejects persisted by this commit
-                # (parse-time echoes + commit-time drops) — visible at
-                # /finance/exceptions, grouped by import_batch_id.
+                # (token-verified parse-time echoes ONLY — Codex round-14) —
+                # visible at /finance/exceptions, grouped by import_batch_id.
                 "lines_rejected": result.data.get("lines_rejected", 0),
+                # Commit-time drops: counted, skipped, never persisted (the
+                # commit payload is client-supplied, not a preserved source).
+                "lines_invalid": result.data.get("lines_invalid", 0),
                 "import_batch_id": result.data.get("import_batch_id", ""),
             },
             status=status.HTTP_201_CREATED,

@@ -222,6 +222,8 @@ export const bankReconciliationService = {
       lines_created: number;
       lines_skipped_duplicate: number;
       lines_rejected: number;
+      // Commit-time drops: counted and skipped, never persisted as evidence.
+      lines_invalid: number;
       import_batch_id: string;
     }>("/accounting/bank-statements/", data),
 

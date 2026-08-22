@@ -636,9 +636,12 @@ def test_bank_commit_validates_untrusted_descriptors(company, actor, merchant_ba
     assert reject.row_index == 1
 
 
-def test_bank_commit_time_bad_amount_rejects_instead_of_500(company, actor, merchant_bank):
-    """P3 parity: a None amount (TypeError) used to 500 at commit while preview
-    counted it; now both are durable rejects."""
+def test_bank_commit_time_bad_amount_counted_not_persisted(company, actor, merchant_bank):
+    """P3 parity + Codex round-14: a None amount (TypeError) used to 500 at
+    commit while preview counted it. It is now COUNTED and skipped — but NEVER
+    persisted as a preserved source row, because the commit payload is
+    client-supplied and unsigned; durable bank evidence originates exclusively
+    from the token-verified parse flow."""
     result = _import_bank(
         actor,
         merchant_bank,
@@ -650,12 +653,10 @@ def test_bank_commit_time_bad_amount_rejects_instead_of_500(company, actor, merc
     )
     assert result.success, result.error
     assert result.data["lines_created"] == 1
-    assert result.data["lines_rejected"] == 2
-    assert (
-        ImportRejectedRow.objects.filter(
-            company=company, reason_code=ImportRejectedRow.ReasonCode.UNPARSEABLE_AMOUNT
-        ).count()
-        == 2
+    assert result.data["lines_invalid"] == 2
+    assert result.data["lines_rejected"] == 0
+    assert ImportRejectedRow.objects.count() == 0, (
+        "unsigned commit payloads must never become preserved source-row evidence"
     )
 
 

@@ -299,7 +299,7 @@ def import_bank_statement(
 
         created_lines = []
         skipped_duplicate = 0
-        commit_rejects: list[dict] = []
+        invalid_lines = 0
         # A17: track hashes seen within THIS file so the same row appearing
         # twice in the upload itself dedups too (some bank exports emit
         # the same transaction twice if the merchant runs the report
@@ -309,20 +309,19 @@ def import_bank_statement(
             try:
                 amount = Decimal(str(ld["amount"]))
             except (KeyError, InvalidOperation, TypeError):
-                # A5-PR3c: previously a bare `continue` with no counter and no
-                # trace (and TypeError — a non-dict/None entry — 500'd while the
-                # preview counted it as invalid). Durable REJECTED evidence now;
-                # row_index is the 1-based position in the SUBMITTED lines.
-                commit_rejects.append(
-                    {
-                        "row_index": line_index,
-                        "raw_row": ld if isinstance(ld, dict) else {"_raw": str(ld)},
-                        "reason_code": "UNPARSEABLE_AMOUNT",
-                        "reason_message": (
-                            f"Submitted line {line_index}: amount "
-                            f"{(ld.get('amount') if isinstance(ld, dict) else ld)!r} is not a number — dropped."
-                        ),
-                    }
+                # A5-PR3c: previously a bare `continue` with no counter (and
+                # TypeError — a non-dict/None entry — 500'd while the preview
+                # counted it as invalid). Codex round-14: a commit-time drop is
+                # COUNTED (mirroring the preview's invalid_rows) but NEVER
+                # persisted as ImportRejectedRow — the commit payload is
+                # client-supplied, so an unsigned entry here is not a preserved
+                # source row; durable bank evidence originates exclusively from
+                # the token-verified parse flow (parse_rejects).
+                invalid_lines += 1
+                logger.warning(
+                    "Bank statement import: submitted line %d has an unparseable amount %r — skipped.",
+                    line_index,
+                    (ld.get("amount") if isinstance(ld, dict) else ld),
                 )
                 continue
 
@@ -379,7 +378,7 @@ def import_bank_statement(
         provider_code="",
         source_filename=source_filename,
         import_batch_id=batch_uuid,
-        rejects=list(parse_rejects or []) + commit_rejects,
+        rejects=list(parse_rejects or []),
         statement=statement,
         # Codex round-3: scope identity to the bank ACCOUNT — two accounts
         # importing a same-named file with an identical bad row are distinct
@@ -388,12 +387,14 @@ def import_bank_statement(
     )
 
     logger.info(
-        "Imported bank statement %s for %s: %d lines created, %d duplicates skipped, %d rows rejected",
+        "Imported bank statement %s for %s: %d lines created, %d duplicates skipped, "
+        "%d rows rejected, %d invalid lines skipped",
         statement.public_id,
         account.code,
         len(created_lines),
         skipped_duplicate,
         lines_rejected,
+        invalid_lines,
     )
 
     return CommandResult.ok(
@@ -402,6 +403,9 @@ def import_bank_statement(
             "lines_created": len(created_lines),
             "lines_skipped_duplicate": skipped_duplicate,
             "lines_rejected": lines_rejected,
+            # Codex round-14: commit-time drops are counted (the preview's
+            # invalid_rows analogue), never persisted as preserved source rows.
+            "lines_invalid": invalid_lines,
             "import_batch_id": str(batch_uuid),
         }
     )
