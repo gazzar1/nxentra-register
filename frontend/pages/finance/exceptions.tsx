@@ -14,7 +14,7 @@
  * count, and a "Mark resolved" action.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import type { GetServerSideProps } from "next";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import {
@@ -115,6 +115,7 @@ export default function ExceptionsPage() {
   const [importRejects, setImportRejects] = useState<ImportRejectedRow[]>([]);
   const [importRejectsCount, setImportRejectsCount] = useState(0);
   const [resolvingRejectId, setResolvingRejectId] = useState<number | null>(null);
+  const [expandedRejectId, setExpandedRejectId] = useState<number | null>(null);
 
   // Filters
   const [resolvedFilter, setResolvedFilter] = useState<"true" | "false" | "all">(
@@ -463,6 +464,7 @@ export default function ExceptionsPage() {
               <table className="w-full text-sm">
                 <thead className="bg-muted/50">
                   <tr>
+                    <th className="w-8" />
                     <th className="px-3 py-2 text-left">Source</th>
                     <th className="px-3 py-2 text-left">File</th>
                     <th className="px-3 py-2 text-right">Row</th>
@@ -475,50 +477,93 @@ export default function ExceptionsPage() {
                 </thead>
                 <tbody>
                   {importRejects.map((r) => (
-                    <tr key={r.id} className="border-t hover:bg-muted/30">
-                      <td className="px-3 py-2 align-top">
-                        {r.source_kind}
-                        {r.provider_code ? ` · ${r.provider_code}` : ""}
-                      </td>
-                      <td className="px-3 py-2 align-top font-mono text-xs">
-                        {r.source_filename || "—"}
-                      </td>
-                      <td className="px-3 py-2 align-top text-right tabular-nums">
-                        {r.row_index}
-                      </td>
-                      <td className="px-3 py-2 align-top">
-                        <Badge variant="warning">{r.reason_code}</Badge>
-                      </td>
-                      <td className="px-3 py-2 align-top max-w-md">
-                        <div className="line-clamp-2">{r.reason_message}</div>
-                      </td>
-                      <td className="px-3 py-2 align-top text-right tabular-nums">
-                        {r.occurrence_count}
-                      </td>
-                      <td className="px-3 py-2 align-top text-right text-muted-foreground">
-                        {timeAgo(r.last_seen_at)}
-                      </td>
-                      <td className="px-3 py-2 align-top text-right">
-                        {r.resolved ? (
-                          <Badge variant="outline">Resolved</Badge>
-                        ) : isAdmin ? (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => handleResolveReject(r)}
-                            disabled={resolvingRejectId === r.id}
+                    <Fragment key={r.id}>
+                      <tr className="border-t hover:bg-muted/30">
+                        <td className="px-2 py-2 align-top">
+                          <button
+                            onClick={() =>
+                              setExpandedRejectId(expandedRejectId === r.id ? null : r.id)
+                            }
+                            className="inline-flex items-center text-muted-foreground hover:text-foreground"
+                            aria-label={expandedRejectId === r.id ? "Collapse" : "Expand"}
                           >
-                            {resolvingRejectId === r.id ? (
-                              <Loader2 className="h-3 w-3 animate-spin" />
+                            {expandedRejectId === r.id ? (
+                              <ChevronDown className="h-4 w-4" />
                             ) : (
-                              "Mark resolved"
+                              <ChevronRight className="h-4 w-4" />
                             )}
-                          </Button>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">Admin only</span>
-                        )}
-                      </td>
-                    </tr>
+                          </button>
+                        </td>
+                        <td className="px-3 py-2 align-top">
+                          {r.source_kind}
+                          {r.provider_code ? ` · ${r.provider_code}` : ""}
+                        </td>
+                        <td className="px-3 py-2 align-top font-mono text-xs">
+                          {r.source_filename || "—"}
+                        </td>
+                        <td className="px-3 py-2 align-top text-right tabular-nums">
+                          {r.row_index}
+                        </td>
+                        <td className="px-3 py-2 align-top">
+                          <Badge variant="warning">{r.reason_code}</Badge>
+                        </td>
+                        <td className="px-3 py-2 align-top max-w-md">
+                          <div className="line-clamp-2">{r.reason_message}</div>
+                        </td>
+                        <td className="px-3 py-2 align-top text-right tabular-nums">
+                          {r.occurrence_count}
+                        </td>
+                        <td className="px-3 py-2 align-top text-right text-muted-foreground">
+                          {timeAgo(r.last_seen_at)}
+                        </td>
+                        <td className="px-3 py-2 align-top text-right">
+                          {r.resolved ? (
+                            <Badge variant="outline">Resolved</Badge>
+                          ) : isAdmin ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleResolveReject(r)}
+                              disabled={resolvingRejectId === r.id}
+                            >
+                              {resolvingRejectId === r.id ? (
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                              ) : (
+                                "Mark resolved"
+                              )}
+                            </Button>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">Admin only</span>
+                          )}
+                        </td>
+                      </tr>
+                      {expandedRejectId === r.id && (
+                        <tr className="border-t bg-muted/20">
+                          <td colSpan={9} className="space-y-3 p-4">
+                            {r.reason_message && (
+                              <div>
+                                <div className="mb-1 text-xs font-medium uppercase text-muted-foreground">
+                                  Reason
+                                </div>
+                                <div className="text-sm">{r.reason_message}</div>
+                              </div>
+                            )}
+                            <div>
+                              <div className="mb-1 text-xs font-medium uppercase text-muted-foreground">
+                                Original row (preserved evidence)
+                              </div>
+                              <pre className="max-h-64 overflow-auto rounded border bg-background p-3 font-mono text-xs">
+                                {JSON.stringify(r.raw_row, null, 2)}
+                              </pre>
+                            </div>
+                            <div className="font-mono text-xs text-muted-foreground">
+                              batch {r.import_batch_id} · first {r.first_seen_at} · last{" "}
+                              {r.last_seen_at}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   ))}
                 </tbody>
               </table>

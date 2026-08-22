@@ -335,6 +335,10 @@ class ImportRejectedRowResolveView(APIView):
         from accounting.models import ImportRejectedRow
 
         actor = resolve_actor(request)
+        # Same read gate as the list view — the response echoes raw_row financial
+        # evidence, so an admin with reports.view revoked must not read it here
+        # either (Codex round-2 P2).
+        require(actor, "reports.view")
         if not (request.user.is_staff or request.user.is_superuser or actor.is_admin):
             return Response(
                 {"detail": "Owner/admin access required to resolve import rejections."},
