@@ -119,10 +119,11 @@ export default function ExceptionsPage() {
   // summary card, which pairs with the always-unresolved projection summary
   // (Codex round-5: the filtered count would inflate the total under Resolved/All).
   const [unresolvedRejectsCount, setUnresolvedRejectsCount] = useState(0);
-  // Growing page size for the reject queue — "Load more" raises it so that a large
-  // malformed CSV's rejections past the first 100 stay reachable and resolvable
-  // (Codex round-7: the badge could report a total the operator could not page to).
-  const [rejectLimit, setRejectLimit] = useState(100);
+  // Offset-paged "Load more" for the reject queue so a large malformed CSV's
+  // rejections past the first page stay reachable/resolvable. A growing single-
+  // request limit is capped by the endpoint's 500 max (Codex round-8), so each
+  // page is a fixed-size fetch at an increasing offset instead.
+  const [loadingMoreRejects, setLoadingMoreRejects] = useState(false);
   const [resolvingRejectId, setResolvingRejectId] = useState<number | null>(null);
   const [expandedRejectId, setExpandedRejectId] = useState<number | null>(null);
 
@@ -154,7 +155,7 @@ export default function ExceptionsPage() {
           category: (categoryFilter || undefined) as FailureCategory | undefined,
           limit: 100,
         }),
-        importRejectedRowsService.list({ resolved: resolvedFilter, limit: rejectLimit }),
+        importRejectedRowsService.list({ resolved: resolvedFilter, limit: 100, offset: 0 }),
         // Filter-independent unresolved count for the summary card (see state).
         importRejectedRowsService.list({ resolved: "false", limit: 1 }),
       ]);
@@ -177,12 +178,36 @@ export default function ExceptionsPage() {
     setLoading(true);
     fetchAll().finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resolvedFilter, projectionFilter, categoryFilter, rejectLimit]);
+  }, [resolvedFilter, projectionFilter, categoryFilter]);
 
   const handleRefresh = async () => {
     setRefreshing(true);
     await fetchAll();
     setRefreshing(false);
+  };
+
+  // Append the next page of import rejections (offset = rows already loaded).
+  // Fixed 100-row pages keep every request under the endpoint's 500 clamp, so
+  // rows past the first 500 stay reachable (unlike a growing single-request limit).
+  const handleLoadMoreRejects = async () => {
+    setLoadingMoreRejects(true);
+    try {
+      const next = await importRejectedRowsService.list({
+        resolved: resolvedFilter,
+        limit: 100,
+        offset: importRejects.length,
+      });
+      setImportRejects((prev) => [...prev, ...next.results]);
+      setImportRejectsCount(next.total_count);
+    } catch (err) {
+      toast({
+        title: "Failed to load more import rejections",
+        description: (err as Error).message || "Try refreshing.",
+        variant: "destructive",
+      });
+    } finally {
+      setLoadingMoreRejects(false);
+    }
   };
 
   const handleExpand = async (failure: ProjectionFailure) => {
@@ -612,10 +637,14 @@ export default function ExceptionsPage() {
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() => setRejectLimit((n) => n + 100)}
-                  disabled={loading || refreshing}
+                  onClick={handleLoadMoreRejects}
+                  disabled={loadingMoreRejects || refreshing}
                 >
-                  Load more ({importRejects.length} of {importRejectsCount})
+                  {loadingMoreRejects ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    `Load more (${importRejects.length} of ${importRejectsCount})`
+                  )}
                 </Button>
               </div>
             )}
