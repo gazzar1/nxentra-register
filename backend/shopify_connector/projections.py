@@ -295,7 +295,13 @@ class ShopifyAccountingHandler(BaseProjection):
         company = event.company
 
         mapping = ModuleAccountMapping.get_mapping(company, MODULE_NAME)
-        if not mapping:
+        # Order/refund handlers classify zero/negative values and self-guard their
+        # own mapping requirement (a zero-value order/refund needs NO mapping and
+        # must be marked handled, not stalled), so they run even with an absent
+        # mapping — their revenue guard still raises for a NON-zero item. Every
+        # other event type genuinely requires the mapping up front. (Codex round-8.)
+        _MAPPING_SELF_GUARDED = {EventTypes.SHOPIFY_ORDER_PAID, EventTypes.SHOPIFY_REFUND_CREATED}
+        if not mapping and event.event_type not in _MAPPING_SELF_GUARDED:
             # A80: raise instead of silent return so the failure surfaces in
             # ProjectionFailureLog → /finance/exceptions. The event remains
             # unprocessed (transaction rolls back); once the operator wires
@@ -325,7 +331,7 @@ class ShopifyAccountingHandler(BaseProjection):
 
         if handler:
             try:
-                handler(event, data, mapping, dimension_context)
+                handler(event, data, mapping or {}, dimension_context)
             except MissingExchangeRate as exc:
                 logger.error(
                     "Missing exchange rate for %s event %s: %s",

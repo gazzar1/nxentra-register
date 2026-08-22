@@ -299,9 +299,10 @@ def test_order_zero_total_marks_processed_no_journal(company, owner_membership):
     from sales.models import SalesInvoice
 
     store = _shopify_setup(company)
-    # Remove the revenue mapping to prove the zero order is classified BEFORE the
-    # SALES_REVENUE guard (a leftover role keeps the mapping non-empty).
-    ModuleAccountMapping.objects.filter(company=company, module="shopify_connector", role="SALES_REVENUE").delete()
+    # Remove the ENTIRE Shopify mapping to prove the zero order is classified before
+    # BOTH the empty-mapping guard (handle(), Codex round-8) and the revenue guard
+    # (_handle_order_paid, round-7) — a zero order needs no mapping at all.
+    ModuleAccountMapping.objects.filter(company=company, module="shopify_connector").delete()
     _make_order_row(company, store, order_id="9900020", total="0")
     event = _emit_order(company, order_id="9900020", amount="0", store=store)
 
