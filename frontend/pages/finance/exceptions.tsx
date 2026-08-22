@@ -291,11 +291,14 @@ export default function ExceptionsPage() {
                 </CardTitle>
               </CardHeader>
               <CardContent>
+                {/* A5-PR3 (Codex round-4): fold the import-reject queue into the
+                    page-level total + all-clear so this card can't say "0 / all
+                    clear" while dropped import rows sit unresolved below. */}
                 <div className="text-3xl font-semibold">
-                  {summary.total_unresolved}
+                  {summary.total_unresolved + importRejectsCount}
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  {summary.total_unresolved === 0
+                  {summary.total_unresolved + importRejectsCount === 0
                     ? "All clear — projections healthy."
                     : "Need operator review."}
                 </p>
