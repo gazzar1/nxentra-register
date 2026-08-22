@@ -286,11 +286,15 @@ def _entry_pending_materialization(event: BusinessEvent, entry_public_id: object
     in BOTH storage strategies (Codex rounds 6+7 P2): external ingest
     legitimately carries a different aggregate_id, and a >64 KiB ingested
     payload stores {} inline, so the payload_ref__payload arm is what finds
-    it; the payload-verification loop stays the authority for everything
-    the query returns. A CONSUMED prior post (materialized or quarantined)
-    is not pending — the guard then decides against the real current rows,
-    and the handlers' tolerant behavior for genuinely absent referents
-    stays unchanged."""
+    it. Identity comparison is CANONICAL-UUID, not stored-text (Codex
+    round-10 P2): equivalent spellings (uppercase, ...) are accepted inputs
+    everywhere else, so the exact-match arms are only a fast path — when
+    they yield no verified candidate, a bounded canonical scan of the prior
+    posted events decides (failure-path-only cost). The verification loop
+    stays the authority for everything either path returns. A CONSUMED
+    prior post (materialized or quarantined) is not pending — the guard
+    then decides against the real current rows, and the handlers' tolerant
+    behavior for genuinely absent referents stays unchanged."""
     from django.db.models import Q
 
     from events.models import BusinessEvent as _BusinessEvent
@@ -298,28 +302,47 @@ def _entry_pending_materialization(event: BusinessEvent, entry_public_id: object
     from projections.accounting import JournalEntryProjection
     from projections.models import ProjectionAppliedEvent
 
-    target = str(entry_public_id)
-    candidates = _BusinessEvent.objects.filter(
-        Q(aggregate_id=target) | Q(data__entry_public_id=target) | Q(payload_ref__payload__entry_public_id=target),
-        company=event.company,
-        event_type=EventTypes.JOURNAL_ENTRY_POSTED,
-        company_sequence__lt=event.company_sequence,
-    ).order_by("company_sequence")[:10]
+    target = _canonical_uuid(entry_public_id)
+    if target is None:
+        return False
     je_read_model = JournalEntryProjection().name
-    for prior in candidates:
+
+    def _is_pending_evidence(prior) -> bool | None:
+        """True = pending; False = consumed (stop looking — the guard acts on
+        current rows); None = not this entry's post."""
         try:
             prior_data = prior.get_data()
         except Exception:
-            continue
-        if not isinstance(prior_data, dict) or str(prior_data.get("entry_public_id")) != target:
-            continue
-        if ProjectionAppliedEvent.objects.filter(
+            return None
+        if not isinstance(prior_data, dict) or _canonical_uuid(prior_data.get("entry_public_id")) != target:
+            return None
+        return not ProjectionAppliedEvent.objects.filter(
             company=event.company,
             projection_name=je_read_model,
             event=prior,
-        ).exists():
-            continue  # consumed — the guard decides against the current rows
-        return True  # unconsumed prior posted event — genuinely pending
+        ).exists()
+
+    base = _BusinessEvent.objects.filter(
+        company=event.company,
+        event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+        company_sequence__lt=event.company_sequence,
+    )
+    fast = base.filter(
+        Q(aggregate_id=target) | Q(data__entry_public_id=target) | Q(payload_ref__payload__entry_public_id=target)
+    ).order_by("company_sequence")[:10]
+    seen_pks = set()
+    for prior in fast:
+        seen_pks.add(prior.pk)
+        verdict = _is_pending_evidence(prior)
+        if verdict is not None:
+            return verdict
+    # Canonical-scan fallback for noncanonical stored spellings.
+    for prior in base.order_by("company_sequence").iterator(chunk_size=200):
+        if prior.pk in seen_pks:
+            continue
+        verdict = _is_pending_evidence(prior)
+        if verdict is not None:
+            return verdict
     return False
 
 
@@ -354,80 +377,84 @@ def _unknown_accounts_are_pending_materialization(event: BusinessEvent) -> bool:
         return False
     from django.db.models import Q
 
+    from projections.accounting import AccountProjection
+    from projections.models import ProjectionAppliedEvent
+
+    account_read_model = AccountProjection().name
     unresolved = referenced - load_account_facts(event.company, referenced).keys()
+
+    # Candidates by PAYLOAD identity as well as aggregate metadata, in both
+    # storage strategies (Codex round-8 P2 — the same rule as the entry
+    # probe): AccountProjection materializes the payload's
+    # account_public_id, so a foreign event whose metadata names another id
+    # would be missed by an aggregate-only query and a valid posted journal
+    # would be terminally quarantined instead of deferred. Identity
+    # comparison is canonical (Codex round-10 P2) — the exact-match arms are
+    # a fast path with a bounded canonical-scan fallback. The
+    # payload/materializability verification stays the authority.
     for cid in unresolved:
-        # Candidates by PAYLOAD identity as well as aggregate metadata, in
-        # both storage strategies (Codex round-8 P2 — the same rule as the
-        # entry probe): AccountProjection materializes the payload's
-        # account_public_id, so a foreign event whose metadata names another
-        # id would be missed by an aggregate-only query and a valid posted
-        # journal would be terminally quarantined instead of deferred.
-        # Bounded: real streams carry at most one ACCOUNT_CREATED per
-        # aggregate; the cap only guards degenerate foreign streams from
-        # turning this probe into a scan. The payload/materializability
-        # verification loop below stays the authority.
-        candidates = _BusinessEvent.objects.filter(
-            Q(aggregate_id=cid) | Q(data__account_public_id=cid) | Q(payload_ref__payload__account_public_id=cid),
-            company=event.company,
-            event_type=EventTypes.ACCOUNT_CREATED,
-            company_sequence__lt=event.company_sequence,
-        ).order_by("company_sequence")[:5]
-        creates_cid = False
-        for prior in candidates:
+
+        def _account_evidence(prior, cid=cid) -> bool:
+            """True iff this prior event is pending/resolved creation evidence
+            for cid. Materializability has two layers (Codex rounds 2+3 P2 —
+            statically re-predicting the projection's write logic is an
+            unwinnable arms race): (a) static — the creation fields
+            AccountProjection.handle subscripts unconditionally must be
+            present, non-empty strings; (b) dynamic (the closing rule) —
+            evidence only counts while the ACCOUNT read model has NOT yet
+            consumed the prior event; once its marker exists, the round-4
+            stale-read rule re-resolves the row (committed concurrently →
+            resolved, retry succeeds) and marker-with-row-still-absent means
+            draining can never materialize it (not evidence — terminal).
+            While the account projection is instead HALTED on a bad prior
+            event, the defer persists exactly as long as that visible,
+            operator-repairable halt does (the A41 dependency contract)."""
             try:
                 prior_data = prior.get_data()
             except Exception:
-                continue
+                return False
             if not isinstance(prior_data, dict):
-                continue
+                return False
             if canonical_account_id(prior_data.get("account_public_id")) != cid:
-                continue
-            # Materializability (Codex rounds 2+3 P2). Two layers, because
-            # statically re-predicting the projection's write logic is an
-            # unwinnable arms race (missing keys, None values, uniqueness
-            # collisions, ...):
-            #
-            # (a) static: the creation fields AccountProjection.handle
-            #     subscripts unconditionally must be present and non-empty
-            #     strings — statically-evident garbage is never evidence;
-            # (b) dynamic (the closing rule): the evidence only counts while
-            #     the ACCOUNT read model has NOT yet consumed the prior
-            #     event. Once its ProjectionAppliedEvent marker exists and
-            #     the row STILL does not resolve, draining can never
-            #     materialize it (applied-without-row, or terminally
-            #     skipped) — the reference is permanently unknown and must
-            #     go terminal, not defer forever. While the account
-            #     projection is instead HALTED on a bad prior event, the
-            #     defer persists exactly as long as that visible,
-            #     operator-repairable halt does (the A41 dependency
-            #     contract), and flips terminal the moment the operator
-            #     terminally skips it.
+                return False
             if not all(
                 isinstance(prior_data.get(key), str) and prior_data.get(key) for key in ("code", "name", "account_type")
             ):
-                continue
-            from projections.accounting import AccountProjection
-            from projections.models import ProjectionAppliedEvent
-
+                return False
             if ProjectionAppliedEvent.objects.filter(
                 company=event.company,
-                projection_name=AccountProjection().name,
+                projection_name=account_read_model,
                 event=prior,
             ).exists():
-                # Codex round-4 P1: the marker alone is a stale-read hazard —
-                # the account projection may have COMMITTED (row + marker)
-                # between this function's earlier facts query and this marker
-                # query. Re-resolve the row AFTER observing the marker: if it
-                # exists now, the reference is materialized and the retry
-                # will succeed (defer); only marker-with-row-still-absent
-                # means draining can never materialize it (terminal).
-                if load_account_facts(event.company, [cid]):
+                return bool(load_account_facts(event.company, [cid]))
+            return True
+
+        base = _BusinessEvent.objects.filter(
+            company=event.company,
+            event_type=EventTypes.ACCOUNT_CREATED,
+            company_sequence__lt=event.company_sequence,
+        )
+        fast = base.filter(
+            Q(aggregate_id=cid) | Q(data__account_public_id=cid) | Q(payload_ref__payload__account_public_id=cid)
+        ).order_by("company_sequence")[:5]
+        creates_cid = False
+        seen_pks = set()
+        for prior in fast:
+            seen_pks.add(prior.pk)
+            if _account_evidence(prior):
+                creates_cid = True
+                break
+        if not creates_cid:
+            # Canonical-scan fallback (Codex round-10 P2): the exact-match
+            # arms miss noncanonical stored spellings; the scan is bounded by
+            # the company's account-event count and runs only on the failure
+            # path with no fast-path hit.
+            for prior in base.order_by("company_sequence").iterator(chunk_size=200):
+                if prior.pk in seen_pks:
+                    continue
+                if _account_evidence(prior):
                     creates_cid = True
                     break
-                # Consumed, row still absent — not pending.
-                continue
-            creates_cid = True
-            break
         if not creates_cid:
             return False
     return True
@@ -448,14 +475,20 @@ def _readable_payload(event: BusinessEvent) -> dict:
     return data
 
 
-def _is_uuid(value: object) -> bool:
+def _canonical_uuid(value: object) -> str | None:
+    """Canonical lowercase-hyphenated spelling, or None for a non-UUID —
+    identity comparisons in this module are ALWAYS canonical (Codex round-10
+    P2: equivalent spellings are accepted inputs everywhere else)."""
     if value is None or isinstance(value, bool):
-        return False
+        return None
     try:
-        UUID(str(value))
+        return str(UUID(str(value)))
     except (ValueError, AttributeError, TypeError):
-        return False
-    return True
+        return None
+
+
+def _is_uuid(value: object) -> bool:
+    return _canonical_uuid(value) is not None
 
 
 def validate_reversed_journal_apply(event: BusinessEvent) -> None:

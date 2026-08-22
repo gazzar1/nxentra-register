@@ -1012,6 +1012,95 @@ class TestLifecycleOrderingUnderDefer:
             company=company, projection_name=projection.name, event=analysis_event
         ).exists()
 
+    def test_pending_account_found_despite_noncanonical_spelling(self, company, user, cash_account, revenue_account):
+        """Codex round-10 P2: an account event stored with an UPPERCASE UUID
+        spelling is the same account — exact-match predicates would miss it
+        and terminally quarantine a valid posted journal; the canonical-scan
+        fallback must find it."""
+        from accounting.models import Account
+        from projections.accounting import AccountProjection
+
+        new_account_id = uuid4()
+        emit_event(
+            company=company,
+            event_type=EventTypes.ACCOUNT_CREATED,
+            aggregate_type="Account",
+            aggregate_id=str(new_account_id).upper(),
+            data={
+                "account_public_id": str(new_account_id).upper(),  # noncanonical spelling
+                "code": "1084",
+                "name": "Uppercase-spelled account",
+                "account_type": "ASSET",
+                "normal_balance": "DEBIT",
+                "is_header": False,
+            },
+            caused_by_user=user,
+            idempotency_key=f"apply-test:upper-acct:{new_account_id}",
+        )
+        payload = _posted_payload(uuid4(), user, cash_account, revenue_account)
+        payload["lines"][0]["account_public_id"] = str(new_account_id)  # canonical reference
+        event = _emit_posted(company, user, payload)
+
+        balances = AccountBalanceProjection()
+        balances.process_pending(company)
+        assert not ProjectionFailureLog.objects.filter(company=company, event_id=event.id).exists()  # deferred
+
+        AccountProjection().process_pending(company)
+        assert Account.objects.filter(company=company, public_id=new_account_id).exists()
+        balances.process_pending(company)
+        assert AccountBalance.objects.get(company=company, account__public_id=new_account_id).debit_total == Decimal(
+            "100.00"
+        )
+
+    def test_pending_post_found_despite_noncanonical_spelling(self, company, user, cash_account, revenue_account):
+        """Codex round-10 P2 (entry twin): a posted event whose payload spells
+        the entry id in uppercase is the same entry — the reversal referencing
+        the canonical spelling must still defer behind it."""
+        from projections.accounting import AccountProjection
+
+        lag_id = self._emit_lagging_account(company, user, code="1083")
+        original_id = uuid4()
+        payload = _posted_payload(str(original_id).upper(), user, cash_account, revenue_account)
+        payload["lines"][0]["account_public_id"] = str(lag_id)
+        emit_event(
+            company=company,
+            event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+            aggregate_type="JournalEntry",
+            aggregate_id=str(original_id).upper(),
+            data=payload,
+            caused_by_user=user,
+            idempotency_key=f"apply-test:upper-post:{original_id}",
+        )
+        reversal_id = uuid4()
+        _emit_posted(company, user, _posted_payload(reversal_id, user, revenue_account, cash_account))
+        reversed_event = emit_event(
+            company=company,
+            event_type=EventTypes.JOURNAL_ENTRY_REVERSED,
+            aggregate_type="JournalEntry",
+            aggregate_id=str(original_id),
+            data={
+                "original_entry_public_id": str(original_id),  # canonical reference
+                "reversal_entry_public_id": str(reversal_id),
+                "reversed_at": "2026-01-06T12:00:00",
+                "reversed_by_id": user.id,
+                "reversed_by_email": user.email,
+            },
+            caused_by_user=user,
+            idempotency_key=f"apply-test:upper-rev:{original_id}",
+        )
+
+        projection = JournalEntryProjection()
+        projection.process_pending(company)
+        assert not ProjectionAppliedEvent.objects.filter(
+            company=company, projection_name=projection.name, event=reversed_event
+        ).exists()  # deferred — found via the canonical-scan fallback
+
+        AccountProjection().process_pending(company)
+        projection.process_pending(company)
+
+        original = JournalEntry.objects.get(company=company, public_id=original_id)
+        assert original.status == JournalEntry.Status.REVERSED
+
     def test_draft_row_does_not_mask_pending_post(self, company, user, cash_account, revenue_account):
         """Codex round-9 P1: the normal lifecycle materializes a DRAFT row
         from CREATED before the post — a row-existence check would declare
