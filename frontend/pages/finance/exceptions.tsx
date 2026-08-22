@@ -14,7 +14,7 @@
  * count, and a "Mark resolved" action.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import type { GetServerSideProps } from "next";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import {
@@ -43,6 +43,10 @@ import {
   type ProjectionFailureDetail,
   type ProjectionFailureSummary,
 } from "@/services/projection-failures.service";
+import {
+  importRejectedRowsService,
+  type ImportRejectedRow,
+} from "@/services/import-rejected-rows.service";
 
 // =============================================================================
 // Visual helpers
@@ -107,6 +111,22 @@ export default function ExceptionsPage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
+  // A5-PR3: durable per-row import rejections (settlement / bank CSV).
+  const [importRejects, setImportRejects] = useState<ImportRejectedRow[]>([]);
+  // Filtered count (respects the Open/Resolved/All filter) — drives the queue.
+  const [importRejectsCount, setImportRejectsCount] = useState(0);
+  // Always-unresolved count (filter-independent) — drives the "Total Unresolved"
+  // summary card, which pairs with the always-unresolved projection summary
+  // (Codex round-5: the filtered count would inflate the total under Resolved/All).
+  const [unresolvedRejectsCount, setUnresolvedRejectsCount] = useState(0);
+  // Offset-paged "Load more" for the reject queue so a large malformed CSV's
+  // rejections past the first page stay reachable/resolvable. A growing single-
+  // request limit is capped by the endpoint's 500 max (Codex round-8), so each
+  // page is a fixed-size fetch at an increasing offset instead.
+  const [loadingMoreRejects, setLoadingMoreRejects] = useState(false);
+  const [resolvingRejectId, setResolvingRejectId] = useState<number | null>(null);
+  const [expandedRejectId, setExpandedRejectId] = useState<number | null>(null);
+
   // Filters
   const [resolvedFilter, setResolvedFilter] = useState<"true" | "false" | "all">(
     "false"
@@ -127,7 +147,7 @@ export default function ExceptionsPage() {
 
   const fetchAll = async () => {
     try {
-      const [sum, list] = await Promise.all([
+      const [sum, list, rejects, unresolvedRejects] = await Promise.all([
         projectionFailuresService.summary(),
         projectionFailuresService.list({
           resolved: resolvedFilter,
@@ -135,10 +155,16 @@ export default function ExceptionsPage() {
           category: (categoryFilter || undefined) as FailureCategory | undefined,
           limit: 100,
         }),
+        importRejectedRowsService.list({ resolved: resolvedFilter, limit: 100, offset: 0 }),
+        // Filter-independent unresolved count for the summary card (see state).
+        importRejectedRowsService.list({ resolved: "false", limit: 1 }),
       ]);
       setSummary(sum);
       setItems(list.results);
       setTotalCount(list.total_count);
+      setImportRejects(rejects.results);
+      setImportRejectsCount(rejects.total_count);
+      setUnresolvedRejectsCount(unresolvedRejects.total_count);
     } catch (err) {
       toast({
         title: "Failed to load exceptions",
@@ -158,6 +184,30 @@ export default function ExceptionsPage() {
     setRefreshing(true);
     await fetchAll();
     setRefreshing(false);
+  };
+
+  // Append the next page of import rejections (offset = rows already loaded).
+  // Fixed 100-row pages keep every request under the endpoint's 500 clamp, so
+  // rows past the first 500 stay reachable (unlike a growing single-request limit).
+  const handleLoadMoreRejects = async () => {
+    setLoadingMoreRejects(true);
+    try {
+      const next = await importRejectedRowsService.list({
+        resolved: resolvedFilter,
+        limit: 100,
+        offset: importRejects.length,
+      });
+      setImportRejects((prev) => [...prev, ...next.results]);
+      setImportRejectsCount(next.total_count);
+    } catch (err) {
+      toast({
+        title: "Failed to load more import rejections",
+        description: (err as Error).message || "Try refreshing.",
+        variant: "destructive",
+      });
+    } finally {
+      setLoadingMoreRejects(false);
+    }
   };
 
   const handleExpand = async (failure: ProjectionFailure) => {
@@ -204,6 +254,28 @@ export default function ExceptionsPage() {
     }
   };
 
+  const handleResolveReject = async (row: ImportRejectedRow) => {
+    setResolvingRejectId(row.id);
+    try {
+      // The reject UI collects no note — never leak the projection-failure
+      // `resolutionNote` onto an unrelated reject's audit trail (Codex P2).
+      await importRejectedRowsService.resolve(row.id);
+      toast({
+        title: "Import rejection resolved",
+        description: `${row.source_kind} row ${row.row_index} (${row.reason_code})`,
+      });
+      await fetchAll();
+    } catch (err) {
+      toast({
+        title: "Failed to resolve",
+        description: (err as Error).message,
+        variant: "destructive",
+      });
+    } finally {
+      setResolvingRejectId(null);
+    }
+  };
+
   // =========================================================================
   // Summary cards (per-category counts)
   // =========================================================================
@@ -230,7 +302,7 @@ export default function ExceptionsPage() {
       <div className="space-y-6 p-6">
         <PageHeader
           title="Exceptions"
-          subtitle="Projection failures that need operator attention"
+          subtitle="Projection failures and import rejections that need operator attention"
           actions={
             <Button
               variant="outline"
@@ -256,11 +328,16 @@ export default function ExceptionsPage() {
                 </CardTitle>
               </CardHeader>
               <CardContent>
+                {/* A5-PR3 (Codex round-4/5): fold the ALWAYS-UNRESOLVED import-reject
+                    count into the page-level total + all-clear so this card can't say
+                    "0 / all clear" while dropped import rows sit unresolved below —
+                    and using the filter-independent count keeps the total correct
+                    under the Resolved/All queue filters. */}
                 <div className="text-3xl font-semibold">
-                  {summary.total_unresolved}
+                  {summary.total_unresolved + unresolvedRejectsCount}
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  {summary.total_unresolved === 0
+                  {summary.total_unresolved + unresolvedRejectsCount === 0
                     ? "All clear — projections healthy."
                     : "Need operator review."}
                 </p>
@@ -361,13 +438,31 @@ export default function ExceptionsPage() {
         ) : items.length === 0 ? (
           <Card>
             <CardContent className="flex flex-col items-center gap-3 py-16 text-center">
-              <CheckCircle2 className="h-12 w-12 text-emerald-500" />
-              <h3 className="text-lg font-medium">No exceptions to show</h3>
-              <p className="text-sm text-muted-foreground">
-                {resolvedFilter === "false"
-                  ? "All projections are running cleanly. When something fails, it'll show up here."
-                  : "No failures match the current filters."}
-              </p>
+              {/* Codex round-6: the celebratory green all-clear only when there is
+                  genuinely nothing anywhere. If projection failures are empty but
+                  import rejects are listed below, show a projection-scoped note that
+                  points to them, so the page never presents a contradictory
+                  "all clear" above an active rejection. */}
+              {importRejectsCount === 0 ? (
+                <>
+                  <CheckCircle2 className="h-12 w-12 text-emerald-500" />
+                  <h3 className="text-lg font-medium">No exceptions to show</h3>
+                  <p className="text-sm text-muted-foreground">
+                    {resolvedFilter === "false"
+                      ? "All projections are running cleanly. When something fails, it'll show up here."
+                      : "No failures match the current filters."}
+                  </p>
+                </>
+              ) : (
+                <>
+                  <h3 className="text-lg font-medium">No projection failures</h3>
+                  <p className="text-sm text-muted-foreground">
+                    {resolvedFilter === "false"
+                      ? "No projection failures — but there are import rejections below that need review."
+                      : "No projection failures match the current filters. See import rejections below."}
+                  </p>
+                </>
+              )}
             </CardContent>
           </Card>
         ) : (
@@ -407,6 +502,154 @@ export default function ExceptionsPage() {
             </CardContent>
           </Card>
         )}
+
+        {/* A5-PR3: durable per-row import rejections (settlement / bank CSV) —
+            rows dropped at ingest with no event, so they have no
+            ProjectionFailureLog. Surfaced here alongside projection failures. */}
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-sm font-medium">
+              <AlertTriangle className="h-4 w-4" />
+              Import rejections
+              <Badge variant={importRejectsCount === 0 ? "outline" : "warning"}>
+                {importRejectsCount}
+              </Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="p-0">
+            {importRejects.length === 0 ? (
+              <p className="px-4 py-6 text-sm text-muted-foreground">
+                No dropped settlement/bank import rows.
+              </p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50">
+                  <tr>
+                    <th className="w-8" />
+                    <th className="px-3 py-2 text-left">Source</th>
+                    <th className="px-3 py-2 text-left">File</th>
+                    <th className="px-3 py-2 text-right">Row</th>
+                    <th className="px-3 py-2 text-left">Reason</th>
+                    <th className="px-3 py-2 text-left">Detail</th>
+                    <th className="px-3 py-2 text-right">Occurrences</th>
+                    <th className="px-3 py-2 text-right">Last seen</th>
+                    <th className="px-3 py-2 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {importRejects.map((r) => (
+                    <Fragment key={r.id}>
+                      <tr className="border-t hover:bg-muted/30">
+                        <td className="px-2 py-2 align-top">
+                          <button
+                            onClick={() =>
+                              setExpandedRejectId(expandedRejectId === r.id ? null : r.id)
+                            }
+                            className="inline-flex items-center text-muted-foreground hover:text-foreground"
+                            aria-label={expandedRejectId === r.id ? "Collapse" : "Expand"}
+                          >
+                            {expandedRejectId === r.id ? (
+                              <ChevronDown className="h-4 w-4" />
+                            ) : (
+                              <ChevronRight className="h-4 w-4" />
+                            )}
+                          </button>
+                        </td>
+                        <td className="px-3 py-2 align-top">
+                          {r.source_kind}
+                          {r.provider_code ? ` · ${r.provider_code}` : ""}
+                        </td>
+                        <td className="px-3 py-2 align-top font-mono text-xs">
+                          {r.source_filename || "—"}
+                        </td>
+                        <td className="px-3 py-2 align-top text-right tabular-nums">
+                          {r.row_index}
+                        </td>
+                        <td className="px-3 py-2 align-top">
+                          <Badge variant="warning">{r.reason_code}</Badge>
+                        </td>
+                        <td className="px-3 py-2 align-top max-w-md">
+                          <div className="line-clamp-2">{r.reason_message}</div>
+                        </td>
+                        <td className="px-3 py-2 align-top text-right tabular-nums">
+                          {r.occurrence_count}
+                        </td>
+                        <td className="px-3 py-2 align-top text-right text-muted-foreground">
+                          {timeAgo(r.last_seen_at)}
+                        </td>
+                        <td className="px-3 py-2 align-top text-right">
+                          {r.resolved ? (
+                            <Badge variant="outline">Resolved</Badge>
+                          ) : isAdmin ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleResolveReject(r)}
+                              disabled={resolvingRejectId === r.id}
+                            >
+                              {resolvingRejectId === r.id ? (
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                              ) : (
+                                "Mark resolved"
+                              )}
+                            </Button>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">Admin only</span>
+                          )}
+                        </td>
+                      </tr>
+                      {expandedRejectId === r.id && (
+                        <tr className="border-t bg-muted/20">
+                          <td colSpan={9} className="space-y-3 p-4">
+                            {r.reason_message && (
+                              <div>
+                                <div className="mb-1 text-xs font-medium uppercase text-muted-foreground">
+                                  Reason
+                                </div>
+                                <div className="text-sm">{r.reason_message}</div>
+                              </div>
+                            )}
+                            <div>
+                              <div className="mb-1 text-xs font-medium uppercase text-muted-foreground">
+                                Original row (preserved evidence)
+                              </div>
+                              <pre className="max-h-64 overflow-auto rounded border bg-background p-3 font-mono text-xs">
+                                {JSON.stringify(r.raw_row, null, 2)}
+                              </pre>
+                            </div>
+                            <div className="font-mono text-xs text-muted-foreground">
+                              batch {r.import_batch_id} · first {r.first_seen_at} · last{" "}
+                              {r.last_seen_at}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {/* Codex round-7: the filtered total can exceed the fetched page, so
+                keep older rejections reachable/resolvable instead of stranding them
+                behind the newest 100. */}
+            {importRejects.length < importRejectsCount && (
+              <div className="border-t p-3 text-center">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleLoadMoreRejects}
+                  disabled={loadingMoreRejects || refreshing}
+                >
+                  {loadingMoreRejects ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    `Load more (${importRejects.length} of ${importRejectsCount})`
+                  )}
+                </Button>
+              </div>
+            )}
+          </CardContent>
+        </Card>
       </div>
     </AppLayout>
   );

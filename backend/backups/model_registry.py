@@ -34,6 +34,7 @@ def get_export_registry():
         CompanySequence,
         Customer,
         ExchangeRate,
+        ImportRejectedRow,
         JournalEntry,
         JournalLine,
         JournalLineAnalysis,
@@ -190,6 +191,10 @@ def get_export_registry():
     registry["accounting.BankStatement"] = AcctBankStatement
     registry["accounting.BankStatementLine"] = BankStatementLine
     registry["accounting.BankReconciliation"] = BankReconciliation
+    # A5-PR3: durable per-row import-reject records. Holds data with NO event
+    # source (rows dropped pre-event), so it is a WRITE model that MUST be backed
+    # up (not rebuildable) — after BankStatement/Line (its nullable FK target).
+    registry["accounting.ImportRejectedRow"] = ImportRejectedRow
     registry["accounting.ModuleAccountMapping"] = ModuleAccountMapping
 
     # ── Layer 3: Projection Read Models ─────────────────────────
