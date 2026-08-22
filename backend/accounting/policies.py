@@ -139,12 +139,83 @@ def can_change_account_type(actor, account) -> tuple[bool, str]:
 
     Rules:
     - Cannot change type if account has transactions (LOCKED)
+    - A3-PR3: cannot change type once the account carries POSTED/REVERSED
+      journal lines. The LOCKED check alone was a dead guard (no production
+      code ever sets LOCKED), which left ``account_type`` mutable on accounts
+      with posted history — and memo classification at the apply boundary
+      derives from the CURRENT account type, so such a change would make
+      legitimately-emitted historical journal events fail the canonical
+      apply invariant (quarantined on rebuild, refused on restore). Like
+      ``can_delete_account``, the guard decides on durable evidence, not on
+      a status flag; DRAFT/INCOMPLETE references deliberately do not freeze
+      the type. The command-layer field freeze already keeps
+      ``ledger_domain`` (the other memo input) immutable, so together the
+      apply-time memo verdict is time-invariant for any account with posted
+      history.
     """
     if not check_tenant_boundary(actor, account):
         return False, "Cross-company action denied."
 
     if account.status == account.Status.LOCKED:
         return False, "Cannot change type of an account with transactions."
+
+    from accounting.journal_invariant import canonical_account_id
+    from accounting.models import JournalEntry
+    from events.models import BusinessEvent
+    from events.types import EventTypes
+
+    # Fast path on the read model: any POSTED/REVERSED line row is already
+    # sufficient refusal evidence.
+    if account.journal_lines.filter(
+        entry__status__in=(JournalEntry.Status.POSTED, JournalEntry.Status.REVERSED)
+    ).exists():
+        return False, "Cannot change type of an account that has posted transactions."
+
+    # Durable-evidence scan (Codex rounds 1+3 P1): projection state — rows OR
+    # applied-markers — cannot prove the account is unreferenced. An
+    # unmaterialized posted event has no rows yet; a pre-boundary
+    # marker-with-partial-application (a projector that marked the event
+    # applied after silently skipping this account's line) has a marker but
+    # no row either. The only durable truth is the POSTED EVENTS themselves:
+    # if any stored posted payload references this account, the type is
+    # frozen — a later rebuild re-derives from those payloads and would
+    # reinterpret/quarantine valid history under the new type.
+    # update_account already holds the CompanyEventCounter lock here, so no
+    # new posted event can commit concurrently. Type changes are rare
+    # operator actions; the scan is bounded by the company's posted-event
+    # count and short-circuits on first reference.
+    target = canonical_account_id(account.public_id)
+    posted_events = BusinessEvent.objects.filter(
+        company=actor.company,
+        event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+    ).select_related("payload_ref")
+    cannot_verify = (
+        False,
+        "Cannot change account type: a stored posted-journal event is "
+        "unreadable or malformed, so the account's posted history cannot be verified.",
+    )
+    for event in posted_events.iterator(chunk_size=500):
+        try:
+            data = event.get_data()
+        except Exception:
+            # An unreadable posted payload might reference this account —
+            # fail closed (unavailability over contradictory history).
+            return cannot_verify
+        # Codex round-4 P2: malformed payload SHAPES fail closed exactly like
+        # resolution exceptions — a non-dict payload, a non-list lines
+        # container, or a non-dict line entry could all hide a reference a
+        # later repair/rebuild would reveal; "no readable references" is not
+        # "no references".
+        if not isinstance(data, dict):
+            return cannot_verify
+        lines = data.get("lines")
+        if not isinstance(lines, list):
+            return cannot_verify
+        for line in lines:
+            if not isinstance(line, dict):
+                return cannot_verify
+            if canonical_account_id(line.get("account_public_id")) == target:
+                return False, "Cannot change type of an account that has posted transactions."
 
     return True, ""
 

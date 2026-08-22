@@ -244,43 +244,57 @@ class Command(BaseCommand):
         }
 
     def _check_event_payload_integrity(self, company):
-        """Check 5: JOURNAL_ENTRY_POSTED events must have valid payload structure."""
+        """Check 5: JOURNAL_ENTRY_POSTED events must satisfy the canonical
+        apply invariant.
+
+        A3-PR3 (D7): this check previously hand-rolled its own required-fields
+        payload validation — a second invariant implementation, forbidden by
+        the one-invariant-per-concept rule. It now delegates to the SAME
+        evaluator the apply boundary and restore verification use
+        (``check_posted_journal(mode="apply")`` under the hood), so the audit
+        reports exactly what apply-time enforcement would quarantine.
+        """
+        from accounting.posted_journal_apply import evaluate_posted_journal_for_apply, is_deferrable_apply_verdict
         from events.models import BusinessEvent
         from events.types import EventTypes
 
         # Sample up to 100 recent events
-        events = BusinessEvent.objects.filter(
-            company=company,
-            event_type=EventTypes.JOURNAL_ENTRY_POSTED,
-        ).order_by("-company_sequence")[:100]
+        events = (
+            BusinessEvent.objects.filter(
+                company=company,
+                event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+            )
+            .select_related("payload_ref")
+            .order_by("-company_sequence")[:100]
+        )
 
+        from projections.models import ProjectionAppliedEvent
+
+        facts_cache: dict = {}
         invalid = []
         for event in events:
-            try:
-                data = event.get_data()
-                if not isinstance(data, dict):
-                    invalid.append({"event_id": event.id, "reason": "payload is not a dict"})
-                    continue
-                required = ["entry_public_id", "lines", "total_debit", "total_credit"]
-                missing = [f for f in required if f not in data]
-                if missing:
-                    invalid.append(
-                        {
-                            "event_id": event.id,
-                            "reason": f"missing fields: {missing}",
-                        }
-                    )
-            except Exception as e:
-                invalid.append(
-                    {
-                        "event_id": event.id,
-                        "reason": f"payload read error: {str(e)[:100]}",
-                    }
-                )
+            codes = evaluate_posted_journal_for_apply(event, facts_cache=facts_cache)
+            if (
+                codes
+                and is_deferrable_apply_verdict(event, codes)
+                # Same marker guard as restore verification (Codex round-2
+                # P2): a marker for this event means no retry will ever
+                # re-apply it — the lag is NOT self-healing there, so it IS
+                # reportable damage (pre-boundary silent skip), not a
+                # deferred event.
+                and not ProjectionAppliedEvent.objects.filter(company=company, event=event).exists()
+            ):
+                # Read-model lag the choke point DEFERS on (shared predicate)
+                # — replayable, not corrupt; reporting it as CRITICAL would
+                # break the "exactly what apply-time enforcement would
+                # quarantine" contract.
+                continue
+            if codes:
+                invalid.append({"event_id": event.id, "reason": ", ".join(codes)})
 
         return {
             "name": "event_payload_integrity",
-            "description": "JOURNAL_ENTRY_POSTED events with valid payload",
+            "description": "JOURNAL_ENTRY_POSTED events satisfying the canonical apply invariant",
             "severity": "CRITICAL",
             "count": len(invalid),
             "details": invalid[:20],

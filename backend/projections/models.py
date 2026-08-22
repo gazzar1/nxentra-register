@@ -179,12 +179,33 @@ class AccountBalance(ProjectionOwnedModel):
 
         account_public_id = str(self.account.public_id)
 
+        # A3-PR3 (Codex round-11 P1): account-derived memo classification —
+        # verifying against the raw payload flag would disagree with the
+        # apply boundary and the balance consumers whenever the flag lies.
+        from accounting.posted_journal_apply import (
+            excluded_posted_event_ids,
+            line_is_memo,
+            memo_account_public_ids,
+            posted_event_accepted_for_apply,
+        )
+
+        memo_ids = memo_account_public_ids(self.company)
+        apply_facts_cache: dict = {}
+        apply_excluded_ids = excluded_posted_event_ids(self.company)
+
+        from accounting.posted_journal_apply import canonical_line_account_id
+
         for event in events:
+            # A3-PR3 (Codex round-12 P1): fold only apply-accepted events —
+            # see AccountBalanceProjection.verify_all_balances.
+            if not posted_event_accepted_for_apply(event, apply_facts_cache, apply_excluded_ids):
+                continue
             lines = event.get_data().get("lines", [])
             for line_data in lines:
-                if line_data.get("account_public_id") != account_public_id:
+                # Codex round-18 P1: canonical identity comparison.
+                if canonical_line_account_id(line_data) != account_public_id:
                     continue
-                if line_data.get("is_memo_line", False):
+                if line_is_memo(line_data, memo_ids):
                     continue
 
                 debit = Decimal(line_data.get("debit", "0"))
@@ -1173,6 +1194,12 @@ class ProjectionStatus(models.Model):
 # - projections/exceptions.py — ProjectionStateError, ProjectionCommandFailedError
 # - projections/base.py BaseProjection.on_error — writes here
 
+# The framework-owned mark of a GENUINE successful re-apply (A105 self-heal,
+# written only by BaseProjection.process_pending on a successful handle).
+# The event-fold acceptance filter keys on this persisted resolution KIND;
+# mark_resolved refuses to reproduce it (Codex round-15 P1).
+SELF_HEALED_RESOLUTION_NOTE = "Self-healed: event processed successfully on retry."
+
 
 class ProjectionFailureLog(models.Model):
     """Operator-visible record of a projection handler failing on an event.
@@ -1291,12 +1318,22 @@ class ProjectionFailureLog(models.Model):
         return f"[{self.category}] {self.projection_name} on event {self.event_id}: {self.message[:60]}"
 
     def mark_resolved(self, user=None, note: str = ""):
-        """Operator action: mark this failure as resolved."""
+        """Operator action: mark this failure as resolved.
+
+        A3-PR3 (Codex round-15 P1): an operator resolution must never be
+        able to produce the framework's SELF-HEALED signature — the
+        event-fold acceptance filter keys on the persisted resolution KIND
+        (the framework-owned resolution_note sentinel; resolved_by is a
+        nullable SET_NULL user reference and therefore not a reliable kind
+        marker). A colliding note is replaced, and an empty note gets an
+        explicit operator marker.
+        """
         from django.utils import timezone
 
         self.resolved = True
         self.resolved_at = timezone.now()
         self.resolved_by = user
-        if note:
-            self.resolution_note = note
+        if not note or note.strip() == SELF_HEALED_RESOLUTION_NOTE:
+            note = "Operator-resolved."
+        self.resolution_note = note
         self.save(update_fields=["resolved", "resolved_at", "resolved_by", "resolution_note"])

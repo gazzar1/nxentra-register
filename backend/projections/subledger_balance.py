@@ -56,7 +56,9 @@ class SubledgerBalanceProjection(BaseProjection):
     def consumes(self) -> list[str]:
         return [
             EventTypes.JOURNAL_ENTRY_POSTED,
-            # LEPH chunked journal events
+            # A3-PR3 (D5): stays CONSUMED so the apply boundary sees it, but
+            # the boundary quarantines every chunk event before any handler
+            # runs — see AccountBalanceProjection.consumes for the rationale.
             EventTypes.JOURNAL_LINES_CHUNK_ADDED,
         ]
 
@@ -71,9 +73,9 @@ class SubledgerBalanceProjection(BaseProjection):
         """
         if event.event_type == EventTypes.JOURNAL_ENTRY_POSTED:
             self._handle_posted(event)
-        elif event.event_type == EventTypes.JOURNAL_LINES_CHUNK_ADDED:
-            self._handle_chunk(event)
         else:
+            # JOURNAL_LINES_CHUNK_ADDED never reaches here — the A3-PR3 apply
+            # boundary quarantines it at the process_pending choke point.
             logger.warning(f"Unknown event type: {event.event_type}")
 
     def _handle_posted(self, event: BusinessEvent) -> None:
@@ -93,33 +95,6 @@ class SubledgerBalanceProjection(BaseProjection):
             entry_date = datetime.fromisoformat(entry_date_str).date()
 
         # Process each line
-        for line_data in lines:
-            self._apply_line(
-                company=event.company,
-                line_data=line_data,
-                entry_date=entry_date,
-                event=event,
-            )
-
-    def _handle_chunk(self, event: BusinessEvent) -> None:
-        """Handle LEPH journal.lines_chunk_added event."""
-        data = event.get_data()
-        lines = data.get("lines", [])
-
-        if not lines:
-            return
-
-        # Get entry date from parent event if available
-        entry_date = None
-        if event.caused_by_event:
-            parent_data = event.caused_by_event.get_data()
-            entry_date_str = parent_data.get("date")
-            if entry_date_str:
-                from datetime import datetime
-
-                entry_date = datetime.fromisoformat(entry_date_str).date()
-
-        # Process each line in the chunk
         for line_data in lines:
             self._apply_line(
                 company=event.company,
@@ -149,10 +124,20 @@ class SubledgerBalanceProjection(BaseProjection):
 
         debit = Decimal(line_data.get("debit", "0"))
         credit = Decimal(line_data.get("credit", "0"))
-        is_memo = line_data.get("is_memo_line", False)
 
-        # Skip memo lines for financial balances
-        if is_memo:
+        # A3-PR3 (Codex round-2 P1): memo classification from the RESOLVED
+        # ACCOUNT (the canonical invariant's authority rule) — the payload
+        # flag is only the fallback when no account resolves (which validated
+        # posted events never hit; see AccountBalanceProjection._apply_line).
+        from accounting.journal_invariant import canonical_account_id
+        from accounting.models import Account
+
+        cid = canonical_account_id(line_data.get("account_public_id"))
+        account = Account.objects.filter(company=company, public_id=cid).first() if cid else None
+        if account is not None:
+            if account.is_memo_account:
+                return
+        elif line_data.get("is_memo_line", False):
             return
 
         # Skip if no actual amount

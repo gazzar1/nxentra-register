@@ -57,7 +57,33 @@ def booked_company(company, user, cash_account, revenue_account):
         aggregate_type="JournalEntry",
         aggregate_id=str(entry.public_id),
         idempotency_key=f"test.backup:{entry.public_id}",
-        data={"entry_public_id": str(entry.public_id)},
+        # A3-PR3 (D6): restore verification now runs the canonical apply
+        # invariant over every restored posted-JE event, so the fixture's
+        # backing event must be a REAL invariant-valid payload (a real
+        # stream's posted events always are — the emit boundary guarantees
+        # it), not a stub.
+        data={
+            "entry_public_id": str(entry.public_id),
+            "date": "2026-03-10",
+            "period": 3,
+            "memo": "restore-fixture entry",
+            "total_debit": "100.00",
+            "total_credit": "100.00",
+            "lines": [
+                {
+                    "line_no": 1,
+                    "account_public_id": str(cash_account.public_id),
+                    "debit": "100.00",
+                    "credit": "0.00",
+                },
+                {
+                    "line_no": 2,
+                    "account_public_id": str(revenue_account.public_id),
+                    "debit": "0.00",
+                    "credit": "100.00",
+                },
+            ],
+        },
     )
     return company
 
@@ -225,6 +251,325 @@ class TestHappyPathAndInvariants:
         with pytest.raises(RestoreError, match="trial balance"):
             restore_company(company, tampered)
         assert _snapshot(company) == before, "the invariant failure must roll back the whole restore"
+
+
+def _retamper_member(zip_bytes, member, new_bytes):
+    """Replace one model member AND recompute the manifest export_hash so the
+    archive stays internally consistent — only a post-restore invariant can
+    catch the corruption (export_hash proves internal consistency, not
+    provenance)."""
+    import hashlib
+
+    from backups.model_registry import get_export_registry
+
+    src = zipfile.ZipFile(io.BytesIO(zip_bytes))
+    replaced = {member: new_bytes}
+    hasher = hashlib.sha256()
+    names = set(src.namelist())
+    for label in get_export_registry():
+        m = f"models/{label}.json"
+        if m in names:
+            hasher.update(replaced.get(m, src.read(m)))
+    new_hash = hasher.hexdigest()
+
+    def _fix_hash(manifest):
+        manifest["export_hash"] = new_hash
+
+    return _tamper(zip_bytes, replace=replaced, edit_manifest=_fix_hash)
+
+
+class TestApplyInvariantOnRestore:
+    """A3-PR3 (D6): restore re-inserts the event stream wholesale and never
+    replays it, so the projection-apply choke point cannot see restored
+    history. `_verify_restore` therefore runs the canonical apply invariant
+    over every restored JOURNAL_ENTRY_POSTED event, fail-closed inside the
+    restore transaction."""
+
+    def _tamper_posted_event(self, zip_bytes, mutate):
+        src = zipfile.ZipFile(io.BytesIO(zip_bytes))
+        events = json.loads(src.read("models/events.BusinessEvent.json"))
+        touched = 0
+        for record in events:
+            if record.get("event_type") == "journal_entry.posted":
+                mutate(record)
+                touched += 1
+        assert touched, "fixture must contain a posted-JE event"
+        return _retamper_member(
+            zip_bytes,
+            "models/events.BusinessEvent.json",
+            json.dumps(events, ensure_ascii=False).encode("utf-8"),
+        )
+
+    def test_unbalanced_posted_event_fails_restore(self, booked_company):
+        """The event payload is corrupted but the materialized ROWS still
+        balance — the trial-balance check passes and ONLY the event-corpus
+        apply invariant can refuse the archive."""
+        company = booked_company
+        zip_bytes, _ = export_company(company)
+        before = _snapshot(company)
+
+        def _unbalance(record):
+            record["data"]["lines"][1]["credit"] = "90.00"
+
+        tampered = self._tamper_posted_event(zip_bytes, _unbalance)
+
+        with pytest.raises(RestoreError, match="apply invariant"):
+            restore_company(company, tampered)
+        assert _snapshot(company) == before, "the failed corpus check must roll back the whole restore"
+
+    def test_missing_entry_id_fails_restore_same_as_apply(self, booked_company):
+        """The identity guard lives in the shared evaluator, so restore
+        applies the EXACT verdict apply-time enforcement applies — an
+        invariant-clean event without a materializable entry_public_id must
+        not be certified by restore only to quarantine at the next rebuild."""
+        company = booked_company
+        zip_bytes, _ = export_company(company)
+        before = _snapshot(company)
+
+        def _strip_id(record):
+            del record["data"]["entry_public_id"]
+
+        tampered = self._tamper_posted_event(zip_bytes, _strip_id)
+
+        with pytest.raises(RestoreError, match="apply invariant"):
+            restore_company(company, tampered)
+        assert _snapshot(company) == before
+
+    def test_unreadable_posted_event_payload_fails_restore(self, booked_company):
+        company = booked_company
+        zip_bytes, _ = export_company(company)
+        before = _snapshot(company)
+
+        def _break(record):
+            record["data"] = [1, 2, 3]  # non-dict payload → APPLY_UNREADABLE_PAYLOAD
+
+        tampered = self._tamper_posted_event(zip_bytes, _break)
+
+        with pytest.raises(RestoreError, match="apply invariant"):
+            restore_company(company, tampered)
+        assert _snapshot(company) == before
+
+    def test_backup_of_replayable_lag_state_restores(self, company, user, cash_account, revenue_account):
+        """Codex round-1 P2 (verdict symmetry): a backup captured while a
+        posted event's referenced account row was not yet materialized — with
+        the creating account event earlier in the stream — is REPLAYABLE, and
+        the apply choke point would DEFER it, not quarantine it. Restore must
+        share that disposition instead of refusing a legitimate backup."""
+        from events.emitter import emit_event
+        from events.types import EventTypes
+
+        lag_id = uuid4()
+        emit_event(
+            company=company,
+            event_type=EventTypes.ACCOUNT_CREATED,
+            aggregate_type="Account",
+            aggregate_id=str(lag_id),
+            data={
+                "account_public_id": str(lag_id),
+                "code": "1096",
+                "name": "Lagging restore account",
+                "account_type": "ASSET",
+                "normal_balance": "DEBIT",
+                "is_header": False,
+            },
+            caused_by_user=user,
+            idempotency_key=f"restore-lag:acct:{lag_id}",
+        )
+        entry_id = uuid4()
+        emit_event(
+            company=company,
+            event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+            aggregate_type="JournalEntry",
+            aggregate_id=str(entry_id),
+            data={
+                "entry_public_id": str(entry_id),
+                "entry_number": "JE-LAG-1",
+                "date": "2026-03-11",
+                "memo": "lagging entry",
+                "kind": "NORMAL",
+                "period": 3,
+                "posted_at": "2026-03-11T12:00:00",
+                "posted_by_id": user.id,
+                "posted_by_email": user.email,
+                "total_debit": "50.00",
+                "total_credit": "50.00",
+                "lines": [
+                    {"line_no": 1, "account_public_id": str(lag_id), "debit": "50.00", "credit": "0.00"},
+                    {
+                        "line_no": 2,
+                        "account_public_id": str(revenue_account.public_id),
+                        "debit": "0.00",
+                        "credit": "50.00",
+                    },
+                ],
+            },
+            caused_by_user=user,
+            idempotency_key=f"restore-lag:posted:{entry_id}",
+        )
+        # No drain: the lagging account row does not exist at export time.
+        zip_bytes, _ = export_company(company)
+        result = restore_company(company, zip_bytes)
+        assert result["company"] == company.slug
+
+    def test_lag_state_with_advanced_bookmark_is_refused(self, company, user, cash_account, revenue_account):
+        """Codex round-19 P2: a mid-batch backup can hold a consumer bookmark
+        already past the deferred journal with no marker (the DeferEvent
+        rewind lands only at batch end, and the exporter snapshots bookmarks
+        first) — the restored consumer would start after the event and never
+        retry it, so that archive must be REFUSED."""
+        from events.emitter import emit_event
+        from events.models import EventBookmark
+        from events.types import EventTypes
+        from projections.account_balance import AccountBalanceProjection
+
+        lag_id = uuid4()
+        emit_event(
+            company=company,
+            event_type=EventTypes.ACCOUNT_CREATED,
+            aggregate_type="Account",
+            aggregate_id=str(lag_id),
+            data={
+                "account_public_id": str(lag_id),
+                "code": "1094",
+                "name": "Bookmark-passed lagging account",
+                "account_type": "ASSET",
+                "normal_balance": "DEBIT",
+                "is_header": False,
+            },
+            caused_by_user=user,
+            idempotency_key=f"restore-bm:acct:{lag_id}",
+        )
+        entry_id = uuid4()
+        posted = emit_event(
+            company=company,
+            event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+            aggregate_type="JournalEntry",
+            aggregate_id=str(entry_id),
+            data={
+                "entry_public_id": str(entry_id),
+                "entry_number": "JE-BM-1",
+                "date": "2026-03-13",
+                "memo": "bookmark-passed entry",
+                "kind": "NORMAL",
+                "period": 3,
+                "posted_at": "2026-03-13T12:00:00",
+                "posted_by_id": user.id,
+                "posted_by_email": user.email,
+                "total_debit": "30.00",
+                "total_credit": "30.00",
+                "lines": [
+                    {"line_no": 1, "account_public_id": str(lag_id), "debit": "30.00", "credit": "0.00"},
+                    {
+                        "line_no": 2,
+                        "account_public_id": str(revenue_account.public_id),
+                        "debit": "0.00",
+                        "credit": "30.00",
+                    },
+                ],
+            },
+            caused_by_user=user,
+            idempotency_key=f"restore-bm:posted:{entry_id}",
+        )
+        # The mid-batch shape: the balance consumer's bookmark sits AT the
+        # deferred journal (advanced past it), with no applied-marker.
+        EventBookmark.objects.update_or_create(
+            company=company,
+            consumer_name=AccountBalanceProjection().name,
+            defaults={"last_event": posted},
+        )
+
+        zip_bytes, _ = export_company(company)
+        with pytest.raises(RestoreError, match="apply invariant"):
+            restore_company(company, zip_bytes)
+
+    def test_lag_state_with_applied_marker_is_refused(self, company, user, cash_account, revenue_account):
+        """Codex round-2 P2: the deferred disposition promises a post-restore
+        retry — but restore imports the archive's applied-markers verbatim
+        and never replays, so a marker for the lagging journal means the
+        retry can never happen (a pre-boundary projector marked it applied
+        after silently skipping the lagging lines). That archive must be
+        REFUSED, not certified."""
+        from events.emitter import emit_event
+        from events.types import EventTypes
+        from projections.accounting import JournalEntryProjection
+        from projections.models import ProjectionAppliedEvent
+        from projections.write_barrier import projection_writes_allowed
+
+        lag_id = uuid4()
+        emit_event(
+            company=company,
+            event_type=EventTypes.ACCOUNT_CREATED,
+            aggregate_type="Account",
+            aggregate_id=str(lag_id),
+            data={
+                "account_public_id": str(lag_id),
+                "code": "1095",
+                "name": "Marked lagging account",
+                "account_type": "ASSET",
+                "normal_balance": "DEBIT",
+                "is_header": False,
+            },
+            caused_by_user=user,
+            idempotency_key=f"restore-marked:acct:{lag_id}",
+        )
+        entry_id = uuid4()
+        posted = emit_event(
+            company=company,
+            event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+            aggregate_type="JournalEntry",
+            aggregate_id=str(entry_id),
+            data={
+                "entry_public_id": str(entry_id),
+                "entry_number": "JE-MARK-1",
+                "date": "2026-03-12",
+                "memo": "marked lagging entry",
+                "kind": "NORMAL",
+                "period": 3,
+                "posted_at": "2026-03-12T12:00:00",
+                "posted_by_id": user.id,
+                "posted_by_email": user.email,
+                "total_debit": "40.00",
+                "total_credit": "40.00",
+                "lines": [
+                    {"line_no": 1, "account_public_id": str(lag_id), "debit": "40.00", "credit": "0.00"},
+                    {
+                        "line_no": 2,
+                        "account_public_id": str(revenue_account.public_id),
+                        "debit": "0.00",
+                        "credit": "40.00",
+                    },
+                ],
+            },
+            caused_by_user=user,
+            idempotency_key=f"restore-marked:posted:{entry_id}",
+        )
+        # The pre-boundary damage shape: a consumer marked the journal
+        # applied even though its account line never materialized.
+        with projection_writes_allowed():
+            ProjectionAppliedEvent.objects.create(
+                company=company,
+                projection_name=JournalEntryProjection().name,
+                event=posted,
+            )
+
+        zip_bytes, _ = export_company(company)
+        with pytest.raises(RestoreError, match="apply invariant"):
+            restore_company(company, zip_bytes)
+
+    def test_skip_invariants_break_glass_bypasses_corpus_check(self, booked_company):
+        """--skip-invariants is the ONLY way past the corpus check — the same
+        documented break-glass as the trial-balance/subledger invariants,
+        for deliberate recovery of known-bad history."""
+        company = booked_company
+        zip_bytes, _ = export_company(company)
+
+        def _unbalance(record):
+            record["data"]["lines"][1]["credit"] = "90.00"
+
+        tampered = self._tamper_posted_event(zip_bytes, _unbalance)
+
+        result = restore_company(company, tampered, skip_invariants=True)
+        assert result["company"] == company.slug
 
 
 # =============================================================================

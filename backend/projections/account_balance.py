@@ -54,8 +54,14 @@ class AccountBalanceProjection(BaseProjection):
         return [
             EventTypes.JOURNAL_ENTRY_POSTED,
             # Note: REVERSED entries emit a new POSTED event for the reversal
-            # so we don't need to handle REVERSED separately
-            # LEPH chunked journal events (for large batch imports)
+            # so we don't need to handle REVERSED separately.
+            # A3-PR3 (D5): the LEPH chunk type stays CONSUMED so the apply
+            # boundary sees it, but the boundary quarantines every chunk
+            # event before any handler runs (a single chunk cannot satisfy
+            # the entry-level posted-journal invariant, and the chunked emit
+            # family is dormant — A171 tracks its removal). Consume-to-
+            # quarantine, not de-listing: a chunk event must surface as an
+            # operator-visible failure, never advance past silently.
             EventTypes.JOURNAL_LINES_CHUNK_ADDED,
         ]
 
@@ -67,14 +73,12 @@ class AccountBalanceProjection(BaseProjection):
         1. Get or create AccountBalance for the account
         2. Apply debit/credit based on the line
         3. Update statistics and last_event
-
-        Also handles LEPH chunked events (JOURNAL_LINES_CHUNK_ADDED).
         """
         if event.event_type == EventTypes.JOURNAL_ENTRY_POSTED:
             self._handle_posted(event)
-        elif event.event_type == EventTypes.JOURNAL_LINES_CHUNK_ADDED:
-            self._handle_chunk(event)
         else:
+            # JOURNAL_LINES_CHUNK_ADDED never reaches here — the A3-PR3 apply
+            # boundary quarantines it at the process_pending choke point.
             logger.warning(f"Unknown event type: {event.event_type}")
 
     def _handle_posted(self, event: BusinessEvent) -> None:
@@ -105,44 +109,6 @@ class AccountBalanceProjection(BaseProjection):
                 event=event,
             )
 
-    def _handle_chunk(self, event: BusinessEvent) -> None:
-        """
-        Handle LEPH journal.lines_chunk_added event.
-
-        This processes a chunk of journal lines from a large journal entry.
-        Each chunk is processed independently, and the projection accumulates
-        balances across all chunks.
-
-        For chunk events, we get the entry date from the parent JOURNAL_CREATED
-        event via the caused_by_event relationship.
-        """
-        # Use get_data() for LEPH compatibility
-        data = event.get_data()
-        lines = data.get("lines", [])
-
-        if not lines:
-            logger.debug(f"Chunk event {event.id} has no lines")
-            return
-
-        # Get entry date from parent event if available
-        entry_date = None
-        if event.caused_by_event:
-            parent_data = event.caused_by_event.get_data()
-            entry_date_str = parent_data.get("date")
-            if entry_date_str:
-                from datetime import datetime
-
-                entry_date = datetime.fromisoformat(entry_date_str).date()
-
-        # Process each line in the chunk
-        for line_data in lines:
-            self._apply_line(
-                company=event.company,
-                line_data=line_data,
-                entry_date=entry_date,
-                event=event,
-            )
-
     def _apply_line(
         self,
         company: Company,
@@ -165,15 +131,10 @@ class AccountBalanceProjection(BaseProjection):
         account_public_id = line_data.get("account_public_id")
         debit = Decimal(line_data.get("debit", "0"))
         credit = Decimal(line_data.get("credit", "0"))
-        is_memo = line_data.get("is_memo_line", False)
 
         # Validation: must have account
         if not account_public_id:
             logger.warning(f"Line missing account_public_id in event {event.id}")
-            return
-
-        # Skip memo lines for financial balances
-        if is_memo:
             return
 
         # Skip if no actual amount
@@ -191,6 +152,16 @@ class AccountBalanceProjection(BaseProjection):
                 f"Account/company mismatch for account {account_public_id}: "
                 f"account.company_id={account.company_id} company.id={company.id}"
             )
+
+        # A3-PR3 (Codex round-2 P1): memo classification comes from the
+        # RESOLVED ACCOUNT — the same authority rule the canonical invariant
+        # applies. The payload is_memo_line flag is historical metadata: a
+        # historical/foreign payload whose flag disagrees with the account
+        # would otherwise be validated under one classification and
+        # materialized under another (a financial line flagged true silently
+        # vanishing from balances).
+        if account.is_memo_account:
+            return
 
         # ═══════════════════════════════════════════════════════════════════════
         # CRITICAL: Use transaction + select_for_update to prevent race conditions
@@ -373,15 +344,39 @@ class AccountBalanceProjection(BaseProjection):
             event_type=EventTypes.JOURNAL_ENTRY_POSTED,
         ).order_by("company_sequence")
 
+        # A3-PR3 (Codex round-11 P1): account-derived memo classification —
+        # the raw payload flag would disagree with the projected balances.
+        from accounting.posted_journal_apply import (
+            excluded_posted_event_ids,
+            line_is_memo,
+            memo_account_public_ids,
+            posted_event_accepted_for_apply,
+        )
+
+        memo_ids = memo_account_public_ids(company)
+        apply_facts_cache: dict = {}
+        apply_excluded_ids = excluded_posted_event_ids(company)
+
         for event in events:
+            # A3-PR3 (Codex round-12 P1): verify against exactly what the
+            # apply boundary ACCEPTS — a quarantined event is deliberately
+            # absent from balances, and folding it would report a false
+            # integrity mismatch.
+            if not posted_event_accepted_for_apply(event, apply_facts_cache, apply_excluded_ids):
+                continue
             # Use get_data() for LEPH compatibility
             data = event.get_data()
             lines = data.get("lines", [])
             for line_data in lines:
-                account_public_id = line_data.get("account_public_id")
+                # Codex round-18 P1: canonical identity for the aggregation
+                # key — accepted payloads may spell UUIDs in any equivalent
+                # form, and the comparison below keys on str(public_id).
+                from accounting.posted_journal_apply import canonical_line_account_id
+
+                account_public_id = canonical_line_account_id(line_data)
                 if not account_public_id:
                     continue
-                if line_data.get("is_memo_line", False):
+                if line_is_memo(line_data, memo_ids):
                     continue
 
                 debit = Decimal(line_data.get("debit", "0"))

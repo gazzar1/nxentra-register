@@ -20,6 +20,7 @@ from django.utils import timezone
 
 from accounts.models import Company
 from events.models import BusinessEvent, EventBookmark
+from projections.apply_validation import validate_event_for_apply
 from projections.models import ProjectionAppliedEvent
 from projections.write_barrier import projection_writes_allowed
 
@@ -265,6 +266,15 @@ class BaseProjection(ABC):
                             processed += 1
                             continue
 
+                        # A3-PR3: THE apply-validation choke point. Runs for
+                        # every event, inside the per-event transaction,
+                        # before any handler — so every trigger path (live
+                        # drain, Celery, CLI, rebuild, tenant replay) and
+                        # every consuming projection gets one shared verdict.
+                        # A registered validator quarantines by raising
+                        # ProjectionTerminalSkip (handled below); event types
+                        # without a validator pass through untouched.
+                        validate_event_for_apply(event)
                         self.handle(event)
                         bookmark.mark_processed(event)
                         processed += 1
@@ -276,17 +286,24 @@ class BaseProjection(ABC):
                         # A163) showed already-healed failures forever.
                         # Cheap conditional UPDATE: (company,
                         # projection_name, event) is the table's unique key.
-                        from projections.models import ProjectionFailureLog
+                        # A3-PR3 (Codex round-14 P1): stamp ALL failure rows
+                        # for this key — including manually-resolved ones —
+                        # as SELF-HEALED (resolved_by NULL is the persisted
+                        # mark of a genuine successful re-apply, and the
+                        # event-fold acceptance filter keys on it). A manual
+                        # queue resolution is an operator claim; an actual
+                        # successful apply is the stronger truth.
+                        from projections.models import SELF_HEALED_RESOLUTION_NOTE, ProjectionFailureLog
 
                         ProjectionFailureLog.objects.filter(
                             company=company,
                             projection_name=self.name,
                             event=event,
-                            resolved=False,
-                        ).update(
+                        ).exclude(resolved=True, resolution_note=SELF_HEALED_RESOLUTION_NOTE).update(
                             resolved=True,
                             resolved_at=timezone.now(),
-                            resolution_note="Self-healed: event processed successfully on retry.",
+                            resolved_by=None,
+                            resolution_note=SELF_HEALED_RESOLUTION_NOTE,
                         )
 
                 except DeferEvent as defer:

@@ -239,7 +239,27 @@ class TrialBalanceView(DimensionFilterMixin, APIView):
         ).order_by("company_sequence")
 
         # Process events
+        # A3-PR3 (Codex round-11 P1): memo classification for event-fold
+        # readers comes from the RESOLVED ACCOUNT (the invariant's rule),
+        # never the raw payload flag — otherwise these reports disagree
+        # with the accepted journal and the projected balances.
+        from accounting.posted_journal_apply import (
+            canonical_line_account_id,
+            excluded_posted_event_ids,
+            line_is_memo,
+            memo_account_public_ids,
+            posted_event_accepted_for_apply,
+        )
+
+        memo_ids = memo_account_public_ids(actor.company)
+        apply_facts_cache: dict = {}
+        apply_excluded_ids = excluded_posted_event_ids(actor.company)
         for event in events:
+            # A3-PR3 (Codex round-12 P1): fold only events the apply boundary
+            # ACCEPTS — a quarantined/deferred event is not in the canonical
+            # balances, and folding it would misstate the report.
+            if not posted_event_accepted_for_apply(event, apply_facts_cache, apply_excluded_ids):
+                continue
             entry_date_str = event.get_data().get("date")
             if not entry_date_str:
                 continue
@@ -250,11 +270,11 @@ class TrialBalanceView(DimensionFilterMixin, APIView):
 
             lines = event.get_data().get("lines", [])
             for line in lines:
-                account_public_id = line.get("account_public_id")
+                account_public_id = canonical_line_account_id(line)
                 if not account_public_id or account_public_id not in account_data:
                     continue
 
-                if line.get("is_memo_line", False):
+                if line_is_memo(line, memo_ids):
                     continue
 
                 # Check dimension filters
@@ -697,7 +717,27 @@ class BalanceSheetView(DimensionFilterMixin, APIView):
         ).order_by("company_sequence")
 
         # Process events
+        # A3-PR3 (Codex round-11 P1): memo classification for event-fold
+        # readers comes from the RESOLVED ACCOUNT (the invariant's rule),
+        # never the raw payload flag — otherwise these reports disagree
+        # with the accepted journal and the projected balances.
+        from accounting.posted_journal_apply import (
+            canonical_line_account_id,
+            excluded_posted_event_ids,
+            line_is_memo,
+            memo_account_public_ids,
+            posted_event_accepted_for_apply,
+        )
+
+        memo_ids = memo_account_public_ids(actor.company)
+        apply_facts_cache: dict = {}
+        apply_excluded_ids = excluded_posted_event_ids(actor.company)
         for event in events:
+            # A3-PR3 (Codex round-12 P1): fold only events the apply boundary
+            # ACCEPTS — a quarantined/deferred event is not in the canonical
+            # balances, and folding it would misstate the report.
+            if not posted_event_accepted_for_apply(event, apply_facts_cache, apply_excluded_ids):
+                continue
             entry_date_str = event.get_data().get("date")
             if not entry_date_str:
                 continue
@@ -715,11 +755,11 @@ class BalanceSheetView(DimensionFilterMixin, APIView):
 
             lines = event.get_data().get("lines", [])
             for line in lines:
-                account_public_id = line.get("account_public_id")
+                account_public_id = canonical_line_account_id(line)
                 if not account_public_id or account_public_id not in account_data:
                     continue
 
-                if line.get("is_memo_line", False):
+                if line_is_memo(line, memo_ids):
                     continue
 
                 # Check dimension filters
@@ -1194,7 +1234,27 @@ class IncomeStatementView(DimensionFilterMixin, APIView):
         _debug_sample_tags = []
 
         # Process events
+        # A3-PR3 (Codex round-11 P1): memo classification for event-fold
+        # readers comes from the RESOLVED ACCOUNT (the invariant's rule),
+        # never the raw payload flag — otherwise these reports disagree
+        # with the accepted journal and the projected balances.
+        from accounting.posted_journal_apply import (
+            canonical_line_account_id,
+            excluded_posted_event_ids,
+            line_is_memo,
+            memo_account_public_ids,
+            posted_event_accepted_for_apply,
+        )
+
+        memo_ids = memo_account_public_ids(actor.company)
+        apply_facts_cache: dict = {}
+        apply_excluded_ids = excluded_posted_event_ids(actor.company)
         for event in events:
+            # A3-PR3 (Codex round-12 P1): fold only events the apply boundary
+            # ACCEPTS — a quarantined/deferred event is not in the canonical
+            # balances, and folding it would misstate the report.
+            if not posted_event_accepted_for_apply(event, apply_facts_cache, apply_excluded_ids):
+                continue
             entry_date_str = event.get_data().get("date")
             if not entry_date_str:
                 continue
@@ -1209,11 +1269,11 @@ class IncomeStatementView(DimensionFilterMixin, APIView):
 
             lines = event.get_data().get("lines", [])
             for line in lines:
-                account_public_id = line.get("account_public_id")
+                account_public_id = canonical_line_account_id(line)
                 if not account_public_id or account_public_id not in account_data:
                     continue
 
-                if line.get("is_memo_line", False):
+                if line_is_memo(line, memo_ids):
                     continue
 
                 _debug_lines_total += 1
@@ -2106,7 +2166,27 @@ class DimensionPLComparisonView(DimensionFilterMixin, APIView):
             event_type=EventTypes.JOURNAL_ENTRY_POSTED,
         ).order_by("company_sequence")
 
+        # A3-PR3 (Codex round-11 P1): memo classification for event-fold
+        # readers comes from the RESOLVED ACCOUNT (the invariant's rule),
+        # never the raw payload flag — otherwise these reports disagree
+        # with the accepted journal and the projected balances.
+        from accounting.posted_journal_apply import (
+            canonical_line_account_id,
+            excluded_posted_event_ids,
+            line_is_memo,
+            memo_account_public_ids,
+            posted_event_accepted_for_apply,
+        )
+
+        memo_ids = memo_account_public_ids(actor.company)
+        apply_facts_cache: dict = {}
+        apply_excluded_ids = excluded_posted_event_ids(actor.company)
         for event in events:
+            # A3-PR3 (Codex round-12 P1): fold only events the apply boundary
+            # ACCEPTS — a quarantined/deferred event is not in the canonical
+            # balances, and folding it would misstate the report.
+            if not posted_event_accepted_for_apply(event, apply_facts_cache, apply_excluded_ids):
+                continue
             entry_date_str = event.get_data().get("date")
             if not entry_date_str:
                 continue
@@ -2117,11 +2197,11 @@ class DimensionPLComparisonView(DimensionFilterMixin, APIView):
 
             lines = event.get_data().get("lines", [])
             for line in lines:
-                account_public_id = line.get("account_public_id")
+                account_public_id = canonical_line_account_id(line)
                 if not account_public_id or account_public_id not in account_lookup:
                     continue
 
-                if line.get("is_memo_line", False):
+                if line_is_memo(line, memo_ids):
                     continue
 
                 account = account_lookup[account_public_id]
@@ -3402,7 +3482,27 @@ class DashboardChartsView(APIView):
         # Track account activity for top accounts
         account_activity = defaultdict(lambda: {"debits": Decimal("0.00"), "credits": Decimal("0.00"), "count": 0})
 
+        # A3-PR3 (Codex round-11 P1): memo classification for event-fold
+        # readers comes from the RESOLVED ACCOUNT (the invariant's rule),
+        # never the raw payload flag — otherwise these reports disagree
+        # with the accepted journal and the projected balances.
+        from accounting.posted_journal_apply import (
+            canonical_line_account_id,
+            excluded_posted_event_ids,
+            line_is_memo,
+            memo_account_public_ids,
+            posted_event_accepted_for_apply,
+        )
+
+        memo_ids = memo_account_public_ids(actor.company)
+        apply_facts_cache: dict = {}
+        apply_excluded_ids = excluded_posted_event_ids(actor.company)
         for event in events:
+            # A3-PR3 (Codex round-12 P1): fold only events the apply boundary
+            # ACCEPTS — a quarantined/deferred event is not in the canonical
+            # balances, and folding it would misstate the report.
+            if not posted_event_accepted_for_apply(event, apply_facts_cache, apply_excluded_ids):
+                continue
             entry_date_str = event.get_data().get("date")
             if not entry_date_str:
                 continue
@@ -3412,11 +3512,11 @@ class DashboardChartsView(APIView):
 
             lines = event.get_data().get("lines", [])
             for line in lines:
-                account_public_id = line.get("account_public_id")
+                account_public_id = canonical_line_account_id(line)
                 if not account_public_id:
                     continue
 
-                if line.get("is_memo_line", False):
+                if line_is_memo(line, memo_ids):
                     continue
 
                 debit = Decimal(line.get("debit", "0"))
@@ -3631,20 +3731,49 @@ class DashboardWidgetsView(APIView):
             # ═══════════════════════════════════════════════════════════════
             # 3. Recent Activity — last 10 posted journal entries
             # ═══════════════════════════════════════════════════════════════
-            recent_events = BusinessEvent.objects.filter(
-                company=actor.company,
-                event_type=EventTypes.JOURNAL_ENTRY_POSTED,
-            ).order_by("-company_sequence")[:10]
+            # Codex round-18 P2: slice AFTER the acceptance filter — the ten
+            # newest STORED events may include quarantined ones, and slicing
+            # first would shrink (or empty) the widget while older accepted
+            # journals exist. Iterate newest-first and stop at ten accepted.
+            recent_events = (
+                BusinessEvent.objects.filter(
+                    company=actor.company,
+                    event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+                )
+                .order_by("-company_sequence")
+                .iterator(chunk_size=50)
+            )
 
             recent_activity = []
+            # A3-PR3 (Codex round-11 P1): memo classification for event-fold
+            # readers comes from the RESOLVED ACCOUNT (the invariant's rule),
+            # never the raw payload flag — otherwise these reports disagree
+            # with the accepted journal and the projected balances.
+            from accounting.posted_journal_apply import (
+                excluded_posted_event_ids,
+                line_is_memo,
+                memo_account_public_ids,
+                posted_event_accepted_for_apply,
+            )
+
+            memo_ids = memo_account_public_ids(actor.company)
+            apply_facts_cache: dict = {}
+            apply_excluded_ids = excluded_posted_event_ids(actor.company)
             for event in recent_events:
+                # A3-PR3 (Codex round-12 P1): fold only events the apply boundary
+                # ACCEPTS — a quarantined/deferred event is not in the canonical
+                # balances, and folding it would misstate the report.
+                if len(recent_activity) >= 10:
+                    break
+                if not posted_event_accepted_for_apply(event, apply_facts_cache, apply_excluded_ids):
+                    continue
                 ev_data = event.get_data()
                 entry_date = ev_data.get("date", "")
                 memo = ev_data.get("memo", "")
                 entry_number = ev_data.get("entry_number", "")
                 source = ev_data.get("source", "manual")
                 lines = ev_data.get("lines", [])
-                total_debit = sum(Decimal(l.get("debit", "0")) for l in lines if not l.get("is_memo_line"))
+                total_debit = sum(Decimal(l.get("debit", "0")) for l in lines if not line_is_memo(l, memo_ids))
 
                 recent_activity.append(
                     {
