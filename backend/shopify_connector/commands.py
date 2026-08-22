@@ -1493,14 +1493,71 @@ def process_refund(store: ShopifyStore, payload: dict) -> CommandResult:
         for line in payload.get("refund_line_items", []):
             refund_amount += Decimal(str(line.get("subtotal", "0")))
 
-    if refund_amount <= 0:
-        return CommandResult.fail("Refund amount is zero or negative.")
+    if refund_amount < 0:
+        # A5 (Codex round-2 P2): a negative refund is invalid provider data. Like
+        # the zero case, this is caught at ingress BEFORE any event, so it can
+        # never reach the projection's invalid-data guard — persist a durable,
+        # operator-visible REJECTED marker HERE (a ShopifyRefund row, status=ERROR,
+        # with the reason) instead of a bare fail the webhook acks (200) and loses.
+        # No accounting event is emitted (nothing valid to post).
+        with command_writes_allowed():
+            ShopifyRefund.objects.create(
+                company=store.company,
+                order=order,
+                shopify_refund_id=shopify_refund_id,
+                amount=refund_amount,
+                currency=order.currency,
+                reason=payload.get("note", ""),
+                shopify_created_at=payload.get("created_at", "") or datetime.now().isoformat(),
+                raw_payload=payload,
+                status=ShopifyRefund.Status.ERROR,
+                error_message=(f"Refund amount is negative ({refund_amount}); invalid provider data — not accounted."),
+            )
+        # A5 (Codex round-4 P2): the ERROR row is durable evidence but is not itself
+        # surfaced in any operator view, so raise an operator-visible alert (the
+        # notifications surface) — the ingress has no projection through which to
+        # emit a /finance/exceptions failure log.
+        from accounts.models import Notification
+
+        Notification.notify_company_admins(
+            company=store.company,
+            title="Shopify refund rejected — invalid amount",
+            message=(
+                f"Refund {shopify_refund_id} on order {order_id} arrived with a negative amount "
+                f"({refund_amount}) and was rejected — no journal was posted. Kept as a "
+                f"ShopifyRefund (status=ERROR) for evidence; correct it with a manual journal if real."
+            ),
+            level=Notification.Level.ERROR,
+            source_module="shopify_connector",
+        )
+        return CommandResult.fail(f"Refund amount is negative ({refund_amount}).")
 
     refund_date_str = payload.get("created_at", "")
     try:
         refund_date = datetime.fromisoformat(refund_date_str.replace("Z", "+00:00")).date()
     except (ValueError, AttributeError):
         refund_date = datetime.now().date()
+
+    if refund_amount == 0:
+        # A5 (K#1 / Codex P2a): a legitimately zero-value refund produces no
+        # accounting, but must not be silently dropped at ingress (a bare fail the
+        # webhook acks and loses). Persist the durable handled-zero marker HERE, in
+        # the canonical writer: a ShopifyRefund row marked PROCESSED, with NO
+        # accounting event (nothing to post) — the projection never sees a
+        # zero-amount event on this path.
+        with command_writes_allowed():
+            refund = ShopifyRefund.objects.create(
+                company=store.company,
+                order=order,
+                shopify_refund_id=shopify_refund_id,
+                amount=refund_amount,
+                currency=order.currency,
+                reason=payload.get("note", ""),
+                shopify_created_at=refund_date_str or datetime.now().isoformat(),
+                raw_payload=payload,
+                status=ShopifyRefund.Status.PROCESSED,
+            )
+        return CommandResult.ok(data={"refund": refund, "handled_zero": True})
 
     with command_writes_allowed():
         refund = ShopifyRefund.objects.create(

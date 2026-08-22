@@ -295,7 +295,13 @@ class ShopifyAccountingHandler(BaseProjection):
         company = event.company
 
         mapping = ModuleAccountMapping.get_mapping(company, MODULE_NAME)
-        if not mapping:
+        # Order/refund handlers classify zero/negative values and self-guard their
+        # own mapping requirement (a zero-value order/refund needs NO mapping and
+        # must be marked handled, not stalled), so they run even with an absent
+        # mapping — their revenue guard still raises for a NON-zero item. Every
+        # other event type genuinely requires the mapping up front. (Codex round-8.)
+        _MAPPING_SELF_GUARDED = {EventTypes.SHOPIFY_ORDER_PAID, EventTypes.SHOPIFY_REFUND_CREATED}
+        if not mapping and event.event_type not in _MAPPING_SELF_GUARDED:
             # A80: raise instead of silent return so the failure surfaces in
             # ProjectionFailureLog → /finance/exceptions. The event remains
             # unprocessed (transaction rolls back); once the operator wires
@@ -325,7 +331,7 @@ class ShopifyAccountingHandler(BaseProjection):
 
         if handler:
             try:
-                handler(event, data, mapping, dimension_context)
+                handler(event, data, mapping or {}, dimension_context)
             except MissingExchangeRate as exc:
                 logger.error(
                     "Missing exchange rate for %s event %s: %s",
@@ -697,6 +703,34 @@ class ShopifyAccountingHandler(BaseProjection):
         from sales.models import TaxCode
         from shopify_connector.models import ShopifyOrder
 
+        # A5 (Codex round-7 P2): classify a zero/negative order BEFORE the
+        # revenue-mapping requirement. A zero-value order needs no accounting, so it
+        # must not trip the SALES_REVENUE guard (which would raise, spawn a spurious
+        # /finance/exceptions alert, and stall the stream under stop_on_error).
+        total_price = Decimal(str(data.get("amount", "0")))
+        order_name = data.get("order_name", data.get("order_number", ""))
+        shopify_order_id = str(data.get("shopify_order_id", ""))
+
+        if total_price < 0:
+            # A5 (Codex P2b): a NEGATIVE order total is invalid provider data, not
+            # a benign zero — surface it for review rather than marking it handled.
+            from projections.exceptions import ProjectionInvalidDataError
+
+            raise ProjectionInvalidDataError(
+                f"Shopify order {order_name} has a negative total_price {total_price}; "
+                f"invalid order data (cannot produce an invoice)."
+            )
+        if total_price == 0:
+            # A5 (K#1): a legitimately zero-value order produces no invoice/JE,
+            # but must not be SILENTLY consumed. Mark the source row PROCESSED
+            # (no JE) as the durable handled-zero marker instead of a bare return,
+            # so the order is not left indistinguishable from an unprocessed one.
+            ShopifyOrder.objects.filter(company=event.company, shopify_order_id=shopify_order_id).update(
+                status=ShopifyOrder.Status.PROCESSED
+            )
+            logger.info("Shopify order %s handled as zero-value (no journal needed)", order_name)
+            return
+
         revenue_account = mapping.get(ROLE_SALES_REVENUE)
         if not revenue_account:
             # A80: raise instead of silent return.
@@ -714,18 +748,11 @@ class ShopifyAccountingHandler(BaseProjection):
         shipping_account = mapping.get(ROLE_SHIPPING_REVENUE) or revenue_account
         tax_account = mapping.get(ROLE_SALES_TAX_PAYABLE)
 
-        total_price = Decimal(str(data.get("amount", "0")))
         subtotal = Decimal(str(data.get("subtotal", "0")))
         total_tax = Decimal(str(data.get("total_tax", "0")))
         total_shipping = Decimal(str(data.get("total_shipping", "0")))
-        order_name = data.get("order_name", data.get("order_number", ""))
-        shopify_order_id = str(data.get("shopify_order_id", ""))
         entry_date = _parse_date(data.get("transaction_date")) or event.created_at.date()
         currency = data.get("currency") or getattr(event.company, "default_currency", "USD")
-
-        if total_price <= 0:
-            logger.warning("Skipping Shopify order %s — non-positive amount %s", order_name, total_price)
-            return
 
         # A134: resolve the exact store this order belongs to (by
         # store_public_id / shop_domain) instead of blindly taking the
@@ -1066,8 +1093,19 @@ class ShopifyAccountingHandler(BaseProjection):
 
         revenue_account = mapping.get(ROLE_SALES_REVENUE)
         if not revenue_account:
-            logger.warning("Shopify SALES_REVENUE mapping missing for refund — skipping")
-            return
+            # A5 (an A80 site the order path already fixed): raise instead of a
+            # silent return, so a missing mapping surfaces in /finance/exceptions
+            # and self-heals once wired — never consumes the refund with no JE.
+            from projections.exceptions import ProjectionStateError
+
+            raise ProjectionStateError(
+                f"SALES_REVENUE not configured in shopify_connector mapping for "
+                f"company {event.company.name} (refund {data.get('shopify_refund_id')})",
+                fix_hint=(
+                    "Setup → Account Mapping → Shopify Connector → add SALES_REVENUE "
+                    "role pointing at the company's main Sales Revenue account."
+                ),
+            )
 
         amount = Decimal(str(data.get("amount", "0")))
         order_number = data.get("order_number", "")
@@ -1076,7 +1114,25 @@ class ShopifyAccountingHandler(BaseProjection):
         entry_date = _parse_date(data.get("transaction_date")) or event.created_at.date()
         currency = data.get("currency") or getattr(event.company, "default_currency", "USD")
 
-        if amount <= 0:
+        if amount < 0:
+            # A5 (Codex P2b): a NEGATIVE refund amount is invalid provider data —
+            # surface it for review rather than marking it handled.
+            from projections.exceptions import ProjectionInvalidDataError
+
+            raise ProjectionInvalidDataError(
+                f"Shopify refund {refund_id} has a negative amount {amount}; invalid refund data."
+            )
+        if amount == 0:
+            # A5 (K#1): a zero-value refund produces no credit note. The canonical
+            # handled-zero marker is written at INGRESS by process_refund (a
+            # PROCESSED ShopifyRefund row with NO event — see Codex P2a), so on the
+            # canonical path the projection never sees a zero-amount event; this
+            # branch is defensive for a legacy/replayed event and stays a durable
+            # marker, never a silent consume.
+            ShopifyRefund.objects.filter(company=event.company, shopify_refund_id=refund_id).update(
+                status=ShopifyRefund.Status.PROCESSED
+            )
+            logger.info("Shopify refund %s handled as zero-value (no credit note needed)", refund_id)
             return
 
         # A23: lookup with bounded retry — the order_paid handler's
@@ -1085,38 +1141,74 @@ class ShopifyAccountingHandler(BaseProjection):
         original_invoice = _find_posted_shopify_invoice(event.company, shopify_order_id)
 
         if not original_invoice:
-            # A41: the in-pass retry exhausted, but the order_paid event
-            # may still be pending in the queue (Shopify webhook
-            # re-ordering, or a worker restart split the batch). If the
-            # event is fresh (< 24h), raise DeferEvent so process_pending
-            # rewinds the bookmark and re-attempts on the next pass.
-            # Older events are treated as truly orphan (the order really
-            # doesn't exist) — log warning and accept, matching pre-A41
-            # behavior.
+            # A5 (Codex rounds 1 & 3): keep the refund RETRYABLE while its order's
+            # invoice could still post, and quarantine a dead-end. The order's own
+            # order_paid event is the discriminator (via the ShopifyOrder row's
+            # event_id, set up front by process_order_paid):
+            #   * event still PENDING (no applied marker for this projection) — the
+            #     invoice is being processed / deferred / blocked on an
+            #     operator-fixable error, so DEFER; it self-heals once it posts
+            #     (DeferEvent rewinds at batch end, so later events still apply once
+            #     via markers — no frozen projection). Consuming here would foreclose
+            #     recovery: process_refund dedups on the existing row, resolving a
+            #     failure log only changes the log, and rebuild is pilot-blocked.
+            #   * event already APPLIED but produced NO invoice (e.g. a closed-period
+            #     ProjectionTerminalSkip on the order) — the invoice can never post
+            #     (rebuild is blocked), so this refund is a dead-end: VISIBLE terminal
+            #     quarantine, not an endless defer (Codex round-3 P1).
+            #   * no order event at all — a fresh refund may still be racing its order
+            #     webhook (DEFER < 24h); past that it is a genuine orphan (quarantine).
             from datetime import timedelta
 
             from django.utils import timezone as _tz
 
             from projections.base import DeferEvent
+            from projections.exceptions import ProjectionTerminalSkip
+            from projections.models import ProjectionAppliedEvent
 
             event_age = _tz.now() - event.recorded_at
+            order_row = ShopifyOrder.objects.filter(
+                company=event.company, shopify_order_id=data.get("shopify_order_id")
+            ).first()
+            order_event_id = order_row.event_id if order_row else None
+
+            if order_event_id is not None:
+                order_applied = ProjectionAppliedEvent.objects.filter(
+                    company=event.company, projection_name=self.name, event_id=order_event_id
+                ).exists()
+                if not order_applied:
+                    raise DeferEvent(
+                        f"Awaiting posted invoice for Shopify order {shopify_order_id} "
+                        f"(refund {refund_id}; order event pending)"
+                    )
+                raise ProjectionTerminalSkip(
+                    f"Shopify refund {refund_id}: order {shopify_order_id} was processed but "
+                    f"produced no invoice (e.g. it fell in a closed period and was quarantined), "
+                    f"so this refund has nothing to credit against.",
+                    fix_hint=(
+                        "Re-running the sync will NOT repost this order or re-ingest this refund "
+                        "(both events are already applied and the pilot's rebuild is disabled). "
+                        "Book the refund — and correct the order's own quarantined entry — with "
+                        "manual journals, then resolve this from /finance/exceptions."
+                    ),
+                )
+
             if event_age < timedelta(hours=24):
                 raise DeferEvent(
                     f"Awaiting order_paid for Shopify order {shopify_order_id} "
-                    f"(refund {refund_id} aged {event_age.total_seconds():.0f}s)"
+                    f"(refund {refund_id}, aged {event_age.total_seconds():.0f}s)"
                 )
 
-            logger.warning(
-                "Cannot create CreditNote for Shopify refund %s — original invoice not found "
-                "for order %s after %d retries and %s of waiting. Treating as orphan; the "
-                "order may predate the module-routing refactor or the order_paid webhook "
-                "may have been lost.",
-                refund_id,
-                shopify_order_id,
-                _INVOICE_LOOKUP_MAX_ATTEMPTS,
-                event_age,
+            raise ProjectionTerminalSkip(
+                f"Shopify refund {refund_id} references order {shopify_order_id}, which was "
+                f"never received after {event_age} — genuine orphan; no invoice can be "
+                f"produced to credit against.",
+                fix_hint=(
+                    "If the order later syncs, its invoice will post but THIS refund will NOT "
+                    "auto-heal (its event is already consumed) — book the refund with a manual "
+                    "journal against that invoice and resolve this from /finance/exceptions."
+                ),
             )
-            return
 
         # A12 follow-up: tag the credit-note clearing line with the same
         # settlement provider the original order posted under, so the
@@ -1181,12 +1273,31 @@ class ShopifyAccountingHandler(BaseProjection):
         )
 
         if not result.success:
-            logger.error(
-                "Failed to create CreditNote for Shopify refund %s: %s",
-                refund_id,
-                result.error,
+            # A5 (mirror the order path): a CLOSED fiscal period is terminal —
+            # quarantine visibly and advance rather than head-of-line stalling
+            # the whole stream. Any other refusal is (potentially) transient, so
+            # surface AND retry via ProjectionCommandFailedError.
+            from accounting.validation import _check_period
+
+            if _check_period(event.company, entry_date):
+                from projections.exceptions import ProjectionTerminalSkip
+
+                raise ProjectionTerminalSkip(
+                    f"Shopify refund {refund_id} dated {entry_date} cannot post its credit note: {result.error}",
+                    fix_hint=(
+                        "Reopening the period will NOT auto-post this credit note (the refund "
+                        "event is already consumed) — after reopening, book the credit note with "
+                        "a manual journal and resolve this from /finance/exceptions."
+                    ),
+                )
+
+            from projections.exceptions import ProjectionCommandFailedError
+
+            raise ProjectionCommandFailedError(
+                f"create_and_post_credit_note_for_platform failed for Shopify refund {refund_id}: {result.error}",
+                command_name="create_and_post_credit_note_for_platform",
+                original_error=result.error,
             )
-            return
 
         credit_note = result.data.get("credit_note")
         journal_entry = result.data.get("journal_entry")

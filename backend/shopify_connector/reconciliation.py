@@ -226,7 +226,11 @@ def _match_transaction(company, txn: ShopifyPayoutTransaction) -> TransactionMat
             ShopifyRefund.objects.filter(
                 company=company,
                 order__shopify_order_id=txn.source_order_id,
-            ).order_by("shopify_created_at")
+            )
+            # A5 (Codex round-3 P2): never match a payout transaction to an
+            # invalid (ERROR/rejected) refund — it emitted no accounting event.
+            .exclude(status=ShopifyRefund.Status.ERROR)
+            .order_by("shopify_created_at")
         )
         txn_abs = abs(txn.amount)
         if refunds:

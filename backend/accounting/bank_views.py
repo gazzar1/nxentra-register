@@ -904,6 +904,10 @@ class CommerceReconciliationView(APIView):
                 shopify_created_at__date__gte=start,
                 shopify_created_at__date__lte=end,
             )
+            # A5 (Codex round-4 P2): exclude invalid (ERROR/rejected) refunds — e.g.
+            # a negative payload persisted only as evidence — from this commerce
+            # reconciliation report's total_refunds and row presentation.
+            .exclude(status=ShopifyRefund.Status.ERROR)
             .select_related("order")
             .order_by("shopify_created_at")
         )

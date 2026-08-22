@@ -145,6 +145,33 @@ def test_shopify_refund_after_order_produces_credit_note(shopify_company):  # no
     invoice = invoices.first()
     assert invoice.status == SalesInvoice.Status.POSTED
 
+    # The real pipeline's process_order_paid command creates the ShopifyOrder
+    # row; the refund handler resolves the order's settlement provider FROM that
+    # row to tag the credit-note clearing line (account 2200 REQUIRES the
+    # SETTLEMENT_PROVIDER dimension). This test emits events directly, skipping
+    # the command, so create the row with the SAME gateway the order used —
+    # otherwise the CN post fails the required-dimension check (pre-A5 the
+    # handler swallowed that and left a stranded DRAFT that the status-blind
+    # count below counted as success; A5-PR2 makes it fail-loud).
+    from decimal import Decimal as _Decimal
+
+    from shopify_connector.models import ShopifyOrder, ShopifyStore
+
+    _store = ShopifyStore.objects.get(company=shopify_company)
+    ShopifyOrder.objects.create(
+        company=shopify_company,
+        store=_store,
+        shopify_order_id=70002,
+        shopify_order_number="70002",
+        shopify_order_name="#70002",
+        total_price=_Decimal("300.00"),
+        subtotal_price=_Decimal("300.00"),
+        currency="USD",
+        gateway="shopify_payments",
+        order_date=date.today(),
+        shopify_created_at=timezone.now(),
+    )
+
     # Step 2: refund created. Manually emit a SHOPIFY_REFUND_CREATED event
     # because no helper exists for it (analog to _make_shopify_order_event).
     counter, _ = CompanyEventCounter.objects.get_or_create(company=shopify_company)
@@ -186,6 +213,10 @@ def test_shopify_refund_after_order_produces_credit_note(shopify_company):  # no
         "Check ProjectionFailureLog for the reason."
     )
     cn = credit_notes.first()
+    # A5-PR2: the refund handler is now fail-loud — a failed CN post raises
+    # (ProjectionFailureLog) instead of leaving a stranded DRAFT that a
+    # status-blind count would pass. The credit note must actually be POSTED.
+    assert cn.status == SalesCreditNote.Status.POSTED, f"credit note must be POSTED, got {cn.status}"
     assert cn.invoice_id == invoice.id, "CreditNote should be linked to the original invoice"
 
 

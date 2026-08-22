@@ -280,11 +280,12 @@ def test_a41_refund_handler_defers_when_invoice_missing_and_event_fresh(db, comp
     assert "999991" in str(exc.value)
 
 
-def test_a41_old_orphan_refund_logs_warning_does_not_defer(db, company, owner_membership):
-    """A41: refund events older than 24h with no matching invoice are
-    treated as truly orphan — log a warning and accept (pre-A41 silent-
-    return behavior). Otherwise we'd loop forever on an order that
-    really doesn't exist (e.g. predates the module-routing refactor).
+def test_a41_old_orphan_refund_quarantines_visibly(db, company, owner_membership):
+    """A5 (was A41 silent-accept): refund events older than 24h with no matching
+    invoice are treated as truly orphan — but instead of the pre-A5 SILENT return
+    (invisible consume), the handler now raises ProjectionTerminalSkip so the
+    orphan is operator-visible in /finance/exceptions AND the stream advances (no
+    head-of-line stall — the exact infinite loop the A41 silent-return avoided).
     """
     from datetime import timedelta
 
@@ -337,8 +338,11 @@ def test_a41_old_orphan_refund_logs_warning_does_not_defer(db, company, owner_me
     original = proj_module._INVOICE_LOOKUP_DELAY_SECONDS
     proj_module._INVOICE_LOOKUP_DELAY_SECONDS = 0.001
     try:
-        # Should NOT raise — old orphan returns silently per legacy.
-        handler.handle(event)
+        from projections.exceptions import ProjectionTerminalSkip
+
+        with pytest.raises(ProjectionTerminalSkip) as exc:
+            handler.handle(event)
+        assert "999992" in str(exc.value)
     finally:
         proj_module._INVOICE_LOOKUP_DELAY_SECONDS = original
 
