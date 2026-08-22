@@ -243,10 +243,20 @@ class TrialBalanceView(DimensionFilterMixin, APIView):
         # readers comes from the RESOLVED ACCOUNT (the invariant's rule),
         # never the raw payload flag — otherwise these reports disagree
         # with the accepted journal and the projected balances.
-        from accounting.posted_journal_apply import line_is_memo, memo_account_public_ids
+        from accounting.posted_journal_apply import (
+            line_is_memo,
+            memo_account_public_ids,
+            posted_event_accepted_for_apply,
+        )
 
         memo_ids = memo_account_public_ids(actor.company)
+        apply_facts_cache: dict = {}
         for event in events:
+            # A3-PR3 (Codex round-12 P1): fold only events the apply boundary
+            # ACCEPTS — a quarantined/deferred event is not in the canonical
+            # balances, and folding it would misstate the report.
+            if not posted_event_accepted_for_apply(event, apply_facts_cache):
+                continue
             entry_date_str = event.get_data().get("date")
             if not entry_date_str:
                 continue
@@ -708,10 +718,20 @@ class BalanceSheetView(DimensionFilterMixin, APIView):
         # readers comes from the RESOLVED ACCOUNT (the invariant's rule),
         # never the raw payload flag — otherwise these reports disagree
         # with the accepted journal and the projected balances.
-        from accounting.posted_journal_apply import line_is_memo, memo_account_public_ids
+        from accounting.posted_journal_apply import (
+            line_is_memo,
+            memo_account_public_ids,
+            posted_event_accepted_for_apply,
+        )
 
         memo_ids = memo_account_public_ids(actor.company)
+        apply_facts_cache: dict = {}
         for event in events:
+            # A3-PR3 (Codex round-12 P1): fold only events the apply boundary
+            # ACCEPTS — a quarantined/deferred event is not in the canonical
+            # balances, and folding it would misstate the report.
+            if not posted_event_accepted_for_apply(event, apply_facts_cache):
+                continue
             entry_date_str = event.get_data().get("date")
             if not entry_date_str:
                 continue
@@ -1212,10 +1232,20 @@ class IncomeStatementView(DimensionFilterMixin, APIView):
         # readers comes from the RESOLVED ACCOUNT (the invariant's rule),
         # never the raw payload flag — otherwise these reports disagree
         # with the accepted journal and the projected balances.
-        from accounting.posted_journal_apply import line_is_memo, memo_account_public_ids
+        from accounting.posted_journal_apply import (
+            line_is_memo,
+            memo_account_public_ids,
+            posted_event_accepted_for_apply,
+        )
 
         memo_ids = memo_account_public_ids(actor.company)
+        apply_facts_cache: dict = {}
         for event in events:
+            # A3-PR3 (Codex round-12 P1): fold only events the apply boundary
+            # ACCEPTS — a quarantined/deferred event is not in the canonical
+            # balances, and folding it would misstate the report.
+            if not posted_event_accepted_for_apply(event, apply_facts_cache):
+                continue
             entry_date_str = event.get_data().get("date")
             if not entry_date_str:
                 continue
@@ -2131,10 +2161,20 @@ class DimensionPLComparisonView(DimensionFilterMixin, APIView):
         # readers comes from the RESOLVED ACCOUNT (the invariant's rule),
         # never the raw payload flag — otherwise these reports disagree
         # with the accepted journal and the projected balances.
-        from accounting.posted_journal_apply import line_is_memo, memo_account_public_ids
+        from accounting.posted_journal_apply import (
+            line_is_memo,
+            memo_account_public_ids,
+            posted_event_accepted_for_apply,
+        )
 
         memo_ids = memo_account_public_ids(actor.company)
+        apply_facts_cache: dict = {}
         for event in events:
+            # A3-PR3 (Codex round-12 P1): fold only events the apply boundary
+            # ACCEPTS — a quarantined/deferred event is not in the canonical
+            # balances, and folding it would misstate the report.
+            if not posted_event_accepted_for_apply(event, apply_facts_cache):
+                continue
             entry_date_str = event.get_data().get("date")
             if not entry_date_str:
                 continue
@@ -3434,10 +3474,20 @@ class DashboardChartsView(APIView):
         # readers comes from the RESOLVED ACCOUNT (the invariant's rule),
         # never the raw payload flag — otherwise these reports disagree
         # with the accepted journal and the projected balances.
-        from accounting.posted_journal_apply import line_is_memo, memo_account_public_ids
+        from accounting.posted_journal_apply import (
+            line_is_memo,
+            memo_account_public_ids,
+            posted_event_accepted_for_apply,
+        )
 
         memo_ids = memo_account_public_ids(actor.company)
+        apply_facts_cache: dict = {}
         for event in events:
+            # A3-PR3 (Codex round-12 P1): fold only events the apply boundary
+            # ACCEPTS — a quarantined/deferred event is not in the canonical
+            # balances, and folding it would misstate the report.
+            if not posted_event_accepted_for_apply(event, apply_facts_cache):
+                continue
             entry_date_str = event.get_data().get("date")
             if not entry_date_str:
                 continue
@@ -3676,10 +3726,20 @@ class DashboardWidgetsView(APIView):
             # readers comes from the RESOLVED ACCOUNT (the invariant's rule),
             # never the raw payload flag — otherwise these reports disagree
             # with the accepted journal and the projected balances.
-            from accounting.posted_journal_apply import line_is_memo, memo_account_public_ids
+            from accounting.posted_journal_apply import (
+                line_is_memo,
+                memo_account_public_ids,
+                posted_event_accepted_for_apply,
+            )
 
             memo_ids = memo_account_public_ids(actor.company)
+            apply_facts_cache: dict = {}
             for event in recent_events:
+                # A3-PR3 (Codex round-12 P1): fold only events the apply boundary
+                # ACCEPTS — a quarantined/deferred event is not in the canonical
+                # balances, and folding it would misstate the report.
+                if not posted_event_accepted_for_apply(event, apply_facts_cache):
+                    continue
                 ev_data = event.get_data()
                 entry_date = ev_data.get("date", "")
                 memo = ev_data.get("memo", "")

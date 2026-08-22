@@ -202,6 +202,11 @@ class TestPostedApplyEnforcement:
         # The good entry applied fully.
         assert JournalEntry.objects.filter(company=company, public_id=good_id).exists()
 
+        # Codex round-12 P1: verification folds only apply-ACCEPTED events —
+        # the quarantined event must not produce a false integrity mismatch.
+        verdict = cash.verify_integrity()
+        assert verdict["is_valid"], verdict
+
     def test_quarantined_event_not_reattempted(self, company, user, cash_account, revenue_account):
         payload = _posted_payload(uuid4(), user, cash_account, revenue_account)
         event = _emit_posted(company, user, payload)
@@ -379,6 +384,68 @@ class TestSiblingGuards:
 
         original.refresh_from_db()
         assert original.status == JournalEntry.Status.REVERSED
+
+    def test_reversal_over_draft_row_with_quarantined_post_quarantines(
+        self, company, user, cash_account, revenue_account
+    ):
+        """Codex round-12 P1: the normal lifecycle leaves a DRAFT row under
+        the reversal's id (from CREATED) — existence alone must not let a
+        reversal over a QUARANTINED post flip statuses; the rows must have
+        reached the POSTED state."""
+        from accounting.posted_journal_apply import APPLY_REVERSAL_TARGET_MISSING
+
+        original = self._post_entry(company, user, cash_account, revenue_account)
+
+        reversal_id = uuid4()
+        emit_event(
+            company=company,
+            event_type=EventTypes.JOURNAL_ENTRY_CREATED,
+            aggregate_type="JournalEntry",
+            aggregate_id=str(reversal_id),
+            data={
+                "entry_public_id": str(reversal_id),
+                "date": date.today().isoformat(),
+                "memo": "draft reversal",
+                "status": "DRAFT",
+                "period": 1,
+                "line_count": 0,
+                "created_by_id": user.id,
+                "created_by_email": user.email,
+            },
+            caused_by_user=user,
+            idempotency_key=f"apply-test:draft-rev:{reversal_id}",
+        )
+        rev_payload = _posted_payload(reversal_id, user, revenue_account, cash_account)
+        rev_event = _emit_posted(company, user, rev_payload)
+        corrupted = dict(rev_payload)
+        corrupted["lines"] = [dict(rev_payload["lines"][0]), dict(rev_payload["lines"][1], credit="1.00")]
+        _corrupt(rev_event, corrupted)  # the POST quarantines; the DRAFT row remains
+
+        reversed_event = emit_event(
+            company=company,
+            event_type=EventTypes.JOURNAL_ENTRY_REVERSED,
+            aggregate_type="JournalEntry",
+            aggregate_id=str(original.public_id),
+            data={
+                "original_entry_public_id": str(original.public_id),
+                "reversal_entry_public_id": str(reversal_id),
+                "reversed_at": "2026-01-08T12:00:00",
+                "reversed_by_id": user.id,
+                "reversed_by_email": user.email,
+            },
+            caused_by_user=user,
+            idempotency_key=f"apply-test:draft-qrev:{original.public_id}",
+        )
+
+        projection = JournalEntryProjection()
+        projection.process_pending(company)
+
+        log = ProjectionFailureLog.objects.get(company=company, event_id=reversed_event.id)
+        assert APPLY_REVERSAL_TARGET_MISSING in log.message
+        original.refresh_from_db()
+        assert original.status == JournalEntry.Status.POSTED
+        draft = JournalEntry.objects.get(company=company, public_id=reversal_id)
+        assert draft.status == JournalEntry.Status.DRAFT  # never linked/flipped
 
     def test_reversal_over_quarantined_post_quarantines(self, company, user, cash_account, revenue_account):
         """Codex round-11 P1: when the reversal entry's own posted event was

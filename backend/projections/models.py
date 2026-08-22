@@ -182,11 +182,20 @@ class AccountBalance(ProjectionOwnedModel):
         # A3-PR3 (Codex round-11 P1): account-derived memo classification —
         # verifying against the raw payload flag would disagree with the
         # apply boundary and the balance consumers whenever the flag lies.
-        from accounting.posted_journal_apply import line_is_memo, memo_account_public_ids
+        from accounting.posted_journal_apply import (
+            line_is_memo,
+            memo_account_public_ids,
+            posted_event_accepted_for_apply,
+        )
 
         memo_ids = memo_account_public_ids(self.company)
+        apply_facts_cache: dict = {}
 
         for event in events:
+            # A3-PR3 (Codex round-12 P1): fold only apply-accepted events —
+            # see AccountBalanceProjection.verify_all_balances.
+            if not posted_event_accepted_for_apply(event, apply_facts_cache):
+                continue
             lines = event.get_data().get("lines", [])
             for line_data in lines:
                 if line_data.get("account_public_id") != account_public_id:

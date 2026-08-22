@@ -39,9 +39,10 @@ same read models carry boundary-local guards (founder decision D5):
 - ``journal_entry.reversed`` — the payload's entry references must be
   well-formed UUIDs (a malformed payload previously KeyError-halted the
   whole projection stream), and once no post is pending BOTH referenced
-  entries must exist — a reversal over a quarantined post quarantines too
+  entries must exist IN A POSTED STATE (a pre-post DRAFT row is not a
+  reversal target) — a reversal over a quarantined post quarantines too
   (``APPLY_REVERSAL_TARGET_MISSING``), never a silent status flip against
-  missing rows;
+  missing or draft rows;
 - ``journal_entry.deleted`` — deleting a POSTED/REVERSED entry from the read
   model is refused (posted financial history must never vanish from the read
   model while the event stream still asserts it; the delete command only
@@ -479,6 +480,17 @@ def _readable_payload(event: BusinessEvent) -> dict:
     return data
 
 
+def posted_event_accepted_for_apply(event, facts_cache: dict | None = None) -> bool:
+    """True iff the apply verdict is CLEAN — the shared filter for event-fold
+    READERS (the report views, AccountBalance verification): a quarantined
+    (or lag-deferred, not-yet-applied) posted event is deliberately NOT in
+    the canonical balances, so folding it would disagree with them (Codex
+    round-12 P1 — incorrect reports and false integrity mismatches). Pass a
+    per-request ``facts_cache`` so account lookups are shared across the
+    fold."""
+    return not evaluate_posted_journal_for_apply(event, facts_cache)
+
+
 def memo_account_public_ids(company) -> frozenset[str]:
     """Canonical public ids of the company's memo/non-financial accounts —
     THE account-derived memo classification for payload READERS (the
@@ -563,7 +575,18 @@ def validate_reversed_journal_apply(event: BusinessEvent) -> None:
 
     for key in ("original_entry_public_id", "reversal_entry_public_id"):
         ref = _canonical_uuid(data[key])
-        if ref is None or not JournalEntry.objects.filter(company=event.company, public_id=ref).exists():
+        status = (
+            JournalEntry.objects.filter(company=event.company, public_id=ref).values_list("status", flat=True).first()
+            if ref is not None
+            else None
+        )
+        # Codex round-12 P1: existence is not enough — the normal lifecycle
+        # leaves a DRAFT row (from CREATED) under the same id, so a reversal
+        # over a quarantined post would flip a draft to REVERSED (or link a
+        # draft reversal) with no balance movements behind it. Both rows
+        # must have reached the POSTED state (REVERSED accepted for
+        # idempotent replays of an already-flipped original).
+        if status not in (JournalEntry.Status.POSTED, JournalEntry.Status.REVERSED):
             raise PostedJournalApplyInvalid(event.event_type, [APPLY_REVERSAL_TARGET_MISSING])
 
 
