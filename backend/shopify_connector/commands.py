@@ -1235,8 +1235,12 @@ def process_order_paid(store: ShopifyStore, payload: dict) -> CommandResult:
         prepared_items = _prepare_order_item_metadata(store, payload)
         return _process_order_paid_inner(store, payload, prepared_items)
     except Exception as e:
+        # A5 (K#2): mark retryable so the webhook view answers 503 and Shopify
+        # redelivers (backoff ~48h) instead of a silent 200 that loses the order
+        # until the 48h poller. Mirrors process_refund's transient-fail contract;
+        # the poller stays the durable backstop for a permanently-bad payload.
         logger.error("process_order_paid failed for store %s: %s", store.shop_domain, e)
-        return CommandResult.fail(str(e))
+        return CommandResult.fail(str(e), data={"retryable": True})
 
 
 @transaction.atomic
