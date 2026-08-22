@@ -409,13 +409,31 @@ export default function ExceptionsPage() {
         ) : items.length === 0 ? (
           <Card>
             <CardContent className="flex flex-col items-center gap-3 py-16 text-center">
-              <CheckCircle2 className="h-12 w-12 text-emerald-500" />
-              <h3 className="text-lg font-medium">No exceptions to show</h3>
-              <p className="text-sm text-muted-foreground">
-                {resolvedFilter === "false"
-                  ? "All projections are running cleanly. When something fails, it'll show up here."
-                  : "No failures match the current filters."}
-              </p>
+              {/* Codex round-6: the celebratory green all-clear only when there is
+                  genuinely nothing anywhere. If projection failures are empty but
+                  import rejects are listed below, show a projection-scoped note that
+                  points to them, so the page never presents a contradictory
+                  "all clear" above an active rejection. */}
+              {importRejectsCount === 0 ? (
+                <>
+                  <CheckCircle2 className="h-12 w-12 text-emerald-500" />
+                  <h3 className="text-lg font-medium">No exceptions to show</h3>
+                  <p className="text-sm text-muted-foreground">
+                    {resolvedFilter === "false"
+                      ? "All projections are running cleanly. When something fails, it'll show up here."
+                      : "No failures match the current filters."}
+                  </p>
+                </>
+              ) : (
+                <>
+                  <h3 className="text-lg font-medium">No projection failures</h3>
+                  <p className="text-sm text-muted-foreground">
+                    {resolvedFilter === "false"
+                      ? "No projection failures — but there are import rejections below that need review."
+                      : "No projection failures match the current filters. See import rejections below."}
+                  </p>
+                </>
+              )}
             </CardContent>
           </Card>
         ) : (
