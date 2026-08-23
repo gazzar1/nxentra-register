@@ -69,11 +69,17 @@ export const shopifyRejectedEvidenceService = {
 
   // Deliberately "acknowledge", not "resolve": manual acknowledgment is a claim
   // of having reviewed the rejected payload, never proof of processing.
+  // `acknowledgedOccurrence` is the occurrence_count the operator actually
+  // reviewed — a re-sight between the read and this POST bumps it and the
+  // backend answers 409 so a stale acknowledgment can never hide the newly
+  // observed delivery.
   async acknowledge(
     id: number,
+    acknowledgedOccurrence: number,
     note?: string,
   ): Promise<ShopifyRejectedEvidence> {
     const { data } = await apiClient.post(`${BASE_PATH}/${id}/acknowledge/`, {
+      acknowledged_occurrence: acknowledgedOccurrence,
       acknowledgment_note: note || "",
     });
     return data;

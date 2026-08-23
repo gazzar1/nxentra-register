@@ -752,15 +752,25 @@ def test_acknowledge_endpoint_owner_only(
     # A regular member is refused. (api_client IS authenticated_client's
     # underlying instance — re-authenticate as the owner afterwards.)
     api_client.force_authenticate(user=regular_user)
-    resp = api_client.post(f"/api/shopify/rejected-evidence/{row.pk}/acknowledge/", {"acknowledgment_note": "x"})
+    resp = api_client.post(
+        f"/api/shopify/rejected-evidence/{row.pk}/acknowledge/",
+        {"acknowledgment_note": "x", "acknowledged_occurrence": 1},
+    )
     assert resp.status_code == 403
     row.refresh_from_db()
     assert row.acknowledged is False
     api_client.force_authenticate(user=user)
 
-    # The owner acknowledges (a claim of review, not of processing).
+    # Missing acknowledged_occurrence is a 400 (the CAS input is required).
     resp = authenticated_client.post(
         f"/api/shopify/rejected-evidence/{row.pk}/acknowledge/", {"acknowledgment_note": "reviewed"}
+    )
+    assert resp.status_code == 400
+
+    # The owner acknowledges (a claim of review, not of processing).
+    resp = authenticated_client.post(
+        f"/api/shopify/rejected-evidence/{row.pk}/acknowledge/",
+        {"acknowledgment_note": "reviewed", "acknowledged_occurrence": 1},
     )
     assert resp.status_code == 200
     row.refresh_from_db()
@@ -769,7 +779,9 @@ def test_acknowledge_endpoint_owner_only(
     assert row.acknowledgment_note == "reviewed"
 
     # Second acknowledge is a friendly no-op.
-    resp = authenticated_client.post(f"/api/shopify/rejected-evidence/{row.pk}/acknowledge/", {})
+    resp = authenticated_client.post(
+        f"/api/shopify/rejected-evidence/{row.pk}/acknowledge/", {"acknowledged_occurrence": 1}
+    )
     assert resp.status_code == 200
     assert resp.json()["detail"] == "Already acknowledged."
 
@@ -1415,6 +1427,46 @@ def test_restock_tolerated_shapes_still_process(shopify_store, company):
     )
     assert commands.process_refund(shopify_store, well_formed).success
     assert ShopifyRejectedEvidence.objects.filter(company=company).count() == 0
+
+
+# =============================================================================
+# Codex round-5 fix pin (PR #130, 2026-08-23)
+# =============================================================================
+
+
+def test_stale_acknowledgment_loses_to_resight(shopify_store, company, owner_membership, authenticated_client):
+    """Codex round-5 P2: an acknowledgment is a claim about a SPECIFIC
+    observation. When a re-sight lands between the operator's read (occurrence
+    N) and their POST, the CAS on (acknowledged=False, occurrence_count=N)
+    matches nothing — 409, the row stays open, and the newly observed delivery
+    is never hidden by the stale acknowledgment."""
+    payload = _order_payload(order_id=5100150, total_price="abc")
+    _post_webhook("orders/paid", payload)
+    row = _evidence(company)
+    assert row.occurrence_count == 1  # the operator reads occurrence 1
+
+    # A re-sight lands before the operator's acknowledgment arrives.
+    _post_webhook("orders/paid", payload, delivery_id="wh-race")
+    row.refresh_from_db()
+    assert row.occurrence_count == 2
+
+    resp = authenticated_client.post(
+        f"/api/shopify/rejected-evidence/{row.pk}/acknowledge/",
+        {"acknowledgment_note": "stale", "acknowledged_occurrence": 1},
+    )
+    assert resp.status_code == 409
+    row.refresh_from_db()
+    assert row.acknowledged is False, "a stale acknowledgment must never hide the re-sighted delivery"
+    assert row.acknowledgment_note == ""
+
+    # Acknowledging the CURRENT observation succeeds.
+    resp = authenticated_client.post(
+        f"/api/shopify/rejected-evidence/{row.pk}/acknowledge/",
+        {"acknowledgment_note": "reviewed the re-sight", "acknowledged_occurrence": 2},
+    )
+    assert resp.status_code == 200
+    row.refresh_from_db()
+    assert row.acknowledged is True
 
 
 def test_redaction_clears_acknowledgment_note(shopify_store, company, user):

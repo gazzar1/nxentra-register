@@ -1586,6 +1586,13 @@ class ShopifyRejectedEvidenceAcknowledgeView(APIView):
     is never proof of successful processing (only a corrected redelivery that
     creates the canonical row supersedes evidence). A re-sighted still-malformed
     payload clears the acknowledgment and reopens the queue item.
+
+    The body must carry ``acknowledged_occurrence`` — the occurrence_count the
+    operator actually REVIEWED (Codex round-5): an acknowledgment is a claim
+    about a specific observation, and a re-sight that lands between the
+    operator's read and this POST bumps the count and reopens the row — a stale
+    acknowledgment must not hide the newly observed delivery, so a mismatch
+    answers 409 with the fresh row for re-review.
     """
 
     permission_classes = [IsAuthenticated]
@@ -1604,6 +1611,14 @@ class ShopifyRejectedEvidenceAcknowledgeView(APIView):
         except ShopifyRejectedEvidence.DoesNotExist:
             return Response({"detail": "Rejected evidence not found."}, status=status.HTTP_404_NOT_FOUND)
 
+        try:
+            acknowledged_occurrence = int(request.data.get("acknowledged_occurrence"))
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "acknowledged_occurrence (the occurrence_count you reviewed) is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         if row.acknowledged:
             return Response(
                 {"detail": "Already acknowledged.", **_serialize_rejected_evidence(row)},
@@ -1613,11 +1628,17 @@ class ShopifyRejectedEvidenceAcknowledgeView(APIView):
         from django.utils import timezone as dj_timezone
 
         note = (request.data.get("acknowledgment_note") or "").strip()[:2000]
-        # Conditional queryset UPDATE (not read-modify-write): a concurrent
-        # re-sight clears acknowledgment atomically, and this must not clobber
-        # that reopen with stale instance state — acknowledge only the row as it
-        # is NOW (still unacknowledged), else report the current state.
-        updated = ShopifyRejectedEvidence.objects.filter(pk=row.pk, company=actor.company, acknowledged=False).update(
+        # Compare-and-set on (acknowledged=False, occurrence_count=<reviewed>):
+        # a concurrent re-sight both bumps the count and clears acknowledgment
+        # atomically, so a stale operator request — read before the re-sight,
+        # posted after — matches nothing and can never re-hide the newly
+        # observed delivery (never read-modify-write instance state).
+        updated = ShopifyRejectedEvidence.objects.filter(
+            pk=row.pk,
+            company=actor.company,
+            acknowledged=False,
+            occurrence_count=acknowledged_occurrence,
+        ).update(
             acknowledged=True,
             acknowledged_at=dj_timezone.now(),
             acknowledged_by=request.user,
@@ -1625,8 +1646,19 @@ class ShopifyRejectedEvidenceAcknowledgeView(APIView):
         )
         row.refresh_from_db()
         if not updated:
+            if row.acknowledged:
+                return Response(
+                    {"detail": "Already acknowledged.", **_serialize_rejected_evidence(row)},
+                    status=status.HTTP_200_OK,
+                )
             return Response(
-                {"detail": "Already acknowledged.", **_serialize_rejected_evidence(row)},
-                status=status.HTTP_200_OK,
+                {
+                    "detail": (
+                        "The payload was re-sighted since you reviewed it — review the newest "
+                        "delivery before acknowledging."
+                    ),
+                    **_serialize_rejected_evidence(row),
+                },
+                status=status.HTTP_409_CONFLICT,
             )
         return Response(_serialize_rejected_evidence(row))

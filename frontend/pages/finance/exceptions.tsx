@@ -320,18 +320,24 @@ export default function ExceptionsPage() {
   const handleAcknowledgeEvidence = async (row: ShopifyRejectedEvidence) => {
     setAckingEvidenceId(row.id);
     try {
-      await shopifyRejectedEvidenceService.acknowledge(row.id);
+      // Pass the occurrence the operator is looking at: a re-sight between
+      // this render and the POST bumps it server-side and the backend answers
+      // 409 instead of letting a stale acknowledgment hide the new delivery.
+      await shopifyRejectedEvidenceService.acknowledge(row.id, row.occurrence_count);
       toast({
         title: "Rejected evidence acknowledged",
         description: `${row.resource_kind} ${row.external_id || "(no id)"} (${row.rejection_code}) — acknowledgment records review, not successful processing.`,
       });
       await fetchAll();
     } catch (err) {
+      const detail = (err as { response?: { status?: number; data?: { detail?: string } } }).response;
       toast({
-        title: "Failed to acknowledge",
-        description: (err as Error).message,
+        title: detail?.status === 409 ? "Payload re-sighted — review again" : "Failed to acknowledge",
+        description: detail?.data?.detail || (err as Error).message,
         variant: "destructive",
       });
+      // Refresh so the operator sees the re-sighted (or already-changed) state.
+      await fetchAll();
     } finally {
       setAckingEvidenceId(null);
     }
