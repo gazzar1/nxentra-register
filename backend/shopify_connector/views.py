@@ -581,10 +581,14 @@ class ShopifyWebhookView(APIView):
 
         try:
             payload = json.loads(body)
-        except (json.JSONDecodeError, UnicodeDecodeError) as json_error:
+        except (json.JSONDecodeError, UnicodeDecodeError, RecursionError) as json_error:
             # UnicodeDecodeError: an HMAC-valid body that is not even UTF-8 —
             # json.loads raises it BEFORE JSONDecodeError, and it is not a
             # JSONDecodeError subclass; uncaught it would 500-loop the delivery.
+            # RecursionError (Codex round-4): a syntactically valid body nested
+            # past the parser's depth limit raises it instead of JSONDecodeError
+            # — same authenticated-malformed-body class, same capture (the
+            # evidence writer stores hash + raw bytes only, depth-immune).
             logger.error("Invalid JSON in Shopify webhook body")
             # A5-PR2b: an HMAC-VALID but unparseable body for an order/refund
             # topic is authenticated malformed evidence — persist it durably

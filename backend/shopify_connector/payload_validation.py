@@ -448,6 +448,39 @@ def validate_refund_payload(payload) -> PayloadVerdict:
         else:
             errors.extend(_dict_list_defects(payload["refund_line_items"], "refund_line_items", ("subtotal",)))
 
+    # Restock shape (Codex round-4 P2): the projection's restock consumers read
+    # more than `subtotal` — for a return/cancel element,
+    # `_refund_has_restocked_goods` / `_handle_refund_restock` compare quantity
+    # with `> 0` / `<= 0` (a string or null raises TypeError) and a positive
+    # quantity makes them `.get` into line_item (a non-object raises) — all
+    # AFTER the canonical refund + event committed, deterministically failing
+    # the projection. Non-restock elements keep today's tolerance (the
+    # consumers skip them before reading anything else).
+    if isinstance(payload.get("refund_line_items"), list):
+        for index, element in enumerate(payload["refund_line_items"]):
+            if not isinstance(element, dict):
+                continue  # already reported by the shape check
+            if element.get("restock_type") not in ("return", "cancel"):
+                continue
+            quantity = element.get("quantity", 0)
+            if isinstance(quantity, bool) or not isinstance(quantity, int | float):
+                errors.append(
+                    _defect(
+                        MALFORMED_STRUCTURE,
+                        f"refund_line_items[{index}].quantity",
+                        f"restock quantity is not a number: {_short(quantity)}",
+                    )
+                )
+                continue
+            if quantity > 0 and not isinstance(element.get("line_item", {}), dict):
+                errors.append(
+                    _defect(
+                        MALFORMED_STRUCTURE,
+                        f"refund_line_items[{index}].line_item",
+                        f"restock line_item is not an object: {_short(element.get('line_item'))}",
+                    )
+                )
+
     # note: null is a ROUTINE Shopify shape (the poller's GraphQL mapper already
     # normalizes it with `r.get("note") or ""`; process_refund now applies the
     # same normalization at the shared ingress) — tolerated. Only an over-long

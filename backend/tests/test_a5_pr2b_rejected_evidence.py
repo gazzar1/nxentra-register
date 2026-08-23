@@ -1341,6 +1341,82 @@ def test_aggregate_shipping_amount_is_bounded(shopify_store, company):
     assert BusinessEvent.objects.filter(company=company).count() == 0
 
 
+# =============================================================================
+# Codex round-4 fix pins (PR #130, 2026-08-23)
+# =============================================================================
+
+
+def test_parser_depth_bomb_is_captured_as_malformed_json(shopify_store, company):
+    """Codex round-4 P2: a syntactically valid body nested past the JSON
+    parser's depth limit raises RecursionError (not JSONDecodeError) — it must
+    be captured as MALFORMED_JSON evidence like every other authenticated
+    unparseable body, never escape as a 500 loop."""
+    raw = b"[" * 50000 + b"]" * 50000
+    with pytest.raises(RecursionError):
+        json.loads(raw)  # prove the class: this is the parser's depth failure
+
+    resp = _post_raw_webhook("orders/paid", raw)
+    assert resp.status_code == 200
+    row = _evidence(company)
+    assert row.rejection_code == ShopifyRejectedEvidence.RejectionCode.MALFORMED_JSON
+    assert base64.b64decode(row.raw_body_b64) == raw
+    assert row.parsed_payload is None
+
+
+def test_restock_shape_rejects_unconsumable_fields(shopify_store, company):
+    """Codex round-4 P2: the projection's restock consumers compare quantity
+    with > 0 / <= 0 and .get into line_item AFTER the event committed — a
+    string quantity or non-object line_item on a return/cancel element must
+    reject as evidence, not emit a deterministically-failing event."""
+    assert commands.process_order_paid(shopify_store, _order_payload(order_id=5100140)).success
+
+    # String quantity on a restock element.
+    bad_quantity = _refund_payload(
+        refund_id=5200140,
+        order_id=5100140,
+        refund_line_items=[{"subtotal": "1", "restock_type": "return", "quantity": "1"}],
+    )
+    assert _post_webhook("refunds/create", bad_quantity).status_code == 200
+    # Non-object line_item on a positive restock.
+    bad_line_item = _refund_payload(
+        refund_id=5200141,
+        order_id=5100140,
+        refund_line_items=[{"subtotal": "1", "restock_type": "return", "quantity": 2, "line_item": "x"}],
+    )
+    assert _post_webhook("refunds/create", bad_line_item).status_code == 200
+
+    rows = ShopifyRejectedEvidence.objects.filter(
+        company=company, resource_kind=ShopifyRejectedEvidence.ResourceKind.REFUND
+    )
+    assert rows.count() == 2
+    assert all(r.rejection_code == ShopifyRejectedEvidence.RejectionCode.MALFORMED_STRUCTURE for r in rows)
+    assert ShopifyRefund.objects.filter(company=company).count() == 0
+
+
+def test_restock_tolerated_shapes_still_process(shopify_store, company):
+    """Non-restock elements keep today's tolerance (the consumers skip them
+    before reading quantity/line_item), and a well-formed restock processes."""
+    assert commands.process_order_paid(shopify_store, _order_payload(order_id=5100141)).success
+
+    # No restock_type: a string quantity is never compared — tolerated today.
+    tolerated = _refund_payload(
+        refund_id=5200142,
+        order_id=5100141,
+        refund_line_items=[{"subtotal": "5", "quantity": "1"}],
+    )
+    assert commands.process_refund(shopify_store, tolerated).success
+
+    # A well-formed restock shape processes.
+    well_formed = _refund_payload(
+        refund_id=5200143,
+        order_id=5100141,
+        transactions=[{"kind": "refund", "status": "success", "amount": "10.00"}],
+        refund_line_items=[{"subtotal": "10.00", "restock_type": "return", "quantity": 1, "line_item": {"sku": "A-1"}}],
+    )
+    assert commands.process_refund(shopify_store, well_formed).success
+    assert ShopifyRejectedEvidence.objects.filter(company=company).count() == 0
+
+
 def test_redaction_clears_acknowledgment_note(shopify_store, company, user):
     """Codex round-1 P2: the acknowledgment note is free-form operator input
     shown next to the raw evidence — an operator can copy shopper PII into it,
