@@ -24,6 +24,26 @@ from django.views import View
 
 logger = logging.getLogger(__name__)
 
+# =============================================================================
+# A5-PR2b: adapter-registered counters of OPEN rejected source evidence —
+# authenticated provider payloads durably rejected at ingress (no event, so no
+# ProjectionFailureLog; adapter-owned tables, so the core cannot import them —
+# the adapter registers how to count, the PR #129 register_known_order_lookup
+# inversion: adapter depends on core, never the reverse). Each counter returns
+# the adapter's count of open (unacknowledged, unsuperseded) evidence rows and
+# is folded into the combined /_health/alerts exception pool.
+# =============================================================================
+
+_REJECTED_EVIDENCE_COUNTERS: dict[str, Any] = {}
+
+
+def register_rejected_evidence_counter(name: str, counter) -> None:
+    """Register (or replace) an adapter's open-rejected-evidence counter.
+    ``counter`` is a zero-arg callable returning an int; it runs inside the
+    alert computation's rls_bypass (a cross-company ops read, like the sibling
+    ImportRejectedRow count)."""
+    _REJECTED_EVIDENCE_COUNTERS[name] = counter
+
 
 class HealthCheck:
     """Health check implementation."""
@@ -347,6 +367,13 @@ def compute_alert_state() -> dict:
         # A5-PR3: a dropped settlement/bank source row is a real financial
         # exception with no event (so no ProjectionFailureLog) — page on it too.
         unresolved_rejects = ImportRejectedRow.objects.filter(resolved=False).count()
+        # A5-PR2b: rejected provider source evidence (adapter-registered
+        # counters — e.g. a malformed Shopify order payload durably rejected at
+        # ingress) is the same class of unresolved financial exception.
+        rejected_evidence_by_source = {
+            name: int(counter()) for name, counter in sorted(_REJECTED_EVIDENCE_COUNTERS.items())
+        }
+        open_rejected_evidence = sum(rejected_evidence_by_source.values())
 
         total_lag = 0
         paused = 0
@@ -376,10 +403,10 @@ def compute_alert_state() -> dict:
             total_lag += total - processed
 
     healthy = (
-        # Combined pool vs the threshold (Codex P2): projection failures and import
-        # rejects are both unresolved financial exceptions — a max of N must bound
-        # their TOTAL, not each independently.
-        (unresolved + unresolved_rejects) <= max_failures
+        # Combined pool vs the threshold (Codex P2): projection failures, import
+        # rejects and rejected source evidence are all unresolved financial
+        # exceptions — a max of N must bound their TOTAL, not each independently.
+        (unresolved + unresolved_rejects + open_rejected_evidence) <= max_failures
         and total_lag <= lag_threshold
         and paused == 0
         and errored == 0
@@ -388,6 +415,8 @@ def compute_alert_state() -> dict:
         "status": "healthy" if healthy else "unhealthy",
         "unresolved_failures": unresolved,
         "unresolved_import_rejects": unresolved_rejects,
+        "open_rejected_evidence": open_rejected_evidence,
+        "rejected_evidence_by_source": rejected_evidence_by_source,
         "total_lag": total_lag,
         "paused_consumers": paused,
         "errored_consumers": errored,

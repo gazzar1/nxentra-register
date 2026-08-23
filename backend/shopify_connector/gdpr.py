@@ -29,7 +29,16 @@ from events.types import EventTypes
 from projections.write_barrier import command_writes_allowed
 
 from .event_types import ShopifyGdprRequestCompletedData
-from .models import GdprRequest, PendingShopifyInstall, ShopifyFulfillment, ShopifyOrder, ShopifyRefund, ShopifyStore
+from .models import (
+    GdprRequest,
+    PendingShopifyInstall,
+    ShopifyFulfillment,
+    ShopifyOrder,
+    ShopifyRefund,
+    ShopifyRejectedEvidence,
+    ShopifyStore,
+)
+from .rejected_evidence import redact_evidence
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +112,42 @@ def _stores_for_domain(shop_domain):
     """ALL statuses: shop/redact fires ~48h after uninstall, when the store
     is DISCONNECTED, and multiple companies can hold rows for one domain."""
     return list(ShopifyStore.objects.filter(shop_domain=shop_domain).select_related("company"))
+
+
+def _matching_rejected_evidence(store, customer_id, customer_email, order_ids):
+    """A5-PR2b: rejected-evidence rows belonging to the shopper — ORDER evidence
+    keyed by the named order ids (its external_id IS the order id), REFUND
+    evidence by parent order id, plus ORDER evidence whose parsed customer
+    matches by id/email (the missing-id class has no external_id to key on).
+    Matched by the ``shop_domain`` SNAPSHOT so evidence whose store FK was
+    SET_NULLed is still reached. Already-redacted rows have no parsed_payload
+    left to match — the id-based arms still re-match them harmlessly
+    (redact_evidence is idempotent)."""
+    qs = ShopifyRejectedEvidence.objects.filter(company=store.company, shop_domain=store.shop_domain)
+    matched_pks: set[int] = set()
+    if order_ids:
+        ids = [str(oid) for oid in order_ids]
+        matched_pks.update(
+            qs.filter(
+                resource_kind=ShopifyRejectedEvidence.ResourceKind.ORDER,
+                external_id__in=ids,
+            ).values_list("pk", flat=True)
+        )
+        matched_pks.update(
+            qs.filter(
+                resource_kind=ShopifyRejectedEvidence.ResourceKind.REFUND,
+                parent_external_id__in=ids,
+            ).values_list("pk", flat=True)
+        )
+    for row in qs.filter(parsed_payload__isnull=False).iterator(chunk_size=500):
+        customer = (row.parsed_payload or {}).get("customer") if isinstance(row.parsed_payload, dict) else None
+        if not isinstance(customer, dict):
+            continue
+        if (customer_id and str(customer.get("id")) == str(customer_id)) or (
+            customer_email and (customer.get("email") or "").lower() == customer_email.lower()
+        ):
+            matched_pks.add(row.pk)
+    return ShopifyRejectedEvidence.objects.filter(pk__in=matched_pks)
 
 
 def _emit_completed(req, company, *, orders_matched, records_scrubbed, events_exempted):
@@ -215,7 +260,11 @@ def execute_customer_redact(req: GdprRequest) -> dict:
     with rls_bypass():
         for store in _stores_for_domain(req.shop_domain):
             orders = _matching_orders(store, req.customer_id, req.customer_email, order_ids)
-            if not orders:
+            # A5-PR2b: the shopper's data can live ONLY in rejected source
+            # evidence (a malformed payload that never became an order) — match
+            # it independently of orders.
+            rejected_qs = _matching_rejected_evidence(store, req.customer_id, req.customer_email, order_ids)
+            if not orders and not rejected_qs.exists():
                 continue
             evidence["companies_matched"] += 1
             evidence["orders_matched"] += len(orders)
@@ -256,6 +305,12 @@ def execute_customer_redact(req: GdprRequest) -> dict:
                         cust.notes = ""
                         cust.save(update_fields=["name", "email", "phone", "address", "notes"])
                         evidence["records_scrubbed"] += 1
+
+                # A5-PR2b: scrub the shopper's rejected source evidence —
+                # parsed_payload/raw_body_b64 cleared and redacted_at stamped;
+                # hashes, codes, timestamps and identity stay, and a later
+                # re-sighting never restores the PII.
+                evidence["records_scrubbed"] += redact_evidence(rejected_qs)
 
             exempted = _count_exempt_events(store.company, req.customer_email)
             evidence["events_exempted"] += exempted
@@ -334,6 +389,17 @@ def execute_shop_redact(req: GdprRequest) -> dict:
                         refund.raw_payload = rraw
                         refund.save(update_fields=["raw_payload"])
                         company_scrubbed += 1
+
+                # A5-PR2b: scrub ALL rejected source evidence for this shop —
+                # matched by the shop_domain SNAPSHOT so evidence whose store FK
+                # was SET_NULLed is reached too. Payload fields cleared,
+                # hashes/codes/identity kept, redacted_at stamped.
+                company_scrubbed += redact_evidence(
+                    ShopifyRejectedEvidence.objects.filter(
+                        company=store.company,
+                        shop_domain=req.shop_domain,
+                    )
+                )
 
             evidence["records_scrubbed"] += company_scrubbed
             _emit_completed(

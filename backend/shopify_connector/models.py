@@ -10,6 +10,7 @@ import uuid
 
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
 
 from accounts.models import Company, CompanyMembership
 from nxentra_backend.crypto import EncryptedTextField
@@ -465,6 +466,221 @@ class ShopifyRefund(models.Model):
 
     def __str__(self):
         return f"Refund {self.shopify_refund_id} ({self.currency} {self.amount})"
+
+
+class ShopifyRejectedEvidence(models.Model):
+    """A5-PR2b: durable evidence for an authenticated Shopify ORDER/REFUND payload
+    from which an honest ``ShopifyOrder``/``ShopifyRefund`` cannot be constructed.
+
+    Boundary (founder spec, 2026-08-23): ``ShopifyOrder.status=ERROR`` remains
+    appropriate only when a structurally VALID canonical order exists but its
+    processing/accounting failed; THIS table owns structurally malformed payloads
+    (malformed money/currency/structure, missing/untrustworthy external id,
+    HMAC-valid unparseable JSON). No ShopifyOrder/ShopifyRefund row, no event, no
+    sequence, no journal and no financial-reader entry is ever created for these
+    payloads — being a SEPARATE table, exclusion from every financial reader is
+    structural (the ``ImportRejectedRow`` precedent).
+
+    Plain operational write-model (the ``ProjectionFailureLog``/``ImportRejectedRow``
+    precedent): written by the ingress writer in ``rejected_evidence.py`` and by
+    operators (acknowledge), never by a projection — it records the ABSENCE of a
+    canonical fact, so it is not a second writer of any canonical fact and no
+    write-barrier context is required.
+
+    Identity: ``dedup_hash = sha256(company_id | store_public_id | resource_kind |
+    payload_hash)`` — ``rejection_code`` is software interpretation, NOT source
+    identity, so a later validator refinement can never create a second evidence
+    row for the exact same payload. A corrected payload (different bytes) is a NEW
+    evidence item; when it becomes valid and creates the canonical row, earlier
+    open evidence for that external identity is marked superseded and linked.
+
+    Store relationship: ``store`` is a nullable SET_NULL convenience FK —
+    ``store_public_id`` + ``shop_domain`` are IMMUTABLE snapshots so deleting or
+    replacing a ShopifyStore row never deletes (or orphans the attribution of)
+    the durable rejection evidence.
+
+    Operator acknowledgment is a claim of having LOOKED, not proof of successful
+    processing — a re-sighted still-malformed payload clears it and reopens the
+    queue item. ``redacted_at`` marks GDPR scrubbing of ``parsed_payload`` /
+    ``raw_body_b64``; hashes, codes, timestamps and identity survive redaction,
+    and a re-sighting never restores PII into a redacted record.
+    """
+
+    class ResourceKind(models.TextChoices):
+        ORDER = "ORDER", "Order"
+        REFUND = "REFUND", "Refund"
+
+    class IngressKind(models.TextChoices):
+        WEBHOOK = "WEBHOOK", "Webhook"
+        POLLER = "POLLER", "Poller"
+
+    class RejectionCode(models.TextChoices):
+        MALFORMED_JSON = "MALFORMED_JSON", "Malformed JSON body"
+        MISSING_EXTERNAL_ID = "MISSING_EXTERNAL_ID", "Missing or untrustworthy external id"
+        MALFORMED_MONEY = "MALFORMED_MONEY", "Malformed money value"
+        MALFORMED_CURRENCY = "MALFORMED_CURRENCY", "Malformed currency"
+        MALFORMED_DATE = "MALFORMED_DATE", "Malformed date"  # reserved; dates currently fall back, never reject
+        MALFORMED_STRUCTURE = "MALFORMED_STRUCTURE", "Malformed structure"
+
+    company = models.ForeignKey(
+        Company,
+        on_delete=models.CASCADE,
+        related_name="shopify_rejected_evidence",
+    )
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+
+    # Nullable convenience FK + immutable identity snapshots (evidence must
+    # survive store deletion/replacement).
+    store = models.ForeignKey(
+        ShopifyStore,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="rejected_evidence",
+    )
+    store_public_id = models.UUIDField(help_text="Immutable snapshot of the store's public_id at ingress.")
+    shop_domain = models.CharField(max_length=255, help_text="Immutable snapshot of the shop domain at ingress.")
+
+    # Source classification. resource_kind is identity-bearing; ingress_kind and
+    # source_topic are provenance metadata only (e.g. "orders/paid",
+    # "refunds/create", "poller/orders-paid", "poller/refunds").
+    resource_kind = models.CharField(max_length=10, choices=ResourceKind.choices)
+    ingress_kind = models.CharField(max_length=10, choices=IngressKind.choices)
+    source_topic = models.CharField(max_length=64)
+
+    # Trustworthy external identifiers ONLY (int or digit-string Shopify ids).
+    # Malformed ids are never promoted here — they remain in the raw evidence.
+    # For refunds: external_id = refund id, parent_external_id = order id.
+    external_id = models.CharField(max_length=128, null=True, blank=True)
+    parent_external_id = models.CharField(max_length=128, null=True, blank=True)
+
+    # Raw + parsed evidence.
+    #  - parsed Shopify JSON: parsed_payload set; payload_hash = SHA-256 of
+    #    deterministic canonical JSON; transport_hash = SHA-256 of the exact
+    #    webhook bytes when available (raw_body_b64 keeps those bytes).
+    #  - HMAC-valid malformed JSON: parsed_payload NULL; raw_body_b64 retains the
+    #    exact authenticated body; payload_hash == transport_hash == exact-body
+    #    SHA-256.
+    #  - poller evidence: parsed_payload set; raw_body_b64 may be blank.
+    parsed_payload = models.JSONField(null=True, blank=True)
+    raw_body_b64 = models.TextField(blank=True, default="")
+    payload_hash = models.CharField(max_length=64)
+    transport_hash = models.CharField(max_length=64, blank=True, default="")
+
+    # One deterministic primary code + every detected defect. Validator ordering
+    # or later classification improvements never change evidence identity.
+    rejection_code = models.CharField(max_length=40, choices=RejectionCode.choices)
+    rejection_message = models.TextField()
+    validation_errors = models.JSONField(default=list)
+
+    first_seen_at = models.DateTimeField(auto_now_add=True)
+    # Managed in code, NOT auto_now: acknowledgment, redaction and supersession
+    # updates must not move the evidence in observation time — only a genuine
+    # repeated delivery does.
+    last_seen_at = models.DateTimeField(default=timezone.now)
+    occurrence_count = models.PositiveIntegerField(default=1)
+    last_delivery_id = models.CharField(max_length=128, blank=True, default="")
+
+    # Operator ACKNOWLEDGMENT — explicitly not "resolution": manual acknowledgment
+    # is never proof of successful processing. Open = acknowledged=False AND
+    # superseded_at IS NULL. A re-sighted still-malformed payload clears it.
+    acknowledged = models.BooleanField(default=False, db_index=True)
+    acknowledged_at = models.DateTimeField(null=True, blank=True)
+    acknowledged_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    acknowledgment_note = models.TextField(blank=True, default="")
+
+    # Supersession: set when a corrected payload later creates the canonical row.
+    # superseded_target_public_id snapshots the target identity so it survives a
+    # later SET_NULL deletion of the linked canonical row. Historical rejected
+    # payloads are never deleted; a superseded record stays superseded on stale
+    # duplicate delivery.
+    superseded_at = models.DateTimeField(null=True, blank=True)
+    superseded_by_order = models.ForeignKey(
+        ShopifyOrder,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    superseded_by_refund = models.ForeignKey(
+        ShopifyRefund,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    superseded_target_public_id = models.UUIDField(null=True, blank=True)
+
+    # GDPR: when set, parsed_payload/raw_body_b64 have been scrubbed; hashes,
+    # codes, timestamps and identity remain, and re-sighting never restores PII.
+    redacted_at = models.DateTimeField(null=True, blank=True)
+
+    dedup_hash = models.CharField(
+        max_length=64,
+        help_text="sha256(company_id|store_public_id|resource_kind|payload_hash) — source identity, not interpretation.",
+    )
+
+    class Meta:
+        db_table = "shopify_rejected_evidence"
+        ordering = ["-id"]
+        constraints = [
+            models.UniqueConstraint(fields=("company", "dedup_hash"), name="uniq_shopify_rejected_evidence"),
+            # (1) Not superseded ⇒ no supersession links at all.
+            models.CheckConstraint(
+                check=models.Q(superseded_at__isnull=False)
+                | models.Q(
+                    superseded_by_order__isnull=True,
+                    superseded_by_refund__isnull=True,
+                    superseded_target_public_id__isnull=True,
+                ),
+                name="ck_sre_open_has_no_supersede",
+            ),
+            # (2) ORDER evidence can never be superseded by a refund.
+            models.CheckConstraint(
+                check=~models.Q(resource_kind="ORDER", superseded_by_refund__isnull=False),
+                name="ck_sre_order_not_by_refund",
+            ),
+            # (3) REFUND evidence can never be superseded by an order.
+            models.CheckConstraint(
+                check=~models.Q(resource_kind="REFUND", superseded_by_order__isnull=False),
+                name="ck_sre_refund_not_by_order",
+            ),
+            # (4) A supersession FK requires superseded_at + the public-id snapshot
+            #     (the snapshot may outlive the FK after a SET_NULL deletion).
+            models.CheckConstraint(
+                check=models.Q(superseded_by_order__isnull=True, superseded_by_refund__isnull=True)
+                | models.Q(superseded_at__isnull=False, superseded_target_public_id__isnull=False),
+                name="ck_sre_fk_implies_superseded",
+            ),
+            # (5) Both supersession FKs can never be populated simultaneously.
+            models.CheckConstraint(
+                check=~models.Q(superseded_by_order__isnull=False, superseded_by_refund__isnull=False),
+                name="ck_sre_single_supersede_fk",
+            ),
+        ]
+        indexes = [
+            # Open operator queue, keyset-paged by immutable descending id
+            # (last_seen_at is mutable display metadata — never an ordering key).
+            models.Index(
+                fields=["company", "-id"],
+                condition=models.Q(acknowledged=False, superseded_at__isnull=True),
+                name="idx_sre_open_queue",
+            ),
+            # Healing / external-id supersession lookup.
+            models.Index(
+                fields=["company", "store", "resource_kind", "external_id"],
+                name="idx_sre_healing_lookup",
+            ),
+        ]
+
+    def __str__(self):
+        return f"Rejected {self.resource_kind} evidence {self.rejection_code} ({self.shop_domain})"
 
 
 class ShopifyPayout(models.Model):

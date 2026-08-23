@@ -55,6 +55,18 @@ urlpatterns = [
     path("disconnect/", views.ShopifyDisconnectView.as_view(), name="shopify-disconnect"),
     # Data views
     path("orders/", views.ShopifyOrdersView.as_view(), name="shopify-orders"),
+    # A5-PR2b: rejected source-evidence queue (adapter-owned; the
+    # /finance/exceptions page renders it as a clearly-typed sibling queue).
+    path(
+        "rejected-evidence/",
+        views.ShopifyRejectedEvidenceListView.as_view(),
+        name="shopify-rejected-evidence",
+    ),
+    path(
+        "rejected-evidence/<int:pk>/acknowledge/",
+        views.ShopifyRejectedEvidenceAcknowledgeView.as_view(),
+        name="shopify-rejected-evidence-acknowledge",
+    ),
     path("sync-payouts/", views.ShopifySyncPayoutsView.as_view(), name="shopify-sync-payouts"),
     path("sync-products/", views.ShopifySyncProductsView.as_view(), name="shopify-sync-products"),
     path("resync-orders/", views.ShopifyResyncOrdersView.as_view(), name="shopify-resync-orders"),

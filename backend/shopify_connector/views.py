@@ -23,7 +23,7 @@ from accounts.authz import require, resolve_actor
 from projections.write_barrier import command_writes_allowed
 
 from . import commands
-from .models import ShopifyOrder, ShopifyPayout, ShopifyStore
+from .models import ShopifyOrder, ShopifyPayout, ShopifyRejectedEvidence, ShopifyStore
 from .projections import MODULE_NAME
 from .serializers import ShopifyOrderSerializer, ShopifyStoreSerializer
 
@@ -581,9 +581,13 @@ class ShopifyWebhookView(APIView):
 
         try:
             payload = json.loads(body)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as json_error:
             logger.error("Invalid JSON in Shopify webhook body")
-            return HttpResponse(status=400)
+            # A5-PR2b: an HMAC-VALID but unparseable body for an order/refund
+            # topic is authenticated malformed evidence — persist it durably
+            # (store resolved from the authenticated shop-domain header) instead
+            # of dropping it with a bare 400. Other topics keep the 400.
+            return self._capture_malformed_json(topic, shop_domain, body, request, str(json_error))
 
         # GDPR mandatory compliance webhooks (A44) — route before the store
         # lookup. shop/redact fires 48h after uninstall and may arrive when
@@ -661,7 +665,29 @@ class ShopifyWebhookView(APIView):
 
         if handler:
             try:
-                result = handler(store, payload)
+                # A5-PR2b: hand the order/refund ingresses their delivery
+                # provenance (webhook topic, X-Shopify-Webhook-Id, exact
+                # authenticated bytes) so rejected evidence records its true
+                # source. Other topics keep the plain call.
+                if handler in (
+                    commands.process_order_paid,
+                    commands.process_order_pending,
+                    commands.process_refund,
+                ):
+                    from .rejected_evidence import IngressContext
+
+                    result = handler(
+                        store,
+                        payload,
+                        ingress=IngressContext(
+                            kind=ShopifyRejectedEvidence.IngressKind.WEBHOOK,
+                            topic=topic,
+                            delivery_id=request.META.get("HTTP_X_SHOPIFY_WEBHOOK_ID", ""),
+                            raw_body=body,
+                        ),
+                    )
+                else:
+                    result = handler(store, payload)
                 if not result.success:
                     logger.error(
                         "Shopify webhook %s failed for %s: %s",
@@ -690,6 +716,53 @@ class ShopifyWebhookView(APIView):
             logger.info("Unhandled Shopify webhook topic: %s", topic)
 
         # Acknowledge receipt (success, benign skip, or permanent failure).
+        return HttpResponse(status=200)
+
+    # A5-PR2b: which order/refund topics map to which evidence resource kind for
+    # the malformed-JSON capture. Other topics keep the pre-existing bare 400.
+    _MALFORMED_JSON_TOPICS = {
+        "orders/create": ShopifyRejectedEvidence.ResourceKind.ORDER,
+        "orders/paid": ShopifyRejectedEvidence.ResourceKind.ORDER,
+        "orders/cancelled": ShopifyRejectedEvidence.ResourceKind.ORDER,
+        "refunds/create": ShopifyRejectedEvidence.ResourceKind.REFUND,
+    }
+
+    def _capture_malformed_json(self, topic, shop_domain, body, request, error_message):
+        """A5-PR2b: persist an HMAC-valid unparseable order/refund body as
+        durable ShopifyRejectedEvidence (via the adapter's single evidence
+        writer — the view itself writes nothing). 200 once the record is stored
+        (redelivering identical bytes can never parse better; the bump path
+        dedups); 503 when the durable record could not be committed (never
+        acknowledge malformed evidence as handled without its record); 400 when
+        no active store can own the evidence, or for out-of-scope topics —
+        exactly the pre-existing behavior."""
+        resource_kind = self._MALFORMED_JSON_TOPICS.get(topic)
+        if resource_kind is None:
+            return HttpResponse(status=400)
+        store = ShopifyStore.objects.filter(
+            shop_domain=shop_domain,
+            status=ShopifyStore.Status.ACTIVE,
+        ).first()
+        if store is None:
+            return HttpResponse(status=400)
+        from .rejected_evidence import record_malformed_webhook_body
+
+        try:
+            record_malformed_webhook_body(
+                store=store,
+                resource_kind=resource_kind,
+                topic=topic,
+                raw_body=body,
+                delivery_id=request.META.get("HTTP_X_SHOPIFY_WEBHOOK_ID", ""),
+                error_message=error_message,
+            )
+        except Exception:
+            logger.exception(
+                "Could not persist malformed-JSON evidence for %s (%s) — keeping the delivery retryable",
+                shop_domain,
+                topic,
+            )
+            return HttpResponse(status=503)
         return HttpResponse(status=200)
 
 
@@ -1377,3 +1450,161 @@ class ShopifyPayoutsListView(APIView):
                 "page_size": page_size,
             }
         )
+
+
+# =============================================================================
+# A5-PR2b: Rejected source-evidence queue (adapter-owned endpoints)
+# =============================================================================
+
+
+def _serialize_rejected_evidence(row) -> dict:
+    return {
+        "id": row.id,
+        "public_id": str(row.public_id),
+        "resource_kind": row.resource_kind,
+        "ingress_kind": row.ingress_kind,
+        "source_topic": row.source_topic,
+        "shop_domain": row.shop_domain,
+        "store_public_id": str(row.store_public_id),
+        "external_id": row.external_id,
+        "parent_external_id": row.parent_external_id,
+        "rejection_code": row.rejection_code,
+        "rejection_message": row.rejection_message,
+        "validation_errors": row.validation_errors,
+        "parsed_payload": row.parsed_payload,
+        "raw_body_b64": row.raw_body_b64,
+        "payload_hash": row.payload_hash,
+        "transport_hash": row.transport_hash,
+        "occurrence_count": row.occurrence_count,
+        "first_seen_at": row.first_seen_at.isoformat() if row.first_seen_at else None,
+        "last_seen_at": row.last_seen_at.isoformat() if row.last_seen_at else None,
+        "last_delivery_id": row.last_delivery_id,
+        "acknowledged": row.acknowledged,
+        "acknowledged_at": row.acknowledged_at.isoformat() if row.acknowledged_at else None,
+        "acknowledged_by_id": row.acknowledged_by_id,
+        "acknowledgment_note": row.acknowledgment_note,
+        "superseded_at": row.superseded_at.isoformat() if row.superseded_at else None,
+        "superseded_target_public_id": (
+            str(row.superseded_target_public_id) if row.superseded_target_public_id else None
+        ),
+        "redacted_at": row.redacted_at.isoformat() if row.redacted_at else None,
+    }
+
+
+class ShopifyRejectedEvidenceListView(APIView):
+    """GET /api/shopify/rejected-evidence/
+
+    List durable rejected Shopify source evidence for the current company —
+    authenticated ORDER/REFUND payloads from which no honest canonical row could
+    be constructed (A5-PR2b). A clearly-typed SIBLING queue to the import-reject
+    and projection-failure queues on /finance/exceptions, owned by the adapter
+    (its evidence never enters any financial reader — separate table).
+
+    Default listing is the OPEN operator queue: acknowledged=False AND not
+    superseded. Filters: acknowledged (true|false|all), resource_kind,
+    rejection_code, include_superseded (default false).
+
+    Pagination is KEYSET on the immutable primary key, newest first (`-id`):
+    `limit` (default 100, max 500) + `cursor` (the previous page's
+    `next_cursor`). The queue mutates between fetches (acknowledged rows drop
+    out, re-seen rows bump) — an offset would skip or duplicate rows;
+    `id < cursor` over an immutable key never does. `last_seen_at` is display
+    metadata only, never an ordering key (founder decision).
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        actor = resolve_actor(request)
+        # parsed_payload/raw_body_b64 carry raw provider evidence (customer
+        # PII) — same read gate as the sibling import-reject queue.
+        require(actor, "reports.view")
+
+        qs = ShopifyRejectedEvidence.objects.filter(company=actor.company)
+
+        acknowledged = request.query_params.get("acknowledged")
+        if acknowledged == "true":
+            qs = qs.filter(acknowledged=True)
+        elif acknowledged == "false" or acknowledged is None:
+            qs = qs.filter(acknowledged=False)
+
+        if request.query_params.get("include_superseded") != "true":
+            qs = qs.filter(superseded_at__isnull=True)
+
+        resource_kind = request.query_params.get("resource_kind")
+        if resource_kind:
+            qs = qs.filter(resource_kind=resource_kind)
+        rejection_code = request.query_params.get("rejection_code")
+        if rejection_code:
+            qs = qs.filter(rejection_code=rejection_code)
+
+        try:
+            limit = min(max(int(request.query_params.get("limit", 100)), 1), 500)
+        except (ValueError, TypeError):
+            limit = 100
+
+        total_count = qs.count()
+
+        ordered = qs.order_by("-id")
+        cursor = request.query_params.get("cursor")
+        if cursor:
+            try:
+                ordered = ordered.filter(id__lt=int(cursor))
+            except (ValueError, TypeError):
+                # A malformed cursor reads from the start rather than 500ing.
+                pass
+
+        page = list(ordered[:limit])
+        next_cursor = str(page[-1].id) if len(page) == limit else None
+
+        return Response(
+            {
+                "results": [_serialize_rejected_evidence(r) for r in page],
+                "total_count": total_count,
+                "limit": limit,
+                "next_cursor": next_cursor,
+            }
+        )
+
+
+class ShopifyRejectedEvidenceAcknowledgeView(APIView):
+    """POST /api/shopify/rejected-evidence/<id>/acknowledge/
+
+    Operator ACKNOWLEDGMENT (owner/admin) — a claim of having reviewed the
+    rejected payload, deliberately NOT called "resolve": manual acknowledgment
+    is never proof of successful processing (only a corrected redelivery that
+    creates the canonical row supersedes evidence). A re-sighted still-malformed
+    payload clears the acknowledgment and reopens the queue item.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        actor = resolve_actor(request)
+        # The response echoes raw provider evidence — same read gate as the list.
+        require(actor, "reports.view")
+        if not (request.user.is_staff or request.user.is_superuser or actor.is_admin):
+            return Response(
+                {"detail": "Owner/admin access required to acknowledge rejected evidence."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        try:
+            row = ShopifyRejectedEvidence.objects.get(pk=pk, company=actor.company)
+        except ShopifyRejectedEvidence.DoesNotExist:
+            return Response({"detail": "Rejected evidence not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if row.acknowledged:
+            return Response(
+                {"detail": "Already acknowledged.", **_serialize_rejected_evidence(row)},
+                status=status.HTTP_200_OK,
+            )
+
+        from django.utils import timezone as dj_timezone
+
+        note = (request.data.get("acknowledgment_note") or "").strip()[:2000]
+        row.acknowledged = True
+        row.acknowledged_at = dj_timezone.now()
+        row.acknowledged_by = request.user
+        row.acknowledgment_note = note
+        row.save(update_fields=["acknowledged", "acknowledged_at", "acknowledged_by", "acknowledgment_note"])
+        return Response(_serialize_rejected_evidence(row))

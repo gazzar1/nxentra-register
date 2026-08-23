@@ -148,6 +148,7 @@ def get_export_registry():
         ShopifyPayoutTransaction,
         ShopifyProduct,
         ShopifyRefund,
+        ShopifyRejectedEvidence,
         ShopifyStore,
     )
     from stripe_connector.models import (
@@ -259,6 +260,10 @@ def get_export_registry():
     registry["shopify_connector.ShopifyStore"] = ShopifyStore
     registry["shopify_connector.ShopifyOrder"] = ShopifyOrder
     registry["shopify_connector.ShopifyRefund"] = ShopifyRefund
+    # A5-PR2b: durable rejected source evidence. Holds data with NO event source
+    # (payloads rejected pre-event), so it is a WRITE model that MUST be backed
+    # up (not rebuildable) — after Store/Order/Refund (its FK targets).
+    registry["shopify_connector.ShopifyRejectedEvidence"] = ShopifyRejectedEvidence
     registry["shopify_connector.ShopifyPayout"] = ShopifyPayout
     registry["shopify_connector.ShopifyPayoutTransaction"] = ShopifyPayoutTransaction
     registry["shopify_connector.ShopifyFulfillment"] = ShopifyFulfillment

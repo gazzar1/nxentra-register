@@ -54,6 +54,21 @@ class ShopifyConnectorConfig(AppConfig):
 
         register_known_order_lookup("shopify", _known_shopify_order_ids)
 
+        # A5-PR2b: the ADAPTER registers how to count its open rejected source
+        # evidence, so the core health fold (/_health/alerts) never imports
+        # provider code — the same dependency inversion as above.
+        from ops.health import register_rejected_evidence_counter
+
+        def _open_shopify_rejected_evidence() -> int:
+            from shopify_connector.models import ShopifyRejectedEvidence
+
+            return ShopifyRejectedEvidence.objects.filter(
+                acknowledged=False,
+                superseded_at__isnull=True,
+            ).count()
+
+        register_rejected_evidence_counter("shopify", _open_shopify_rejected_evidence)
+
         module_registry.register(
             "shopify_connector",
             label="Shopify",

@@ -47,6 +47,10 @@ import {
   importRejectedRowsService,
   type ImportRejectedRow,
 } from "@/services/import-rejected-rows.service";
+import {
+  shopifyRejectedEvidenceService,
+  type ShopifyRejectedEvidence,
+} from "@/services/shopify-rejected-evidence.service";
 
 // =============================================================================
 // Visual helpers
@@ -141,6 +145,20 @@ export default function ExceptionsPage() {
   const [resolvingRejectId, setResolvingRejectId] = useState<number | null>(null);
   const [expandedRejectId, setExpandedRejectId] = useState<number | null>(null);
 
+  // A5-PR2b: rejected Shopify source evidence — authenticated ORDER/REFUND
+  // payloads durably rejected at ingress (no order/refund row, no event). A
+  // clearly-typed third sibling queue; same keyset/generation discipline as the
+  // import-reject card.
+  const [shopifyEvidence, setShopifyEvidence] = useState<ShopifyRejectedEvidence[]>([]);
+  // Filtered count (respects the Open/Resolved/All filter) — drives the queue.
+  const [shopifyEvidenceCount, setShopifyEvidenceCount] = useState(0);
+  // Always-open count (filter-independent) — drives the "Total Unresolved" fold.
+  const [openEvidenceCount, setOpenEvidenceCount] = useState(0);
+  const [loadingMoreEvidence, setLoadingMoreEvidence] = useState(false);
+  const [evidenceNextCursor, setEvidenceNextCursor] = useState<string | null>(null);
+  const [ackingEvidenceId, setAckingEvidenceId] = useState<number | null>(null);
+  const [expandedEvidenceId, setExpandedEvidenceId] = useState<number | null>(null);
+
   // Filters
   const [resolvedFilter, setResolvedFilter] = useState<"true" | "false" | "all">(
     "false"
@@ -166,7 +184,7 @@ export default function ExceptionsPage() {
     resetInFlightRef.current = true;
     setReloading(true);
     try {
-      const [sum, list, rejects, unresolvedRejects] = await Promise.all([
+      const [sum, list, rejects, unresolvedRejects, evidence, openEvidence] = await Promise.all([
         projectionFailuresService.summary(),
         projectionFailuresService.list({
           resolved: resolvedFilter,
@@ -178,6 +196,15 @@ export default function ExceptionsPage() {
         importRejectedRowsService.list({ resolved: resolvedFilter, limit: 100 }),
         // Filter-independent unresolved count for the summary card (see state).
         importRejectedRowsService.list({ resolved: "false", limit: 1 }),
+        // A5-PR2b: the Shopify evidence queue maps the page filter onto its
+        // acknowledged/superseded semantics ("all" includes superseded rows).
+        shopifyRejectedEvidenceService.list({
+          acknowledged: resolvedFilter === "all" ? "all" : resolvedFilter,
+          ...(resolvedFilter === "all" ? { include_superseded: "true" as const } : {}),
+          limit: 100,
+        }),
+        // Filter-independent OPEN count for the summary fold.
+        shopifyRejectedEvidenceService.list({ acknowledged: "false", limit: 1 }),
       ]);
       // A newer fetch (filter change) superseded this one — drop the stale result.
       if (gen !== fetchGenRef.current) return;
@@ -188,6 +215,10 @@ export default function ExceptionsPage() {
       setImportRejectsCount(rejects.total_count);
       setRejectNextCursor(rejects.next_cursor);
       setUnresolvedRejectsCount(unresolvedRejects.total_count);
+      setShopifyEvidence(evidence.results);
+      setShopifyEvidenceCount(evidence.total_count);
+      setEvidenceNextCursor(evidence.next_cursor);
+      setOpenEvidenceCount(openEvidence.total_count);
     } catch (err) {
       if (gen !== fetchGenRef.current) return;
       toast({
@@ -251,6 +282,59 @@ export default function ExceptionsPage() {
       });
     } finally {
       setLoadingMoreRejects(false);
+    }
+  };
+
+  // A5-PR2b: append the next keyset page of Shopify rejected evidence — same
+  // reset-generation discipline as the import-reject card (Codex rounds 7-10).
+  const handleLoadMoreEvidence = async () => {
+    if (!evidenceNextCursor || resetInFlightRef.current) return;
+    const gen = fetchGenRef.current; // capture; a "load more" is not a reset
+    const cursor = evidenceNextCursor;
+    setLoadingMoreEvidence(true);
+    try {
+      const next = await shopifyRejectedEvidenceService.list({
+        acknowledged: resolvedFilter === "all" ? "all" : resolvedFilter,
+        ...(resolvedFilter === "all" ? { include_superseded: "true" as const } : {}),
+        limit: 100,
+        cursor,
+      });
+      if (gen !== fetchGenRef.current) return; // a reset started after us — discard
+      setShopifyEvidence((prev) => {
+        const seen = new Set(prev.map((r) => r.id));
+        return [...prev, ...next.results.filter((r) => !seen.has(r.id))];
+      });
+      setShopifyEvidenceCount(next.total_count);
+      setEvidenceNextCursor(next.next_cursor);
+    } catch (err) {
+      if (gen !== fetchGenRef.current) return;
+      toast({
+        title: "Failed to load more rejected evidence",
+        description: (err as Error).message || "Try refreshing.",
+        variant: "destructive",
+      });
+    } finally {
+      setLoadingMoreEvidence(false);
+    }
+  };
+
+  const handleAcknowledgeEvidence = async (row: ShopifyRejectedEvidence) => {
+    setAckingEvidenceId(row.id);
+    try {
+      await shopifyRejectedEvidenceService.acknowledge(row.id);
+      toast({
+        title: "Rejected evidence acknowledged",
+        description: `${row.resource_kind} ${row.external_id || "(no id)"} (${row.rejection_code}) — acknowledgment records review, not successful processing.`,
+      });
+      await fetchAll();
+    } catch (err) {
+      toast({
+        title: "Failed to acknowledge",
+        description: (err as Error).message,
+        variant: "destructive",
+      });
+    } finally {
+      setAckingEvidenceId(null);
     }
   };
 
@@ -376,12 +460,13 @@ export default function ExceptionsPage() {
                     count into the page-level total + all-clear so this card can't say
                     "0 / all clear" while dropped import rows sit unresolved below —
                     and using the filter-independent count keeps the total correct
-                    under the Resolved/All queue filters. */}
+                    under the Resolved/All queue filters. A5-PR2b: the OPEN Shopify
+                    rejected-evidence count folds in for the same reason. */}
                 <div className="text-3xl font-semibold">
-                  {summary.total_unresolved + unresolvedRejectsCount}
+                  {summary.total_unresolved + unresolvedRejectsCount + openEvidenceCount}
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  {summary.total_unresolved + unresolvedRejectsCount === 0
+                  {summary.total_unresolved + unresolvedRejectsCount + openEvidenceCount === 0
                     ? "All clear — projections healthy."
                     : "Need operator review."}
                 </p>
@@ -484,10 +569,10 @@ export default function ExceptionsPage() {
             <CardContent className="flex flex-col items-center gap-3 py-16 text-center">
               {/* Codex round-6: the celebratory green all-clear only when there is
                   genuinely nothing anywhere. If projection failures are empty but
-                  import rejects are listed below, show a projection-scoped note that
-                  points to them, so the page never presents a contradictory
-                  "all clear" above an active rejection. */}
-              {importRejectsCount === 0 ? (
+                  import rejects or rejected evidence are listed below, show a
+                  projection-scoped note that points to them, so the page never
+                  presents a contradictory "all clear" above an active rejection. */}
+              {importRejectsCount === 0 && shopifyEvidenceCount === 0 ? (
                 <>
                   <CheckCircle2 className="h-12 w-12 text-emerald-500" />
                   <h3 className="text-lg font-medium">No exceptions to show</h3>
@@ -502,8 +587,8 @@ export default function ExceptionsPage() {
                   <h3 className="text-lg font-medium">No projection failures</h3>
                   <p className="text-sm text-muted-foreground">
                     {resolvedFilter === "false"
-                      ? "No projection failures — but there are import rejections below that need review."
-                      : "No projection failures match the current filters. See import rejections below."}
+                      ? "No projection failures — but there are rejected items below that need review."
+                      : "No projection failures match the current filters. See the rejected items below."}
                   </p>
                 </>
               )}
@@ -689,6 +774,183 @@ export default function ExceptionsPage() {
                     <Loader2 className="h-3 w-3 animate-spin" />
                   ) : (
                     `Load more (${importRejects.length} of ${importRejectsCount})`
+                  )}
+                </Button>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* A5-PR2b: rejected Shopify source evidence — authenticated ORDER/REFUND
+            payloads from which no honest order/refund could be constructed. They
+            never enter orders, events, journals or any financial reader; this
+            queue is their only surface. Acknowledgment records review, NOT
+            successful processing — only a corrected redelivery supersedes. */}
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-sm font-medium">
+              <XCircle className="h-4 w-4" />
+              Rejected Shopify payloads
+              <Badge variant={shopifyEvidenceCount === 0 ? "outline" : "warning"}>
+                {shopifyEvidenceCount}
+              </Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="p-0">
+            {shopifyEvidence.length === 0 ? (
+              <p className="px-4 py-6 text-sm text-muted-foreground">
+                No rejected Shopify order/refund payloads.
+              </p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50">
+                  <tr>
+                    <th className="w-8" />
+                    <th className="px-3 py-2 text-left">Kind</th>
+                    <th className="px-3 py-2 text-left">Topic</th>
+                    <th className="px-3 py-2 text-left">External id</th>
+                    <th className="px-3 py-2 text-left">Code</th>
+                    <th className="px-3 py-2 text-left">Detail</th>
+                    <th className="px-3 py-2 text-right">Occurrences</th>
+                    <th className="px-3 py-2 text-right">Last seen</th>
+                    <th className="px-3 py-2 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {shopifyEvidence.map((r) => (
+                    <Fragment key={r.id}>
+                      <tr className="border-t hover:bg-muted/30">
+                        <td className="px-2 py-2 align-top">
+                          <button
+                            onClick={() =>
+                              setExpandedEvidenceId(expandedEvidenceId === r.id ? null : r.id)
+                            }
+                            className="inline-flex items-center text-muted-foreground hover:text-foreground"
+                            aria-label={expandedEvidenceId === r.id ? "Collapse" : "Expand"}
+                          >
+                            {expandedEvidenceId === r.id ? (
+                              <ChevronDown className="h-4 w-4" />
+                            ) : (
+                              <ChevronRight className="h-4 w-4" />
+                            )}
+                          </button>
+                        </td>
+                        <td className="px-3 py-2 align-top">
+                          {r.resource_kind}
+                          <span className="text-xs text-muted-foreground"> · {r.ingress_kind}</span>
+                        </td>
+                        <td className="px-3 py-2 align-top font-mono text-xs">{r.source_topic}</td>
+                        <td className="px-3 py-2 align-top font-mono text-xs">
+                          {r.external_id || "—"}
+                        </td>
+                        <td className="px-3 py-2 align-top">
+                          <Badge variant="destructive">{r.rejection_code}</Badge>
+                        </td>
+                        <td className="px-3 py-2 align-top max-w-md">
+                          <div className="line-clamp-2">{r.rejection_message}</div>
+                        </td>
+                        <td className="px-3 py-2 align-top text-right tabular-nums">
+                          {r.occurrence_count}
+                        </td>
+                        <td className="px-3 py-2 align-top text-right text-muted-foreground">
+                          {timeAgo(r.last_seen_at)}
+                        </td>
+                        <td className="px-3 py-2 align-top text-right">
+                          {r.superseded_at ? (
+                            <Badge variant="outline">Superseded</Badge>
+                          ) : r.acknowledged ? (
+                            <Badge variant="outline">Acknowledged</Badge>
+                          ) : isAdmin ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleAcknowledgeEvidence(r)}
+                              disabled={ackingEvidenceId === r.id}
+                            >
+                              {ackingEvidenceId === r.id ? (
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                              ) : (
+                                "Acknowledge"
+                              )}
+                            </Button>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">Admin only</span>
+                          )}
+                        </td>
+                      </tr>
+                      {expandedEvidenceId === r.id && (
+                        <tr className="border-t bg-muted/20">
+                          <td colSpan={9} className="space-y-3 p-4">
+                            <div>
+                              <div className="mb-1 text-xs font-medium uppercase text-muted-foreground">
+                                Why it was rejected
+                              </div>
+                              <div className="text-sm">{r.rejection_message}</div>
+                              {r.validation_errors.length > 0 && (
+                                <ul className="mt-2 list-inside list-disc font-mono text-xs text-muted-foreground">
+                                  {r.validation_errors.map((e, i) => (
+                                    <li key={i}>
+                                      [{e.code}] {e.field}: {e.message}
+                                    </li>
+                                  ))}
+                                </ul>
+                              )}
+                            </div>
+                            <div>
+                              <div className="mb-1 text-xs font-medium uppercase text-muted-foreground">
+                                Authenticated payload (preserved evidence)
+                              </div>
+                              {r.redacted_at ? (
+                                <p className="text-xs text-muted-foreground">
+                                  Payload redacted (GDPR) on {r.redacted_at} — hashes and rejection
+                                  detail retained.
+                                </p>
+                              ) : r.parsed_payload ? (
+                                <pre className="max-h-64 overflow-auto rounded border bg-background p-3 font-mono text-xs">
+                                  {JSON.stringify(r.parsed_payload, null, 2)}
+                                </pre>
+                              ) : (
+                                <p className="text-xs text-muted-foreground">
+                                  Body was not valid JSON — the exact authenticated bytes are
+                                  preserved server-side (base64, {r.raw_body_b64.length} chars).
+                                </p>
+                              )}
+                            </div>
+                            {r.superseded_at && (
+                              <div className="rounded border border-emerald-200 bg-emerald-50 p-3 text-xs dark:border-emerald-900 dark:bg-emerald-950">
+                                Superseded on {r.superseded_at} by canonical record{" "}
+                                {r.superseded_target_public_id} — a corrected redelivery was processed.
+                              </div>
+                            )}
+                            {r.acknowledged && r.acknowledgment_note && (
+                              <div className="text-xs text-muted-foreground">
+                                Acknowledgment note: {r.acknowledgment_note}
+                              </div>
+                            )}
+                            <div className="font-mono text-xs text-muted-foreground">
+                              {r.shop_domain} · payload {r.payload_hash.slice(0, 12)}… · delivery{" "}
+                              {r.last_delivery_id || "—"} · first {r.first_seen_at} · last {r.last_seen_at}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {evidenceNextCursor !== null && (
+              <div className="border-t p-3 text-center">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleLoadMoreEvidence}
+                  disabled={loadingMoreEvidence || reloading}
+                >
+                  {loadingMoreEvidence ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    `Load more (${shopifyEvidence.length} of ${shopifyEvidenceCount})`
                   )}
                 </Button>
               </div>
