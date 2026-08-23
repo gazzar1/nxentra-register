@@ -123,8 +123,13 @@ def _matching_rejected_evidence(store, customer_id, customer_email, order_ids):
     SET_NULLed is still reached. Already-redacted rows have no parsed_payload
     left to match — the id-based arms still re-match them harmlessly
     (redact_evidence is idempotent). MALFORMED_JSON evidence (unparseable
-    bytes, no ids) is structurally unattributable to a single shopper — only
-    shop/redact reaches it, by design."""
+    bytes, no promoted ids) is matched CONSERVATIVELY by scanning the decoded
+    authenticated bytes for the request's identifiers (Codex round-11) — a body
+    malformed only near its end can still visibly contain the shopper's order
+    id, customer id, or email, and its preserved bytes must not survive a
+    customer-level scrub or be absent from the export. Tiny identifiers are
+    skipped to avoid false substring hits; over-matching errs privacy-safe
+    (the data all belongs to the requesting merchant's own webhook stream)."""
     qs = ShopifyRejectedEvidence.objects.filter(company=store.company, shop_domain=store.shop_domain)
     matched_pks: set[int] = set()
     if order_ids:
@@ -153,6 +158,29 @@ def _matching_rejected_evidence(store, customer_id, customer_email, order_ids):
             customer_email and isinstance(row_email, str) and row_email.lower() == customer_email.lower()
         ):
             matched_pks.add(row.pk)
+
+    # Raw-bytes arm (Codex round-11): parsed-less rows (MALFORMED_JSON) whose
+    # authenticated bytes visibly contain a requested identifier.
+    needles: list[str] = []
+    for oid in order_ids or []:
+        text = str(oid)
+        if len(text) >= 4:
+            needles.append(text)
+    if customer_id and len(str(customer_id)) >= 4:
+        needles.append(str(customer_id))
+    if customer_email and len(customer_email) >= 5:
+        needles.append(customer_email.lower())
+    if needles:
+        import base64 as b64
+
+        for row in qs.filter(parsed_payload__isnull=True).exclude(raw_body_b64="").iterator(chunk_size=500):
+            try:
+                body_text = b64.b64decode(row.raw_body_b64).decode("utf-8", errors="replace").lower()
+            except Exception:
+                continue
+            if any(needle.lower() in body_text for needle in needles):
+                matched_pks.add(row.pk)
+
     return ShopifyRejectedEvidence.objects.filter(pk__in=matched_pks)
 
 
@@ -237,8 +265,18 @@ def execute_customer_data_request(req: GdprRequest) -> dict:
             for row in rejected_rows:
                 # A malformed payload has no trustworthy shape — export the
                 # COMPLETE preserved payload (the shopper's data can sit
-                # anywhere in it). A redacted row exports its metadata only.
+                # anywhere in it). Parsed-less rows (MALFORMED_JSON) export
+                # their decoded authenticated bytes instead (Codex round-11).
+                # A redacted row exports its metadata only.
                 parsed = row.parsed_payload if isinstance(row.parsed_payload, dict) else {}
+                raw_body_text = ""
+                if row.parsed_payload is None and row.raw_body_b64:
+                    import base64 as b64
+
+                    try:
+                        raw_body_text = b64.b64decode(row.raw_body_b64).decode("utf-8", errors="replace")
+                    except Exception:
+                        raw_body_text = ""
                 evidence["export"].append(
                     {
                         "company": str(store.company.public_id),
@@ -251,6 +289,7 @@ def execute_customer_data_request(req: GdprRequest) -> dict:
                         "redacted": row.redacted_at is not None,
                         "customer": parsed.get("customer"),
                         "payload": row.parsed_payload,
+                        "raw_body_text": raw_body_text,
                     }
                 )
             with command_writes_allowed():

@@ -84,6 +84,23 @@ const CATEGORY_HELP: Record<FailureCategory, string> = {
     "Unhandled exception. Indicates a bug; file an engineering ticket with the message and the event payload.",
 };
 
+// A5-PR2b: decode a preserved raw webhook body (base64) for operator review of
+// MALFORMED_JSON evidence — the queue is the evidence surface, so the operator
+// must be able to see what was received before acknowledging. Capped preview;
+// undecodable/binary bodies degrade to a note instead of breaking the page.
+const RAW_BODY_PREVIEW_LIMIT = 4096;
+function decodeRawBodyPreview(b64: string): string {
+  try {
+    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+    return text.length > RAW_BODY_PREVIEW_LIMIT
+      ? `${text.slice(0, RAW_BODY_PREVIEW_LIMIT)}\n… (truncated — ${text.length} chars total)`
+      : text;
+  } catch {
+    return "(body could not be decoded for preview — raw base64 preserved server-side)";
+  }
+}
+
 function timeAgo(iso: string | null): string {
   if (!iso) return "—";
   const ms = Date.now() - new Date(iso).getTime();
@@ -915,10 +932,17 @@ export default function ExceptionsPage() {
                                   {JSON.stringify(r.parsed_payload, null, 2)}
                                 </pre>
                               ) : (
-                                <p className="text-xs text-muted-foreground">
-                                  Body was not valid JSON — the exact authenticated bytes are
-                                  preserved (base64, {r.raw_body_b64.length} chars).
-                                </p>
+                                <div className="space-y-1">
+                                  <p className="text-xs text-muted-foreground">
+                                    Body was not valid JSON — the exact authenticated bytes are
+                                    preserved (base64, {r.raw_body_b64.length} chars). Decoded
+                                    preview (Codex round-11: the operator must be able to review
+                                    what was received before acknowledging):
+                                  </p>
+                                  <pre className="max-h-64 overflow-auto rounded border bg-background p-3 font-mono text-xs whitespace-pre-wrap break-all">
+                                    {decodeRawBodyPreview(r.raw_body_b64)}
+                                  </pre>
+                                </div>
                               )}
                             </div>
                             {r.superseded_at && (

@@ -1723,6 +1723,65 @@ def test_non_string_acknowledgment_note_is_a_validation_error(
     assert row.acknowledged is False
 
 
+# =============================================================================
+# Codex round-11 fix pins (PR #130, 2026-08-24)
+# =============================================================================
+
+
+def test_identifiable_malformed_body_is_reached_by_customer_redact(shopify_store, company):
+    """Codex round-11 P2: a body malformed only near its end can still visibly
+    contain the shopper's identifiers — the customer-level scrub must reach it
+    by scanning the decoded authenticated bytes, not leave the PII in
+    raw_body_b64 forever."""
+    from shopify_connector.gdpr import execute_customer_redact
+    from shopify_connector.models import GdprRequest
+
+    raw = b'{"id": 6100001, "customer": {"id": 987654, "email": "trunc@example.com"}, "total_price": '
+    assert _post_raw_webhook("orders/paid", raw).status_code == 200
+    row = _evidence(company)
+    assert row.rejection_code == ShopifyRejectedEvidence.RejectionCode.MALFORMED_JSON
+    assert row.parsed_payload is None and row.raw_body_b64
+
+    req = GdprRequest.objects.create(
+        topic=GdprRequest.Topic.CUSTOMERS_REDACT,
+        shop_domain=SHOP_DOMAIN,
+        customer_id=987654,
+        customer_email="trunc@example.com",
+        payload={"customer": {"id": 987654, "email": "trunc@example.com"}},
+        payload_signature="sig-a5pr2b-raw-bytes-redact",
+        status=GdprRequest.Status.PENDING,
+    )
+    execute_customer_redact(req)
+    row.refresh_from_db()
+    assert row.redacted_at is not None
+    assert row.raw_body_b64 == "", "the identifiable malformed body must be scrubbed"
+
+
+def test_identifiable_malformed_body_is_exported_by_data_request(shopify_store, company):
+    """The data_request twin: the shopper's data inside an unparseable body is
+    exported as decoded text."""
+    from shopify_connector.gdpr import execute_customer_data_request
+    from shopify_connector.models import GdprRequest
+
+    raw = b'{"id": 6100002, "customer": {"id": 55667788, "email": "exportme@example.com"}, "broken": '
+    assert _post_raw_webhook("orders/paid", raw).status_code == 200
+
+    req = GdprRequest.objects.create(
+        topic=GdprRequest.Topic.CUSTOMERS_DATA_REQUEST,
+        shop_domain=SHOP_DOMAIN,
+        customer_id=55667788,
+        customer_email="exportme@example.com",
+        payload={"customer": {"id": 55667788, "email": "exportme@example.com"}},
+        payload_signature="sig-a5pr2b-raw-bytes-export",
+        status=GdprRequest.Status.PENDING,
+    )
+    result = execute_customer_data_request(req)
+    exported = [e for e in result["export"] if e.get("rejected_evidence")]
+    assert len(exported) == 1
+    assert "exportme@example.com" in exported[0]["raw_body_text"]
+    assert exported[0]["payload"] is None  # unparseable — the raw text IS the export
+
+
 def test_redaction_clears_acknowledgment_note(shopify_store, company, user):
     """Codex round-1 P2: the acknowledgment note is free-form operator input
     shown next to the raw evidence — an operator can copy shopper PII into it,
