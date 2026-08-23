@@ -1649,6 +1649,40 @@ def test_unsafe_object_keys_never_poison_validation_errors(shopify_store, compan
     assert ShopifyOrder.objects.filter(company=company).count() == 0
 
 
+# =============================================================================
+# Codex round-9 fix pin (PR #130, 2026-08-23)
+# =============================================================================
+
+
+def test_acknowledgment_note_with_unstorable_text_is_sanitized(
+    shopify_store, company, owner_membership, authenticated_client
+):
+    """Codex round-9 P2: DRF's JSON parser materializes \\u0000 escapes and lone
+    surrogates from the request body — PostgreSQL text columns refuse both,
+    which would 500 the acknowledgment and strand the evidence open. The note
+    is sanitized to visible escapes before the conditional update."""
+    _post_webhook("orders/paid", _order_payload(order_id=5100210, total_price="abc"))
+    row = _evidence(company)
+
+    # Raw JSON body with escape sequences — the server's json parser
+    # materializes the NUL and the lone surrogate (the test client's own
+    # renderer could never encode the raw characters, exactly like PG).
+    body = '{"acknowledgment_note": "before\\u0000middle\\ud800after", "acknowledged_occurrence": 1}'
+    resp = authenticated_client.post(
+        f"/api/shopify/rejected-evidence/{row.pk}/acknowledge/",
+        data=body,
+        content_type="application/json",
+    )
+    assert resp.status_code == 200
+    row.refresh_from_db()
+    assert row.acknowledged is True
+    # Stored as visible escapes — text-column-safe, UTF-8-encodable.
+    row.acknowledgment_note.encode("utf-8")  # must not raise
+    assert "\x00" not in row.acknowledgment_note
+    assert "\\u0000" in row.acknowledgment_note
+    assert "\\ud800" in row.acknowledgment_note
+
+
 def test_redaction_clears_acknowledgment_note(shopify_store, company, user):
     """Codex round-1 P2: the acknowledgment note is free-form operator input
     shown next to the raw evidence — an operator can copy shopper PII into it,

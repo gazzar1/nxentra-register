@@ -104,6 +104,14 @@ def _fix_scalar(value):
     return value
 
 
+def sanitize_operator_text(value: str) -> str:
+    """Public wrapper for operator-supplied free text (the acknowledgment note,
+    Codex round-9): DRF's JSON parser happily materializes \u0000 escapes and
+    lone surrogates from a request body, and PostgreSQL text columns refuse
+    both — sanitize with the same visible-escape rules as evidence storage."""
+    return _fix_scalar(value)
+
+
 def _storable_json(value):
     """Replace non-finite floats with their string form throughout the
     document. Python's json.loads accepts bare NaN/Infinity tokens, but
