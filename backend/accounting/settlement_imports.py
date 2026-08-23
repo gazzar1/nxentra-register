@@ -58,17 +58,35 @@ class SettlementImportError(Exception):
     bad data shape (rows that don't add up)."""
 
 
-def _to_decimal(value) -> Decimal:
-    """Parse a CSV cell into Decimal. Empty / unparseable → 0."""
+def _to_decimal_flagged(value) -> tuple[Decimal, bool]:
+    """Parse a CSV cell into Decimal, distinguishing MALFORMED from empty.
+
+    Returns ``(amount, malformed)``: an empty/None cell is a legitimate 0
+    (``malformed=False``); a cell that fails to parse (``"abc"``, ``"1.2.3"``)
+    returns ``malformed=True`` so the parser EXCLUDES the whole row from the
+    batch and records durable MALFORMED_NUMERIC evidence (A5-PR3b; Codex
+    round-3: a zero-substituted cell could otherwise slip past the imbalance
+    guard and post corrupted money whenever the equation happened to balance).
+    """
     if value is None:
-        return Decimal("0")
+        return Decimal("0"), False
     s = str(value).strip().replace(",", "")
     if not s:
-        return Decimal("0")
+        return Decimal("0"), False
     try:
-        return Decimal(s)
+        parsed = Decimal(s)
     except (InvalidOperation, ValueError):
-        return Decimal("0")
+        return Decimal("0"), True
+    if not parsed.is_finite():
+        # Codex round-15: Decimal accepts "NaN"/"Infinity" without raising, but
+        # they poison every later comparison/quantize — MALFORMED, not money.
+        return Decimal("0"), True
+    return parsed, False
+
+
+def _to_decimal(value) -> Decimal:
+    """Parse a CSV cell into Decimal. Empty / unparseable → 0."""
+    return _to_decimal_flagged(value)[0]
 
 
 def _normalize_headers(reader_fieldnames: Iterable[str]) -> dict[str, str]:
@@ -139,12 +157,21 @@ def _resolve_header(row: dict, header_lookup: dict[str, str], aliases: tuple[str
 
 
 def parse_paymob_csv(file_content: bytes | str) -> list[dict]:
+    """Back-compat wrapper: batches only (see parse_paymob_csv_full)."""
+    return parse_paymob_csv_full(file_content)[0]
+
+
+def parse_paymob_csv_full(file_content: bytes | str) -> tuple[list[dict], list[dict]]:
     """Parse a Paymob settlement CSV into one event payload per batch.
 
-    Returns a list of dicts ready to feed into emit_event_no_actor.
-    Aggregates rows by payout_batch_id; preserves per-row detail in
-    the event's line_items.
+    Returns ``(batches, rejects)``: batch dicts ready to feed into
+    emit_event_no_actor (aggregated by payout_batch_id; per-row detail in the
+    event's line_items), plus reject descriptors (A5-PR3b) for rows that were
+    dropped (blank batch id) or carried malformed numeric cells — so the caller
+    can persist durable per-row evidence instead of losing them silently.
     """
+    from accounting.import_rejects import reject_descriptor
+
     reader = _read_csv(file_content)
     headers = _normalize_headers(reader.fieldnames)
 
@@ -174,16 +201,60 @@ def parse_paymob_csv(file_content: bytes | str) -> list[dict]:
     # normalized gateways; the projection uses it to post one CR
     # clearing line per provider instead of one umbrella line.
     batches: dict[str, dict] = {}
-    for row in rows:
+    rejects: list[dict] = []
+    for row_index, row in enumerate(rows, start=1):
         batch_id = (row.get(columns["payout_batch_id"]) or "").strip()
         if not batch_id:
+            # A5-PR3b: previously a silent `continue` — the row vanished with no
+            # trace. Still dropped (no batch to attach it to), but now recorded.
+            rejects.append(
+                reject_descriptor(
+                    row_index=row_index,
+                    raw_row=row,
+                    reason_code="EMPTY_BATCH_ID",
+                    reason_message="Row has no payout_batch_id — dropped from the import.",
+                )
+            )
             continue
-        gross = _to_decimal(row.get(columns["gross"]))
-        fee = _to_decimal(row.get(columns["fee"])) if columns["fee"] else Decimal("0")
-        net = _to_decimal(row.get(columns["net"]))
-        refund = (
-            _to_decimal(row.get(columns["refund_or_chargeback"])) if columns["refund_or_chargeback"] else Decimal("0")
-        )
+        malformed_cells: list[str] = []
+        gross, bad = _to_decimal_flagged(row.get(columns["gross"]))
+        if bad:
+            malformed_cells.append("gross")
+        if columns["fee"]:
+            fee, bad = _to_decimal_flagged(row.get(columns["fee"]))
+            if bad:
+                malformed_cells.append("fee")
+        else:
+            fee = Decimal("0")
+        net, bad = _to_decimal_flagged(row.get(columns["net"]))
+        if bad:
+            malformed_cells.append("net")
+        if columns["refund_or_chargeback"]:
+            refund, bad = _to_decimal_flagged(row.get(columns["refund_or_chargeback"]))
+            if bad:
+                malformed_cells.append("refund_or_chargeback")
+        else:
+            refund = Decimal("0")
+        if malformed_cells:
+            # Codex round-3: a REJECTED row must not feed posted totals. A
+            # zero-substituted cell can slip past the imbalance guard when the
+            # equation happens to balance (e.g. malformed fee with gross==net),
+            # posting corrupted money while the evidence says "rejected". So
+            # the WHOLE row is excluded from the batch (aggregates + line
+            # items) and recorded — the batch posts its clean rows only, and
+            # the payout-total shortfall surfaces at bank reconciliation.
+            rejects.append(
+                reject_descriptor(
+                    row_index=row_index,
+                    raw_row=row,
+                    reason_code="MALFORMED_NUMERIC",
+                    reason_message=(
+                        f"Unparseable numeric cell(s) {', '.join(malformed_cells)} in batch {batch_id} — "
+                        "row excluded from the import; fix the cell and re-import under a corrected batch id."
+                    ),
+                )
+            )
+            continue
         gateway_raw = (row.get(columns["gateway"]) or "").strip() if columns["gateway"] else ""
         gateway_normalized = normalize_gateway_code(gateway_raw)
         order_id = (row.get(columns["order_id"]) or "").strip() if columns["order_id"] else ""
@@ -272,7 +343,7 @@ def parse_paymob_csv(file_content: bytes | str) -> list[dict]:
                 "provider_breakdown": breakdown,
             }
         )
-    return results
+    return results, rejects
 
 
 # =============================================================================
@@ -312,7 +383,18 @@ _BOSTA_COLLECTED_STATUSES = {"delivered", "completed", "settled", "paid"}
 
 
 def parse_bosta_csv(file_content: bytes | str) -> list[dict]:
-    """Parse a Bosta COD settlement CSV into one event payload per batch."""
+    """Back-compat wrapper: batches only (see parse_bosta_csv_full)."""
+    return parse_bosta_csv_full(file_content)[0]
+
+
+def parse_bosta_csv_full(file_content: bytes | str) -> tuple[list[dict], list[dict]]:
+    """Parse a Bosta COD settlement CSV into one event payload per batch.
+
+    Returns ``(batches, rejects)`` — see parse_paymob_csv_full for the reject
+    descriptor contract (A5-PR3b).
+    """
+    from accounting.import_rejects import reject_descriptor
+
     reader = _read_csv(file_content)
     headers = _normalize_headers(reader.fieldnames)
 
@@ -335,18 +417,56 @@ def parse_bosta_csv(file_content: bytes | str) -> list[dict]:
         )
 
     batches: dict[str, dict] = {}
-    for row in rows:
+    rejects: list[dict] = []
+    for row_index, row in enumerate(rows, start=1):
         batch_id = (row.get(columns["batch_id"]) or "").strip()
         if not batch_id:
+            # A5-PR3b: previously a silent `continue` — now recorded (still dropped).
+            rejects.append(
+                reject_descriptor(
+                    row_index=row_index,
+                    raw_row=row,
+                    reason_code="EMPTY_BATCH_ID",
+                    reason_message="Row has no batch_id — dropped from the import.",
+                )
+            )
             continue
         status = ((row.get(columns["status"]) or "").strip().lower()) if columns["status"] else "delivered"
         is_delivered = status in _BOSTA_COLLECTED_STATUSES
-        gross = _to_decimal(row.get(columns["collected"]))
-        fee = _to_decimal(row.get(columns["courier_fee"])) if columns["courier_fee"] else Decimal("0")
-        net = _to_decimal(row.get(columns["net"]))
-        returned_uncollected = (
-            _to_decimal(row.get(columns["returned_uncollected"])) if columns["returned_uncollected"] else Decimal("0")
-        )
+        malformed_cells: list[str] = []
+        gross, bad = _to_decimal_flagged(row.get(columns["collected"]))
+        if bad:
+            malformed_cells.append("collected")
+        if columns["courier_fee"]:
+            fee, bad = _to_decimal_flagged(row.get(columns["courier_fee"]))
+            if bad:
+                malformed_cells.append("courier_fee")
+        else:
+            fee = Decimal("0")
+        net, bad = _to_decimal_flagged(row.get(columns["net"]))
+        if bad:
+            malformed_cells.append("net")
+        if columns["returned_uncollected"]:
+            returned_uncollected, bad = _to_decimal_flagged(row.get(columns["returned_uncollected"]))
+            if bad:
+                malformed_cells.append("returned_uncollected")
+        else:
+            returned_uncollected = Decimal("0")
+        if malformed_cells:
+            # Codex round-3: same exclusion as Paymob — a rejected row must not
+            # feed posted totals (see the Paymob branch for the full rationale).
+            rejects.append(
+                reject_descriptor(
+                    row_index=row_index,
+                    raw_row=row,
+                    reason_code="MALFORMED_NUMERIC",
+                    reason_message=(
+                        f"Unparseable numeric cell(s) {', '.join(malformed_cells)} in batch {batch_id} — "
+                        "row excluded from the import; fix the cell and re-import under a corrected batch id."
+                    ),
+                )
+            )
+            continue
         order_id = (row.get(columns["order_id"]) or "").strip() if columns["order_id"] else ""
         if not order_id and columns["shipment_id"]:
             order_id = (row.get(columns["shipment_id"]) or "").strip()
@@ -418,7 +538,7 @@ def parse_bosta_csv(file_content: bytes | str) -> list[dict]:
                 "line_items": batch["line_items"],
             }
         )
-    return results
+    return results, rejects
 
 
 # =============================================================================
@@ -435,13 +555,23 @@ def parse_bosta_csv(file_content: bytes | str) -> list[dict]:
 class SettlementParserSpec(NamedTuple):
     parse: Callable[[bytes | str], list[dict]]
     default_method: str
+    # A5-PR3b: optional richer entry point returning (batches, rejects) so
+    # dropped/flagged rows get durable per-row evidence. Optional (default
+    # None) so pre-existing spec fakes/registrations keep working — callers
+    # fall back to `parse` with an empty reject list.
+    parse_full: Callable[[bytes | str], tuple[list[dict], list[dict]]] | None = None
 
 
 _SETTLEMENT_PARSERS: dict[str, SettlementParserSpec] = {}
 
 
-def register_settlement_parser(code: str, parse: Callable[[bytes | str], list[dict]], default_method: str) -> None:
-    _SETTLEMENT_PARSERS[code.strip().lower()] = SettlementParserSpec(parse, default_method)
+def register_settlement_parser(
+    code: str,
+    parse: Callable[[bytes | str], list[dict]],
+    default_method: str,
+    parse_full: Callable[[bytes | str], tuple[list[dict], list[dict]]] | None = None,
+) -> None:
+    _SETTLEMENT_PARSERS[code.strip().lower()] = SettlementParserSpec(parse, default_method, parse_full)
 
 
 def get_settlement_parser(code: str) -> SettlementParserSpec | None:
@@ -452,8 +582,16 @@ def supported_settlement_providers() -> list[str]:
     return sorted(_SETTLEMENT_PARSERS)
 
 
-register_settlement_parser("paymob", parse_paymob_csv, "card")
-register_settlement_parser("bosta", parse_bosta_csv, "cash_on_delivery")
+def parse_with_rejects(spec: SettlementParserSpec, file_content: bytes | str) -> tuple[list[dict], list[dict]]:
+    """Dispatch to the spec's richest parse entry point: (batches, rejects)."""
+    parse_full = getattr(spec, "parse_full", None)
+    if parse_full is not None:
+        return parse_full(file_content)
+    return spec.parse(file_content), []
+
+
+register_settlement_parser("paymob", parse_paymob_csv, "card", parse_full=parse_paymob_csv_full)
+register_settlement_parser("bosta", parse_bosta_csv, "cash_on_delivery", parse_full=parse_bosta_csv_full)
 
 
 # =============================================================================
@@ -499,7 +637,18 @@ def preview_settlement_import(
             f"No CSV parser registered for provider {provider_normalized_code!r}. "
             f"Supported: {', '.join(supported_settlement_providers())}."
         )
-    batches = spec.parse(file_content)
+    # A5-PR3b: same parse as the commit path, so preview reject counts match
+    # what the commit will persist. Preview is a dry run — NOTHING is written
+    # here; the counts surface in the summary only.
+    batches, parse_rejects = parse_with_rejects(spec, file_content)
+    rejected_rows_preview = [
+        {
+            "row_index": r.get("row_index"),
+            "reason_code": r.get("reason_code"),
+            "reason_message": r.get("reason_message"),
+        }
+        for r in parse_rejects[:50]
+    ]
 
     if not batches:
         return {
@@ -515,6 +664,8 @@ def preview_settlement_import(
                 "total_gross": "0.00",
                 "total_fees": "0.00",
                 "total_net": "0.00",
+                "rejected_row_count": len(parse_rejects),
+                "rejected_rows": rejected_rows_preview,
             },
         }
 
@@ -721,6 +872,10 @@ def preview_settlement_import(
             "total_gross": str(total_gross.quantize(_MONEY)),
             "total_fees": str(total_fees.quantize(_MONEY)),
             "total_net": str(total_net.quantize(_MONEY)),
+            # A5-PR3b: rows the parser dropped/flagged — the commit will persist
+            # these as durable ImportRejectedRow evidence (preview writes nothing).
+            "rejected_row_count": len(parse_rejects),
+            "rejected_rows": rejected_rows_preview,
         },
     }
 
@@ -749,12 +904,28 @@ def import_settlement_csv(
     fiscal_year_override: int = 0,
     override_reason: str = "",
     override_user=None,
+    # A5-PR3b: one id per upload, grouping this file's durable reject rows.
+    # The view generates + passes it so it can read the rejects back for the
+    # HTTP response; direct callers may omit it (one is generated).
+    import_batch_id=None,
 ) -> list[dict]:
     """Parse + emit `PAYMENT_SETTLEMENT_RECEIVED` events for one CSV.
 
     Dispatches to the right parser by provider_normalized_code. Returns a
     list of emitted-batch summaries (one per batch in the CSV).
+
+    A5-PR3b: rows the parser dropped (blank batch id) or flagged (malformed
+    numeric cells) are persisted as durable ``ImportRejectedRow`` evidence —
+    AFTER the whole-file gates below, so a whole-file refusal (non-EGP 403,
+    override-validation 400) still leaves zero side effects. Orphan order_ids
+    additionally get a QUARANTINED review-flag row per line (founder decision
+    2026-08-22): the JE still posts, but the risk that provider clearing goes
+    negative on the orphaned portion is now durable instead of response-only.
     """
+    import uuid as _uuid
+
+    from accounting.import_rejects import persist_import_rejects
+
     code = provider_normalized_code.strip().lower()
     spec = get_settlement_parser(code)
     if spec is None:
@@ -762,37 +933,33 @@ def import_settlement_csv(
             f"No CSV parser registered for provider {provider_normalized_code!r}. "
             f"Supported: {', '.join(supported_settlement_providers())}."
         )
-    batches = spec.parse(file_content)
+    batches, parse_rejects = parse_with_rejects(spec, file_content)
     method = payment_method or spec.default_method
+    batch_uuid = import_batch_id or _uuid.uuid4()
 
-    if not batches:
-        return []
-
-    # A4: the constrained pilot ingests its home currency (EGP) only. Reject any
-    # foreign-currency batch up-front — before a single PAYMENT_SETTLEMENT_RECEIVED
-    # event is emitted — so no FX conversion is ever booked and no partial import
-    # is left behind.
-    #
-    # A4 RUNTIME-ADMISSION-SERIALIZATION RESIDUAL (design-deferred): this importer
-    # commits each batch in its OWN top-level transaction (the per-batch
-    # `with transaction.atomic()` below; the caller opens no outer atomic), so no
-    # single Company admission lock can span the whole authoritative import. This
-    # up-front currency sweep therefore runs UNLOCKED (point-in-time). Serializing
-    # it would require either collapsing the deliberate per-batch commit /
-    # partial-import model into one all-or-nothing transaction, or per-batch
-    # admission locking that turns whole-file rejection into per-batch rejection —
-    # both are behavior changes out of scope here. Tracked as a residual; see
-    # docs/status/constrained_pilot_status.md (A4 residuals).
+    # A4 / Codex round-4: sweep the REJECTED rows' currency evidence BEFORE any
+    # durable data is created — an all-rejected foreign-currency file produces
+    # zero batches, so without this it would slip past the batch-level EGP-only
+    # sweep below and still write reject rows for an out-of-scope upload. Same
+    # alias set the parsers honor; a row with no currency cell books nothing and
+    # carries no foreign claim, so it is accepted (home-currency semantics,
+    # matching the batch sweep's fallback). No-op for non-pilot companies.
     from accounts.pilot_policy import require_pilot_currency
 
-    for _batch in batches:
-        _cur = (
-            str(_batch.get("currency") or "").strip().upper() or company.functional_currency or company.default_currency
-        )
-        require_pilot_currency(company, _cur, context=f"Settlement batch {_batch.get('payout_batch_id')}")
+    for _desc in parse_rejects:
+        _raw = _desc.get("raw_row") or {}
+        for _cell_key, _cell_value in _raw.items():
+            if str(_cell_key).strip().lower() in ("currency", "currency_code", "curr"):
+                _cur = str(_cell_value or "").strip().upper()
+                if _cur:
+                    require_pilot_currency(company, _cur, context=f"Settlement rejected row {_desc.get('row_index')}")
 
     # A85 chunk 3b: validate override params before emitting anything.
     # If validation fails, raise SettlementImportError (caller surfaces to user).
+    # Codex round-6: this block sits ABOVE the all-rejected early return so a
+    # request carrying an INVALID override (bad permission, short reason,
+    # closed/missing target period) refuses even when every row was rejected —
+    # request-level admission gates must run before ANY durable write.
     override_active = bool(period_override and fiscal_year_override)
     if override_active:
         if not override_user:
@@ -839,6 +1006,58 @@ def import_settlement_csv(
                 f"Target override period {period_override}/{fiscal_year_override} "
                 f"is {target_fp.status}; can only override to an OPEN period."
             )
+
+    if not batches:
+        # Every row was dropped (e.g. all blank batch ids): there is nothing to
+        # import — and nothing for the BATCH-level gates below to gate (the
+        # reject-row currency sweep and override validation above already ran)
+        # — but the dropped rows must not vanish. Persist the evidence, then
+        # return.
+        persist_import_rejects(
+            company,
+            source_kind="SETTLEMENT",
+            provider_code=code,
+            source_filename=source_filename,
+            import_batch_id=batch_uuid,
+            rejects=parse_rejects,
+        )
+        return []
+
+    # A4: the constrained pilot ingests its home currency (EGP) only. Reject any
+    # foreign-currency batch up-front — before a single PAYMENT_SETTLEMENT_RECEIVED
+    # event is emitted — so no FX conversion is ever booked and no partial import
+    # is left behind.
+    #
+    # A4 RUNTIME-ADMISSION-SERIALIZATION RESIDUAL (design-deferred): this importer
+    # commits each batch in its OWN top-level transaction (the per-batch
+    # `with transaction.atomic()` below; the caller opens no outer atomic), so no
+    # single Company admission lock can span the whole authoritative import. This
+    # up-front currency sweep therefore runs UNLOCKED (point-in-time). Serializing
+    # it would require either collapsing the deliberate per-batch commit /
+    # partial-import model into one all-or-nothing transaction, or per-batch
+    # admission locking that turns whole-file rejection into per-batch rejection —
+    # both are behavior changes out of scope here. Tracked as a residual; see
+    # docs/status/constrained_pilot_status.md (A4 residuals).
+    from accounts.pilot_policy import require_pilot_currency
+
+    for _batch in batches:
+        _cur = (
+            str(_batch.get("currency") or "").strip().upper() or company.functional_currency or company.default_currency
+        )
+        require_pilot_currency(company, _cur, context=f"Settlement batch {_batch.get('payout_batch_id')}")
+
+    # A5-PR3b: every whole-file gate has passed — the import WILL proceed, so
+    # the parser's dropped/flagged rows become durable evidence now. Outside
+    # the per-batch atomics below by design (A4 partial-import model): a later
+    # batch failure must not erase the file's reject evidence.
+    persist_import_rejects(
+        company,
+        source_kind="SETTLEMENT",
+        provider_code=code,
+        source_filename=source_filename,
+        import_batch_id=batch_uuid,
+        rejects=parse_rejects,
+    )
 
     # A26: validate referenced order_ids against ShopifyOrder per company.
     # Settlement rows that reference orders we never saw still post a JE
@@ -1013,6 +1232,8 @@ def import_settlement_csv(
         )
 
         if unknown_order_ids:
+            # Transient signal about THIS upload (pre-existing A26 semantics —
+            # includes non-digit refs; the durable flags below are digit-only).
             logger.warning(
                 "Settlement import %s:%s references %d unknown order_ids: %s. "
                 "JE posts but provider clearing may go negative on the orphaned portion.",
@@ -1021,5 +1242,12 @@ def import_settlement_csv(
                 len(unknown_order_ids),
                 ", ".join(unknown_order_ids[:10]),
             )
+
+        # A5-PR3b (Codex round-8): the durable orphan review flags are NOT
+        # written here — the projection writes them AFTER the batch JE actually
+        # posts (persist_orphan_review_flags_for_posted_event, called inside
+        # PaymentSettlementProjection.handle's per-event atomic). Writing them
+        # at import time claimed "the JE posted" for batches that then
+        # quarantined, failed, or were handled without posting.
 
     return emitted

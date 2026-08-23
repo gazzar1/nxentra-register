@@ -30,6 +30,48 @@ from .models import (
 
 logger = logging.getLogger(__name__)
 
+# A5-PR3c: abuse ceiling for the client-echoed parse-reject descriptors on the
+# commit endpoint. Far above any real statement (a few thousand rows); beyond it
+# the commit REFUSES loudly (400) rather than silently truncating evidence.
+_MAX_PARSE_REJECTS = 10_000
+
+# Codex round-8: the client is only the TRANSPORT for parse-reject evidence —
+# the descriptors must be bound to the bytes the server actually parsed. The
+# parse endpoint signs (company, filename, canonical reject hash); the commit
+# endpoint verifies the echoed descriptors against that signature, so a caller
+# cannot fabricate/alter reject evidence or re-attach it under another file.
+_PARSE_REJECTS_SALT = "bank-parse-rejects"
+_PARSE_TOKEN_MAX_AGE_SECONDS = 24 * 60 * 60
+
+
+def _parse_rejects_hash(rejects: list) -> str:
+    import hashlib
+    import json as _json
+
+    canonical = _json.dumps(rejects, sort_keys=True, default=str, ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _notify_canonical_apply_failure(actor, action: str, error: str) -> None:
+    """A5-PR3c (Codex round-12): durable, event-less operator evidence for a
+    match/unmatch/exclude whose canonical apply failed. The command rolled the
+    WHOLE atomic back (event + the swallowed handler failure's
+    ProjectionFailureLog included — an FL is event-keyed and the event is
+    gone), so this Notification — written AFTER the command's atomic exits —
+    is the trail that survives; repeated retries append rather than erase."""
+    from accounts.models import Notification
+
+    Notification.notify_company_admins(
+        company=actor.company,
+        title=f"Bank {action} could not be applied",
+        message=(
+            f"{error} The action was rolled back; nothing was recorded. If retries keep "
+            "failing, the reconciliation projection handler is erroring and needs investigation."
+        ),
+        level=Notification.Level.ERROR,
+        source_module="reconciliation",
+    )
+
 
 # =============================================================================
 # Bank Statements
@@ -100,6 +142,10 @@ class BankStatementListCreateView(APIView):
             )
 
         lines_data = d.get("lines", [])
+        # Codex round-9: capture the canonical hash of the SUBMITTED lines
+        # BEFORE the in-place date coercion below mutates them — the parse
+        # token binds rejects AND surviving lines to one parsed file.
+        submitted_lines_hash = _parse_rejects_hash(lines_data if isinstance(lines_data, list) else [])
         # Parse line dates
         for ld in lines_data:
             if isinstance(ld.get("line_date"), str):
@@ -107,6 +153,68 @@ class BankStatementListCreateView(APIView):
                     ld["line_date"] = datetime.strptime(ld["line_date"], "%Y-%m-%d").date()
                 except ValueError:
                     ld["line_date"] = statement_date
+
+        # A5-PR3c: parse-time reject descriptors echoed back from the parse-csv
+        # response — the commit is the moment they become durable evidence.
+        # Shape/reason-validated downstream (persist_import_rejects drops
+        # malformed entries); a client omitting them just loses evidence, which
+        # is no worse than the pre-PR3c behavior. Codex round-2: NEVER truncate
+        # silently — evidence beyond a cap must refuse loudly, not vanish.
+        parse_rejects = d.get("parse_rejects") or []
+        if not isinstance(parse_rejects, list):
+            return Response(
+                {"error": "parse_rejects must be a list of reject descriptors."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(parse_rejects) > _MAX_PARSE_REJECTS:
+            return Response(
+                {
+                    "error": (
+                        f"parse_rejects has {len(parse_rejects)} entries (max {_MAX_PARSE_REJECTS}). "
+                        "The file's rejected-row count is pathological — fix the column mapping or "
+                        "the file before importing, so no evidence has to be dropped."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        source_filename = str(d.get("source_filename") or "")[:255]
+        if parse_rejects:
+            # Codex round-8: the descriptors must be the ones the SERVER parsed —
+            # verify the parse-csv response's signed token over (company,
+            # filename, canonical reject hash) so no caller can attach
+            # fabricated/altered raw rows as durable bank evidence.
+            from django.core import signing
+
+            try:
+                claims = signing.loads(
+                    str(d.get("parse_token") or ""),
+                    salt=_PARSE_REJECTS_SALT,
+                    max_age=_PARSE_TOKEN_MAX_AGE_SECONDS,
+                )
+            except signing.BadSignature:
+                return Response(
+                    {"error": "parse_rejects require the parse_token issued by the parse-csv response."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if (
+                claims.get("company_id") != actor.company.pk
+                or claims.get("filename") != source_filename
+                or claims.get("rejects_sha256") != _parse_rejects_hash(parse_rejects)
+                # Codex round-9: the surviving lines must ALSO be the ones this
+                # parse produced — rejects from file A cannot ride a commit of
+                # unrelated lines.
+                or claims.get("lines_sha256") != submitted_lines_hash
+            ):
+                return Response(
+                    {
+                        "error": (
+                            "parse_rejects do not match the server-parsed file "
+                            "(token mismatch) — re-parse the CSV and retry."
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         result = bank_import.import_bank_statement(
             actor=actor,
@@ -119,6 +227,8 @@ class BankStatementListCreateView(APIView):
             lines_data=lines_data,
             source=d.get("source", "CSV"),
             currency=d.get("currency", "USD"),
+            source_filename=source_filename,
+            parse_rejects=parse_rejects,
         )
 
         if not result.success:
@@ -138,6 +248,14 @@ class BankStatementListCreateView(APIView):
                 # the merchant understands why row counts can differ from
                 # what they uploaded.
                 "lines_skipped_duplicate": result.data.get("lines_skipped_duplicate", 0),
+                # A5-PR3c: durable per-row rejects persisted by this commit
+                # (token-verified parse-time echoes ONLY — Codex round-14) —
+                # visible at /finance/exceptions, grouped by import_batch_id.
+                "lines_rejected": result.data.get("lines_rejected", 0),
+                # Commit-time drops: counted, skipped, never persisted (the
+                # commit payload is client-supplied, not a preserved source).
+                "lines_invalid": result.data.get("lines_invalid", 0),
+                "import_batch_id": result.data.get("import_batch_id", ""),
             },
             status=status.HTTP_201_CREATED,
         )
@@ -214,12 +332,39 @@ class BankStatementCSVImportView(APIView):
             "date_format": request.data.get("date_format", "%Y-%m-%d"),
         }
 
-        lines = bank_import.parse_csv_statement(csv_content, **column_map)
+        # A5-PR3c: the full variant also returns the rows the parser dropped
+        # (bad date / malformed numeric / bad amount / zero) as reject
+        # descriptors. NOTHING is persisted here — the operator may still be
+        # iterating on column mappings; the frontend echoes `rejected_rows`
+        # back on the COMMIT, which persists them as ImportRejectedRow.
+        lines, rejected_rows = bank_import.parse_csv_statement_full(csv_content, **column_map)
+
+        # Codex round-8: sign what the SERVER parsed so the commit can verify
+        # the echoed descriptors are the ones this parse produced.
+        from django.core import signing
+
+        source_filename = getattr(csv_file, "name", "") or ""
+        parse_token = signing.dumps(
+            {
+                "v": 1,
+                "company_id": actor.company.pk,
+                "filename": source_filename,
+                "rejects_sha256": _parse_rejects_hash(rejected_rows),
+                # Codex round-9: bind the SURVIVING lines too, so rejects from
+                # file A cannot be committed alongside unrelated lines.
+                "lines_sha256": _parse_rejects_hash(lines),
+            },
+            salt=_PARSE_REJECTS_SALT,
+        )
 
         return Response(
             {
                 "lines": lines,
                 "count": len(lines),
+                "rejected_rows": rejected_rows,
+                "rejected_row_count": len(rejected_rows),
+                "source_filename": source_filename,
+                "parse_token": parse_token,
             }
         )
 
@@ -522,6 +667,8 @@ class BankManualMatchView(APIView):
 
         result = recon.manual_match(actor, int(bank_line_id), int(journal_line_id))
         if not result.success:
+            if isinstance(result.data, dict) and result.data.get("canonical_apply_failed"):
+                _notify_canonical_apply_failure(actor, "manual match", result.error or "")
             return Response(
                 {"error": result.error},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -532,6 +679,10 @@ class BankManualMatchView(APIView):
         # so the UI can route the operator to the difference-reason flow.
         bank_line = result.data["bank_line"]
         bank_line.refresh_from_db()
+        # A5-PR3c (D#9): "matched" is truthful by construction — manual_match
+        # verifies the canonical state after its synchronous projection run and
+        # returns failure if the line is still UNMATCHED (previously this could
+        # answer {"status": "matched", "match_status": "UNMATCHED"}).
         return Response(
             {
                 "status": "matched",
@@ -562,11 +713,16 @@ class BankUnmatchView(APIView):
 
         result = recon.unmatch_line(actor, int(bank_line_id))
         if not result.success:
+            if isinstance(result.data, dict) and result.data.get("canonical_apply_failed"):
+                _notify_canonical_apply_failure(actor, "unmatch", result.error or "")
             return Response(
                 {"error": result.error},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # A5-PR3c (D#9 class): truthful by construction — unmatch_line verifies
+        # the canonical match state after its synchronous projection run and
+        # fails if it didn't change, so success here implies canonical UNMATCHED.
         return Response({"status": "unmatched"})
 
 
@@ -633,11 +789,15 @@ class BankExcludeLineView(APIView):
 
         result = recon.exclude_line(actor, int(bank_line_id))
         if not result.success:
+            if isinstance(result.data, dict) and result.data.get("canonical_apply_failed"):
+                _notify_canonical_apply_failure(actor, "exclude", result.error or "")
             return Response(
                 {"error": result.error},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # A5-PR3c (D#9 class): truthful by construction — exclude_line asserts
+        # canonical EXCLUDED after its synchronous projection run.
         return Response({"status": "excluded"})
 
 

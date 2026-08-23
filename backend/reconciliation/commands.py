@@ -116,6 +116,56 @@ def _run_reconciliation_projection_sync(company) -> None:
     ReconciliationProjection().process_pending(company)
 
 
+_JL_UNSET = object()
+
+
+def _canonical_match_state_error(
+    bank_line: BankStatementLine,
+    *,
+    expected_statuses: tuple[str, ...],
+    expected_matched_jl_id=_JL_UNSET,
+    action: str,
+) -> str | None:
+    """A5-PR3c (D#9): after the synchronous projection run, verify THIS action's
+    exact canonical outcome landed — process_pending SWALLOWS a handler
+    exception (projections/base.py logs + writes the failure log + breaks; no
+    re-raise), so without this check the command returns OK and the API reports
+    success while the canonical read model disagrees.
+
+    Codex round-1 (PR #129): a mere pre/post "did it change" check is not
+    enough — an EARLIER pending confirmation for the same bank line can apply
+    (a different pairing) before processing stops ahead of THIS command's
+    event. So the check validates the expected terminal status set AND, when
+    given, the exact ``matched_journal_line`` the current action must produce
+    (``None`` for unmatch/exclude — the projection clears the FK).
+
+    Returns an error message on mismatch, else None. The caller must treat a
+    non-None return as fatal for the WHOLE command atomic
+    (``transaction.set_rollback(True)`` + ``CommandResult.fail``): Codex
+    round-2 (PR #129) showed that RETAINING the just-emitted event after a
+    detected mismatch is unsafe — the next projection pass would apply the
+    stale confirm by OVERWRITING the bank line's pairing while the previously
+    matched journal line stays reconciled and its ReconciliationLink stays
+    CONFIRMED. Rolling back leaves no stale confirm/unmatch event behind;
+    these are operator-interactive commands, so the failure surfaces in the
+    HTTP response and the operator simply retries the action.
+    """
+    bank_line.refresh_from_db()
+    if bank_line.match_status not in expected_statuses:
+        return (
+            f"The {action} could not be applied — the bank line is {bank_line.match_status}, "
+            f"expected {' or '.join(expected_statuses)}. Nothing was recorded (the action was "
+            "rolled back); retry, and if it keeps failing the reconciliation projection "
+            "handler is erroring and needs investigation."
+        )
+    if expected_matched_jl_id is not _JL_UNSET and bank_line.matched_journal_line_id != expected_matched_jl_id:
+        return (
+            f"The {action} could not be applied — the canonical pairing does not correspond to "
+            "this request. Nothing was recorded (the action was rolled back); refresh and retry."
+        )
+    return None
+
+
 def _infer_match_kind_for_unmatch(
     bank_line: BankStatementLine,
     previous_jl: JournalLine | None,
@@ -1344,6 +1394,32 @@ def _manual_match_settlement_ebd(
 
     _run_reconciliation_projection_sync(actor.company)
 
+    # A5-PR3c (D#9): same canonical post-check as the plain branch — the
+    # clearance JE stays posted (committed with the event; unmatch reverses it),
+    # but the API must not claim "matched" unless THIS action's pairing landed:
+    # the projection stamps the CLEARANCE JE line as matched_journal_line, and a
+    # non-zero difference legitimately lands MATCHED_WITH_DIFFERENCE (A165).
+    err = _canonical_match_state_error(
+        bank_line,
+        expected_statuses=(
+            BankStatementLine.MatchStatus.MANUAL_MATCHED,
+            BankStatementLine.MatchStatus.MATCHED_WITH_DIFFERENCE,
+        ),
+        expected_matched_jl_id=clearance_je_line.id,
+        action="manual match",
+    )
+    if err:
+        # Roll the WHOLE command back — including the clearance JE posted
+        # above, so no orphan clearance survives a confirm that didn't confirm.
+        transaction.set_rollback(True)
+        # Codex round-12: the rollback erases the swallowed handler failure's
+        # ProjectionFailureLog/bookmark diagnostics along with the event (an FL
+        # is event-keyed, and the event no longer exists). The marker lets the
+        # VIEW — running after this atomic exits — write durable, event-less
+        # operator evidence (Notification) so repeated retries never erase the
+        # trail needed to investigate the projection fault.
+        return CommandResult.fail(err, data={"canonical_apply_failed": True})
+
     return CommandResult.ok(
         data={
             "bank_line": bank_line,
@@ -1368,6 +1444,14 @@ def manual_match(
     flag-flip match.
     """
     require(actor, "accounting.reconciliation")
+
+    # A5-PR3c (D#9, Codex round-2): drain pending reconciliation events BEFORE
+    # evaluating the precondition, so the already-matched guard below reads
+    # fully-applied canonical state. Without this, a stale pending confirmation
+    # for the same bank line would pass the guard, this command would emit a
+    # SECOND confirm, and whichever applies later would overwrite the other's
+    # pairing while its journal line stayed reconciled.
+    _run_reconciliation_projection_sync(actor.company)
 
     try:
         # A165: select_for_update serializes concurrent double-submits
@@ -1422,6 +1506,27 @@ def manual_match(
     )
 
     _run_reconciliation_projection_sync(actor.company)
+
+    # A5-PR3c (D#9): never report a match the canonical read model didn't apply
+    # — and only THIS pairing counts (a plain manual pick emits difference 0,
+    # so the exact expected terminal status is MANUAL_MATCHED to this JL).
+    err = _canonical_match_state_error(
+        bank_line,
+        expected_statuses=(BankStatementLine.MatchStatus.MANUAL_MATCHED,),
+        expected_matched_jl_id=journal_line.id,
+        action="manual match",
+    )
+    if err:
+        # Roll the WHOLE command back (event included) — a confirm event that
+        # did not confirm must not linger to overwrite a later pairing.
+        transaction.set_rollback(True)
+        # Codex round-12: the rollback erases the swallowed handler failure's
+        # ProjectionFailureLog/bookmark diagnostics along with the event (an FL
+        # is event-keyed, and the event no longer exists). The marker lets the
+        # VIEW — running after this atomic exits — write durable, event-less
+        # operator evidence (Notification) so repeated retries never erase the
+        # trail needed to investigate the projection fault.
+        return CommandResult.fail(err, data={"canonical_apply_failed": True})
 
     return CommandResult.ok(
         data={
@@ -1707,6 +1812,10 @@ def unmatch_line(
     # enforced by the SERIALIZED @requires_capability(UNSAFE_BANK_MATCH)
     # decorator above (outermost, over @translate_posted_journal_invalid).
 
+    # A5-PR3c (D#9, Codex round-2): drain pending reconciliation events before
+    # the precondition, so the not-matched guard reads fully-applied state.
+    _run_reconciliation_projection_sync(actor.company)
+
     try:
         bank_line = BankStatementLine.objects.get(
             id=bank_line_id,
@@ -1742,6 +1851,26 @@ def unmatch_line(
     )
 
     _run_reconciliation_projection_sync(actor.company)
+
+    # A5-PR3c (D#9 class): unmatch has one exact terminal outcome — UNMATCHED
+    # with the matched-JL FK cleared by the projection.
+    err = _canonical_match_state_error(
+        bank_line,
+        expected_statuses=(BankStatementLine.MatchStatus.UNMATCHED,),
+        expected_matched_jl_id=None,
+        action="unmatch",
+    )
+    if err:
+        # Roll back everything — including the reversal JEs — so a failed
+        # unmatch leaves the original match fully intact, not half-reversed.
+        transaction.set_rollback(True)
+        # Codex round-12: the rollback erases the swallowed handler failure's
+        # ProjectionFailureLog/bookmark diagnostics along with the event (an FL
+        # is event-keyed, and the event no longer exists). The marker lets the
+        # VIEW — running after this atomic exits — write durable, event-less
+        # operator evidence (Notification) so repeated retries never erase the
+        # trail needed to investigate the projection fault.
+        return CommandResult.fail(err, data={"canonical_apply_failed": True})
 
     return CommandResult.ok()
 
@@ -1829,6 +1958,10 @@ def exclude_line(
     """
     require(actor, "accounting.reconciliation")
 
+    # A5-PR3c (D#9, Codex round-2): drain pending reconciliation events before
+    # reading the line's match state, so the reversal below sees applied truth.
+    _run_reconciliation_projection_sync(actor.company)
+
     try:
         bank_line = BankStatementLine.objects.get(
             id=bank_line_id,
@@ -1859,6 +1992,27 @@ def exclude_line(
     )
 
     _run_reconciliation_projection_sync(actor.company)
+
+    # A5-PR3c (D#9 class): exclude has one exact terminal outcome — EXCLUDED
+    # with the matched-JL FK cleared (also correct for the idempotent
+    # exclude-of-an-already-EXCLUDED line, which this command permits).
+    err = _canonical_match_state_error(
+        bank_line,
+        expected_statuses=(BankStatementLine.MatchStatus.EXCLUDED,),
+        expected_matched_jl_id=None,
+        action="exclude",
+    )
+    if err:
+        # Roll back everything — a failed exclude leaves the line exactly as
+        # it was, with no stale unmatch event pending.
+        transaction.set_rollback(True)
+        # Codex round-12: the rollback erases the swallowed handler failure's
+        # ProjectionFailureLog/bookmark diagnostics along with the event (an FL
+        # is event-keyed, and the event no longer exists). The marker lets the
+        # VIEW — running after this atomic exits — write durable, event-less
+        # operator evidence (Notification) so repeated retries never erase the
+        # trail needed to investigate the projection fault.
+        return CommandResult.fail(err, data={"canonical_apply_failed": True})
 
     return CommandResult.ok()
 

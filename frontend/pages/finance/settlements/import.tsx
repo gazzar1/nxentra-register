@@ -142,13 +142,39 @@ export default function SettlementImportPage() {
 
       const newBatches = result.batches.filter((b) => !b.deduplicated).length;
       const dupBatches = result.batches.length - newBatches;
+      // A5-PR3b (Codex rounds 6-7): a partial import must never read as wholly
+      // successful — and the two evidence kinds are DIFFERENT outcomes:
+      // rejected rows were excluded from posting; review rows posted but need
+      // operator review (orphan order ids).
+      const rejectedRows = result.rejected_row_count ?? 0;
+      const reviewRows = result.review_row_count ?? 0;
+      const descriptionParts: string[] = [];
+      if (rejectedRows > 0) {
+        descriptionParts.push(
+          `${rejectedRows} row(s) were rejected and excluded from posting.`
+        );
+      }
+      if (reviewRows > 0) {
+        descriptionParts.push(
+          `${reviewRows} posted row(s) reference unknown orders and need review.`
+        );
+      }
+      if (descriptionParts.length > 0) {
+        descriptionParts.push("Details under Finance → Exceptions.");
+      }
+      // Codex round-9: a reject-only commit (zero batches, N rejects recorded)
+      // must not read as "all were already imported".
+      const rejectOnlyCommit = result.batches.length === 0 && rejectedRows > 0;
       toast({
-        title:
-          newBatches > 0
+        title: rejectOnlyCommit
+          ? `Recorded ${rejectedRows} rejected row(s) — nothing posted.`
+          : newBatches > 0
             ? `Imported ${newBatches} batch(es) from ${pendingProvider}${
                 override ? " (period overridden)" : ""
-              }.`
+              }${rejectedRows > 0 ? ` — ${rejectedRows} row(s) rejected` : ""}.`
             : `No new batches — all ${dupBatches} were already imported.`,
+        description: descriptionParts.length > 0 ? descriptionParts.join(" ") : undefined,
+        variant: rejectedRows > 0 ? "destructive" : undefined,
       });
 
       setPreviewModalOpen(false);
@@ -318,6 +344,46 @@ function ProviderUploader({
         {state.result && state.result.batches.length === 0 && (
           <div className="rounded-md border bg-muted/40 p-3 text-xs text-muted-foreground italic">
             No batches found in this CSV.
+          </div>
+        )}
+
+        {/* A5-PR3b (Codex rounds 6-7): a partial import must never read as
+            wholly successful — and the two evidence kinds are labeled by their
+            ACTUAL financial outcome: rejected = excluded from posting;
+            review (orphan order ids) = posted, needs review. */}
+        {state.result && (state.result.rejected_row_count ?? 0) > 0 && (
+          <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+            <div>
+              <p className="font-medium">
+                {state.result.rejected_row_count} source row(s) rejected — excluded from posting.
+              </p>
+              <ul className="mt-1 space-y-0.5">
+                {(state.result.rejected_rows ?? []).slice(0, 5).map((r, i) => (
+                  <li key={i}>
+                    Row {r.row_index}: {r.reason_code} — {r.reason_message}
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-1 text-muted-foreground">
+                Full list under Finance → Exceptions.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {state.result && (state.result.review_row_count ?? 0) > 0 && (
+          <div className="flex items-start gap-2 rounded-md border bg-muted/40 p-3 text-xs">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+            <div>
+              <p className="font-medium">
+                {state.result.review_row_count} posted row(s) flagged for review — unknown order ids.
+              </p>
+              <p className="mt-1 text-muted-foreground">
+                These rows POSTED; provider clearing may go negative on the orphaned
+                portion. Review and resolve under Finance → Exceptions.
+              </p>
+            </div>
           </div>
         )}
 

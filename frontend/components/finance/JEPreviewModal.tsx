@@ -82,11 +82,21 @@ export function JEPreviewModal({
   const [overridePeriodKey, setOverridePeriodKey] = useState<string>("");
   const [overrideReason, setOverrideReason] = useState<string>("");
 
+  // A5-PR3b (Codex round-8): an ALL-REJECTED file creates no JEs, but its
+  // rejected rows must still be recordable as durable evidence.
+  const rejectedCountEarly = preview?.summary.rejected_row_count ?? 0;
+  const rejectOnlyEarly =
+    !!preview &&
+    preview.summary.total_journal_entries_to_create === 0 &&
+    preview.summary.total_batches === 0 &&
+    rejectedCountEarly > 0;
+
   // Whether the auto-resolved plan is safe to post as-is (no closed periods,
   // no missing periods). If false AND the user can override, force-show
-  // the override section so they don't get stuck.
+  // the override section so they don't get stuck — but never for a
+  // reject-only file, where a period override is meaningless.
   const hasBlockers = (preview?.summary.blockers.length ?? 0) > 0;
-  const overrideSectionVisible = showOverride || (hasBlockers && canOverride);
+  const overrideSectionVisible = showOverride || (hasBlockers && canOverride && !rejectOnlyEarly);
 
   const reasonValid = overrideReason.trim().length >= 10;
   const overridePeriodSelected = overridePeriodKey !== "";
@@ -95,14 +105,28 @@ export function JEPreviewModal({
     ? overridePeriodSelected && reasonValid
     : true;
 
+  // The commit endpoint persists an all-rejected file's rows and posts
+  // nothing — offer that as an explicit action instead of leaving the file
+  // stuck behind the no-batches blocker.
+  const rejectedCount = rejectedCountEarly;
+  const rejectOnly = rejectOnlyEarly;
+
   const canPost = useMemo(() => {
-    if (!preview || preview.summary.total_journal_entries_to_create === 0) return false;
+    if (!preview) return false;
+    if (rejectOnly) return true;
+    if (preview.summary.total_journal_entries_to_create === 0) return false;
     if (overrideSectionVisible) return overrideReady;
     return !hasBlockers;
-  }, [preview, hasBlockers, overrideSectionVisible, overrideReady]);
+  }, [preview, hasBlockers, overrideSectionVisible, overrideReady, rejectOnly]);
 
   const handleConfirm = async () => {
     if (!preview) return;
+    if (rejectOnly) {
+      // Nothing posts — the commit only records the rejected rows as durable
+      // evidence; a period override is meaningless here.
+      await onConfirm();
+      return;
+    }
     if (overrideSectionVisible && overrideReady) {
       const [yearStr, periodStr] = overridePeriodKey.split(":");
       await onConfirm({
@@ -141,6 +165,28 @@ export function JEPreviewModal({
         <div className="max-h-[60vh] space-y-4 overflow-y-auto pr-1">
           {/* Summary totals */}
           <SummaryTotals preview={preview} />
+
+          {/* A5-PR3b (Codex round-6): rows the parser dropped/flagged — they
+              will be EXCLUDED from posting and recorded as durable import
+              rejections on commit, so the operator confirms with full truth. */}
+          {(preview.summary.rejected_row_count ?? 0) > 0 && (
+            <div className="rounded border border-amber-500 bg-amber-500/10 p-3 text-sm">
+              <div className="mb-2 font-medium">
+                {preview.summary.rejected_row_count} source row(s) will be rejected
+              </div>
+              <ul className="space-y-1 pl-6">
+                {(preview.summary.rejected_rows ?? []).slice(0, 10).map((r, i) => (
+                  <li key={i} className="list-disc">
+                    Row {r.row_index}: {r.reason_code} — {r.reason_message}
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-2 text-xs text-muted-foreground">
+                Rejected rows are excluded from the posted totals and recorded under
+                Finance → Exceptions on import.
+              </p>
+            </div>
+          )}
 
           {/* Periods affected */}
           <PeriodsAffected preview={preview} />
@@ -228,6 +274,8 @@ export function JEPreviewModal({
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                 Posting…
               </>
+            ) : rejectOnly ? (
+              `Record ${rejectedCount} rejected row(s)`
             ) : overrideSectionVisible ? (
               "Post all (with override)"
             ) : (

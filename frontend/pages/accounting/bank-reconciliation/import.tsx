@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { GetServerSideProps } from "next";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useRouter } from "next/router";
@@ -14,7 +14,10 @@ import { useToast } from "@/components/ui/toaster";
 import { useAccounts } from "@/queries/useAccounts";
 import { useAuth } from "@/contexts/AuthContext";
 import { currencyOptions } from "@/lib/constants";
-import { bankReconciliationService } from "@/services/bank-reconciliation.service";
+import {
+  bankReconciliationService,
+  type ImportRejectDescriptor,
+} from "@/services/bank-reconciliation.service";
 
 const MAPPING_STORAGE_KEY = "nxentra:bank-import-mapping";
 
@@ -75,10 +78,20 @@ export default function ImportStatementPage() {
   const [parsedLines, setParsedLines] = useState<
     Array<{ line_date: string; description: string; amount: string; reference: string }>
   >([]);
+  // A5-PR3c: rows the parser dropped — echoed back on the commit so they
+  // become durable ImportRejectedRow evidence (visible in /finance/exceptions).
+  const [parseRejects, setParseRejects] = useState<ImportRejectDescriptor[]>([]);
+  const [parseFilename, setParseFilename] = useState("");
+  const [parseToken, setParseToken] = useState("");
   const [parsingHeaders, setParsingHeaders] = useState(false);
   const [parsingLines, setParsingLines] = useState(false);
   const [importing, setImporting] = useState(false);
   const [mapDialogOpen, setMapDialogOpen] = useState(false);
+  // A5-PR3c (Codex round-6): monotonic parse generation. Selecting a new file
+  // (or account) bumps it; an in-flight parse response captured under an older
+  // generation is DISCARDED, so a slow response for file A can never repopulate
+  // state (and re-enable the reject-only action) after file B was selected.
+  const parseGenRef = useRef(0);
 
   // Bank/cash accounts only
   const bankAccounts =
@@ -88,19 +101,25 @@ export default function ImportStatementPage() {
 
   // Reset parsed state when account changes — saved mapping is per-account.
   useEffect(() => {
+    parseGenRef.current += 1;
     setHeaders([]);
     setSampleRows([]);
     setMapping(null);
     setParsedLines([]);
+    setParseRejects([]);
+    setParseFilename("");
+    setParseToken("");
   }, [form.account_id]);
 
   const handleParseHeaders = async () => {
     if (!csvFile) return;
+    const gen = parseGenRef.current;
     setParsingHeaders(true);
     try {
       const formData = new FormData();
       formData.append("file", csvFile);
       const { data } = await bankReconciliationService.parseCSVHeaders(formData);
+      if (gen !== parseGenRef.current) return; // stale file — discard
       setHeaders(data.headers);
       setSampleRows(data.sample_rows);
       setMapDialogOpen(true);
@@ -115,6 +134,7 @@ export default function ImportStatementPage() {
     setMapping(m);
     saveMapping(form.account_id, m);
     if (!csvFile) return;
+    const gen = parseGenRef.current;
     setParsingLines(true);
     try {
       const formData = new FormData();
@@ -128,6 +148,7 @@ export default function ImportStatementPage() {
       formData.append("date_format", m.date_format);
 
       const { data } = await bankReconciliationService.parseCSV(formData);
+      if (gen !== parseGenRef.current) return; // a different file was selected mid-flight — discard
       setParsedLines(
         data.lines.map((l: Record<string, string>) => ({
           line_date: l.line_date || "",
@@ -136,12 +157,28 @@ export default function ImportStatementPage() {
           reference: l.reference || "",
         })),
       );
-      if (data.count === 0) {
+      setParseRejects(data.rejected_rows ?? []);
+      setParseFilename(data.source_filename || csvFile.name || "");
+      setParseToken(data.parse_token || "");
+      const rejectedCount = data.rejected_row_count ?? 0;
+      if (data.count === 0 && rejectedCount > 0) {
+        toast({
+          title: `Parsed 0 lines — ${rejectedCount} row(s) rejected`,
+          description:
+            "If the column mapping is correct, you can still import to record the rejected rows as durable evidence.",
+          variant: "destructive",
+        });
+      } else if (data.count === 0) {
         toast({
           title: "Parsed 0 lines",
           description:
             "Check the column mapping — the date column may not match the date format.",
           variant: "destructive",
+        });
+      } else if (rejectedCount > 0) {
+        toast({
+          title: `Parsed ${data.count} lines from CSV.`,
+          description: `${rejectedCount} row(s) could not be parsed and will be recorded as import rejections on import.`,
         });
       } else {
         toast({ title: `Parsed ${data.count} lines from CSV.` });
@@ -165,7 +202,10 @@ export default function ImportStatementPage() {
       });
       return;
     }
-    if (parsedLines.length === 0) {
+    // A5-PR3c (Codex round-4): an all-invalid file (0 survivors, N rejects) is
+    // still committable — the statement records with zero lines and the
+    // rejected rows become durable evidence in Finance → Exceptions.
+    if (parsedLines.length === 0 && parseRejects.length === 0) {
       toast({ title: "No lines to import.", variant: "destructive" });
       return;
     }
@@ -182,13 +222,20 @@ export default function ImportStatementPage() {
         currency: form.currency,
         source: "CSV",
         lines: parsedLines,
+        // A5-PR3c: persist the parse-time drops as durable evidence.
+        parse_rejects: parseRejects,
+        source_filename: parseFilename,
+        parse_token: parseToken,
       });
       const skipped = data.lines_skipped_duplicate ?? 0;
+      const rejected = data.lines_rejected ?? 0;
+      const parts = [`Imported ${data.lines_created} transactions`];
+      if (skipped > 0) parts.push(`skipped ${skipped} duplicates`);
+      if (rejected > 0) parts.push(`recorded ${rejected} rejected row(s)`);
       toast({
-        title:
-          skipped > 0
-            ? `Imported ${data.lines_created} transactions, skipped ${skipped} duplicates.`
-            : `Imported ${data.lines_created} transactions.`,
+        title: `${parts.join(", ")}.`,
+        description:
+          rejected > 0 ? "Rejected rows are listed under Finance → Exceptions." : undefined,
       });
       router.push(`/accounting/bank-reconciliation/${data.id}`);
     } catch {
@@ -323,10 +370,20 @@ export default function ImportStatementPage() {
                   type="file"
                   accept=".csv"
                   onChange={(e) => {
+                    // A5-PR3c (Codex round-6): invalidate any in-flight parse
+                    // for the previous file — a slow response must not
+                    // repopulate state after this reset.
+                    parseGenRef.current += 1;
                     setCsvFile(e.target.files?.[0] || null);
                     setHeaders([]);
                     setSampleRows([]);
                     setParsedLines([]);
+                    // A5-PR3c (Codex round-5): clear the previous file's reject
+                    // state too — otherwise the reject-only action could persist
+                    // file A's evidence while file B is selected.
+                    setParseRejects([]);
+                    setParseFilename("");
+                    setParseToken("");
                   }}
                 />
               </div>
@@ -400,16 +457,25 @@ export default function ImportStatementPage() {
           </CardContent>
         </Card>
 
-        {/* Import Action */}
-        {parsedLines.length > 0 && (
-          <div className="flex justify-end">
+        {/* Import Action — also shown for an all-invalid file (0 lines, N
+            rejects) so the rejected rows can still be recorded as durable
+            evidence (A5-PR3c, Codex round-4). */}
+        {(parsedLines.length > 0 || parseRejects.length > 0) && (
+          <div className="flex flex-col items-end gap-1">
+            {parseRejects.length > 0 && (
+              <p className="text-xs text-muted-foreground">
+                {parseRejects.length} rejected row(s) will be recorded under Finance → Exceptions.
+              </p>
+            )}
             <Button onClick={handleImport} disabled={importing} size="lg">
               {importing ? (
                 <Loader2 className="me-2 h-4 w-4 animate-spin" />
               ) : (
                 <Upload className="me-2 h-4 w-4" />
               )}
-              Import {parsedLines.length} Lines
+              {parsedLines.length > 0
+                ? `Import ${parsedLines.length} Lines`
+                : `Record ${parseRejects.length} Rejected Row(s)`}
             </Button>
           </div>
         )}

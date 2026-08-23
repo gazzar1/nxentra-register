@@ -3129,6 +3129,11 @@ class ImportRejectedRow(models.Model):
         UNPARSEABLE_DATE = "UNPARSEABLE_DATE", "Unparseable date"
         ZERO_AMOUNT = "ZERO_AMOUNT", "Zero amount"
         DUPLICATE = "DUPLICATE", "Duplicate row"
+        # A5-PR3b (founder-approved 0042): a settlement row whose order_id matches
+        # no local order. The row still POSTS (status=QUARANTINED, not REJECTED) —
+        # this is a durable review flag, because provider clearing can go negative
+        # on the orphaned portion and the old trace was response-field + log only.
+        ORPHAN_ORDER_ID = "ORPHAN_ORDER_ID", "Orphan order id (posted, needs review)"
 
     class Status(models.TextChoices):
         REJECTED = "REJECTED", "Rejected"

@@ -28,6 +28,25 @@ export interface SettlementImportResponse {
   filename: string;
   batches: SettlementImportBatch[];
   batch_count: number;
+  // A5-PR3b: durable per-row evidence for this upload, grouped by
+  // import_batch_id and listed under Finance → Exceptions. Two DIFFERENT
+  // financial outcomes (Codex round-7): rejected rows were EXCLUDED from
+  // posting; review rows (orphan order ids) POSTED and need review.
+  import_batch_id: string;
+  rejected_row_count: number;
+  rejected_rows: Array<{
+    row_index: number;
+    reason_code: string;
+    reason_message: string;
+    status?: string;
+  }>;
+  review_row_count: number;
+  review_rows: Array<{
+    row_index: number;
+    reason_code: string;
+    reason_message: string;
+    status?: string;
+  }>;
 }
 
 export type SettlementProviderCode = "paymob" | "bosta";

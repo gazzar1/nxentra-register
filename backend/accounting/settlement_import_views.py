@@ -103,6 +103,12 @@ class SettlementCSVImportView(APIView):
             )
         override_reason = (request.data.get("override_reason") or "").strip()[:2000]
 
+        # A5-PR3b: generate the upload's reject-group id HERE so the response
+        # can read back the durable ImportRejectedRow evidence the import wrote.
+        import uuid as _uuid
+
+        import_batch_id = _uuid.uuid4()
+
         try:
             emitted = import_settlement_csv(
                 company=actor.company,
@@ -115,6 +121,7 @@ class SettlementCSVImportView(APIView):
                 fiscal_year_override=fiscal_year_override,
                 override_reason=override_reason,
                 override_user=request.user if period_override else None,
+                import_batch_id=import_batch_id,
             )
         except SettlementImportError as exc:
             return Response(
@@ -141,12 +148,47 @@ class SettlementCSVImportView(APIView):
         except Exception:  # pragma: no cover - defensive
             logger.exception("Inline projection run after CSV import failed; events still queued")
 
+        # A5-PR3b: surface this upload's durable evidence rows at upload time,
+        # not only on /finance/exceptions. Codex round-7: the two statuses are
+        # DIFFERENT financial outcomes and must never share one count —
+        # REJECTED rows were EXCLUDED from posting, while QUARANTINED rows
+        # (orphan-order review flags) POSTED and merely need review. Codex
+        # round-8: review flags are written by the PROJECTION after the JE
+        # posts, grouped under a deterministic per-event id — so they appear
+        # here only when the inline projection run above actually posted.
+        from accounting.import_rejects import orphan_review_import_batch_id
+        from accounting.models import ImportRejectedRow
+
+        rejected_qs = ImportRejectedRow.objects.filter(
+            company=actor.company,
+            import_batch_id=import_batch_id,
+            status=ImportRejectedRow.Status.REJECTED,
+        )
+        review_batch_ids = [
+            orphan_review_import_batch_id(actor.company.pk, e["event_id"]) for e in emitted if e.get("event_id")
+        ]
+        review_qs = ImportRejectedRow.objects.filter(
+            company=actor.company,
+            import_batch_id__in=review_batch_ids,
+            status=ImportRejectedRow.Status.QUARANTINED,
+        )
+        rejected_row_count = rejected_qs.count()
+        review_row_count = review_qs.count()
+        _row_fields = ("row_index", "reason_code", "reason_message", "status")
+        reject_rows = list(rejected_qs.order_by("row_index").values(*_row_fields)[:200])
+        review_rows = list(review_qs.order_by("row_index").values(*_row_fields)[:200])
+
         return Response(
             {
                 "provider": provider,
                 "filename": getattr(upload, "name", ""),
                 "batches": emitted,
                 "batch_count": len(emitted),
+                "import_batch_id": str(import_batch_id),
+                "rejected_row_count": rejected_row_count,
+                "rejected_rows": reject_rows,
+                "review_row_count": review_row_count,
+                "review_rows": review_rows,
             },
             status=http_status.HTTP_200_OK,
         )
