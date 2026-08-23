@@ -360,9 +360,14 @@ def supersede_open_evidence(
     ext = str(external_id)
     if ext.isdigit():
         ext = str(int(ext))
+    # Scoped by the IMMUTABLE company/shop_domain snapshot, not the convenience
+    # store FK (Codex round-13): evidence deliberately survives store deletion/
+    # replacement (SET_NULL + snapshots), and a corrected delivery processed
+    # through a REPLACEMENT store row must still heal it — an exact-FK
+    # predicate would leave the rejection permanently open and paging.
     return ShopifyRejectedEvidence.objects.filter(
         company_id=store.company_id,
-        store=store,
+        shop_domain=store.shop_domain,
         resource_kind=resource_kind,
         external_id=ext,
         superseded_at__isnull=True,

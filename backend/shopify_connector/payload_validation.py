@@ -302,6 +302,32 @@ def validate_order_paid_payload(payload) -> PayloadVerdict:
             # Present-as-null: Decimal(str(None)) raises in the live coercion.
             errors.append(_defect(MALFORMED_MONEY, fld, f"{fld} is null"))
 
+    # 2b. Implied tax rate (Codex round-13): the projection derives
+    #     tax_rate = (total_tax / revenue).quantize(0.0001) and stores it into
+    #     TaxCode.rate, a DecimalField(5,4) capped below 10 — individually
+    #     storable header amounts can imply an unstorable ratio, which would
+    #     deterministically fail the projection AFTER the order/event committed.
+    #     Mirrors the projection's derivation exactly; only computable once the
+    #     header money checks passed.
+    if not errors:
+        header_total_tax = Decimal(str(payload.get("total_tax", "0") if payload.get("total_tax") is not None else "0"))
+        header_subtotal = Decimal(
+            str(payload.get("subtotal_price", "0") if payload.get("subtotal_price") is not None else "0")
+        )
+        header_total = Decimal(str(payload.get("total_price", "0") if payload.get("total_price") is not None else "0"))
+        if header_total_tax > 0:
+            revenue_amount = header_subtotal if header_subtotal > 0 else header_total - header_total_tax
+            if revenue_amount > 0:
+                implied_rate = (header_total_tax / revenue_amount).quantize(Decimal("0.0001"))
+                if implied_rate >= Decimal("10"):
+                    errors.append(
+                        _defect(
+                            MALFORMED_MONEY,
+                            "total_tax",
+                            f"implied tax rate {implied_rate} exceeds the storable TaxCode bound",
+                        )
+                    )
+
     # 3. Currency: absent ⇒ live default; present must satisfy the EVENT
     #    contract's currency rule (events/types.py currency_fields: exactly 3
     #    uppercase letters) — anything looser is unemittable: the event

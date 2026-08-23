@@ -286,6 +286,7 @@ def execute_customer_data_request(req: GdprRequest) -> dict:
     order_ids = payload.get("orders_requested") or []
     evidence = {"companies_matched": 0, "orders_matched": 0, "rejected_evidence_matched": 0, "export": []}
 
+    completed_company_ids: set[int] = set()
     with rls_bypass():
         for store in _stores_for_domain(req.shop_domain):
             orders = _matching_orders(store, req.customer_id, req.customer_email, order_ids)
@@ -342,6 +343,7 @@ def execute_customer_data_request(req: GdprRequest) -> dict:
                 records_scrubbed=0,
                 events_exempted=0,
             )
+            completed_company_ids.add(store.company_id)
 
         # Codex round-12: orphaned evidence (store row hard-deleted) never
         # enters the per-store loop — sweep it by the shop_domain snapshot.
@@ -356,6 +358,36 @@ def execute_customer_data_request(req: GdprRequest) -> dict:
         evidence["rejected_evidence_matched"] += len(orphan_rows)
         for row in orphan_rows:
             evidence["export"].append(_evidence_export_entry(row))
+        # Codex round-13: an orphan-ONLY company still owes the per-company
+        # completion work — the 30-day-delivery admin notification, the
+        # companies_matched count, and the completion event. Companies already
+        # completed by the store loop are skipped (their rows are exported
+        # above; notifying/emitting twice would duplicate).
+        for orphan_company in sorted(
+            {row.company for row in orphan_rows if row.company_id not in completed_company_ids},
+            key=lambda c: c.id,
+        ):
+            evidence["companies_matched"] += 1
+            with command_writes_allowed():
+                Notification.notify_company_admins(
+                    orphan_company,
+                    title="GDPR data request received",
+                    message=(
+                        f"Shopify forwarded a customer data request for {req.shop_domain} "
+                        f"(customer {req.customer_id or req.customer_email}). The export is "
+                        f"attached to GDPR request #{req.id}; you must provide it to the "
+                        f"customer within 30 days."
+                    ),
+                    level="WARNING",
+                    source_module="shopify_connector",
+                )
+            _emit_completed(
+                req,
+                orphan_company,
+                orders_matched=0,
+                records_scrubbed=0,
+                events_exempted=0,
+            )
 
     _complete(req, evidence, note=f"Export assembled for {evidence['orders_matched']} order(s).")
     return evidence
@@ -373,6 +405,7 @@ def execute_customer_redact(req: GdprRequest) -> dict:
         "policy": "mutable stores scrubbed; append-only event ledger retained under documented lawful basis",
     }
 
+    completed_company_ids: set[int] = set()
     with rls_bypass():
         for store in _stores_for_domain(req.shop_domain):
             orders = _matching_orders(store, req.customer_id, req.customer_email, order_ids)
@@ -445,6 +478,7 @@ def execute_customer_redact(req: GdprRequest) -> dict:
                 records_scrubbed=evidence["records_scrubbed"],
                 events_exempted=exempted,
             )
+            completed_company_ids.add(store.company_id)
 
         # Scrub the shopper's PII from earlier GDPR audit rows for the same
         # customer (the GDPR payload itself carries email + phone). Keep
@@ -462,9 +496,31 @@ def execute_customer_redact(req: GdprRequest) -> dict:
         # enters the per-store loop — scrub it via the shop_domain snapshot,
         # mirroring shop/redact's orphan sweep. Fresh rls_bypass(): earlier
         # emits cleared the RLS session and the evidence table is FORCE-RLS.
+        # Codex round-13: an orphan-ONLY company still owes its per-company
+        # completion event; companies the store loop already completed are
+        # skipped (their emit landed; re-emitting would duplicate — the
+        # idempotency key dedups the event but not a second notification).
         with rls_bypass():
-            evidence["records_scrubbed"] += redact_evidence(
+            orphan_rows = list(
+                _orphan_matching_rejected_evidence(
+                    req.shop_domain, req.customer_id, req.customer_email, order_ids
+                ).select_related("company")
+            )
+            scrubbed_orphans = redact_evidence(
                 _orphan_matching_rejected_evidence(req.shop_domain, req.customer_id, req.customer_email, order_ids)
+            )
+            evidence["records_scrubbed"] += scrubbed_orphans
+        for orphan_company in sorted(
+            {row.company for row in orphan_rows if row.company_id not in completed_company_ids},
+            key=lambda c: c.id,
+        ):
+            evidence["companies_matched"] += 1
+            _emit_completed(
+                req,
+                orphan_company,
+                orders_matched=0,
+                records_scrubbed=sum(1 for row in orphan_rows if row.company_id == orphan_company.id),
+                events_exempted=0,
             )
 
     _complete(

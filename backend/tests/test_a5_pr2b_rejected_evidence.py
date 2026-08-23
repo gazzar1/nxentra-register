@@ -1869,6 +1869,87 @@ def test_orphaned_evidence_is_reached_by_customer_jobs(shopify_store, company):
     assert row.parsed_payload is None
 
 
+# =============================================================================
+# Codex round-13 fix pins (PR #130, 2026-08-24)
+# =============================================================================
+
+
+def test_supersession_heals_across_replacement_store_rows(shopify_store, company):
+    """Codex round-13 P2: evidence survives store deletion/replacement by
+    design — a corrected delivery processed through a REPLACEMENT store row
+    must still supersede it (healing is scoped by the immutable company/
+    shop_domain snapshot, not the convenience FK)."""
+    bad = _order_payload(order_id=5100240, total_price="abc")
+    assert _post_webhook("orders/paid", bad).status_code == 200
+    evidence = _evidence(company)
+
+    # The store row is replaced (delete + reconnect, same domain).
+    ShopifyStore.objects.filter(pk=shopify_store.pk).delete()
+    replacement = ShopifyStore.objects.create(
+        company=company,
+        shop_domain=SHOP_DOMAIN,
+        access_token="new-token",
+        status=ShopifyStore.Status.ACTIVE,
+    )
+    evidence.refresh_from_db()
+    assert evidence.store_id is None  # orphaned, snapshots intact
+
+    good = _order_payload(order_id=5100240)
+    assert commands.process_order_paid(replacement, good).success
+    evidence.refresh_from_db()
+    order = ShopifyOrder.objects.get(company=company, shopify_order_id=5100240)
+    assert evidence.superseded_at is not None, "healing must reach evidence across store replacement"
+    assert evidence.superseded_target_public_id == order.public_id
+
+
+def test_unstorable_implied_tax_rate_rejects(shopify_store, company):
+    """Codex round-13 P2: individually storable header amounts can imply a tax
+    rate the projection cannot store (TaxCode.rate is DecimalField(5,4), capped
+    below 10) — subtotal 1 with tax 100 must reject as MALFORMED_MONEY
+    evidence, not emit a deterministically-unpostable order."""
+    payload = _order_payload(order_id=5100241, subtotal_price="1.00", total_tax="100.00", total_price="101.00")
+    resp = _post_webhook("orders/paid", payload)
+    assert resp.status_code == 200
+    assert _evidence(company).rejection_code == ShopifyRejectedEvidence.RejectionCode.MALFORMED_MONEY
+    assert ShopifyOrder.objects.filter(company=company).count() == 0
+
+    # A high-but-storable rate (e.g. Egypt's 14% or even 900%) stays valid.
+    ok = _order_payload(order_id=5100242, subtotal_price="100.00", total_tax="14.00", total_price="114.00")
+    assert commands.process_order_paid(shopify_store, ok).success
+
+
+def test_orphan_export_runs_per_company_completion(shopify_store, company, owner_membership):
+    """Codex round-13 P2: an orphan-ONLY company still owes the per-company
+    completion work — the 30-day-delivery notification, companies_matched, and
+    the completion event (not just silent export rows)."""
+    from events.models import BusinessEvent
+    from shopify_connector.gdpr import execute_customer_data_request
+    from shopify_connector.models import GdprRequest
+
+    _post_webhook(
+        "orders/paid",
+        _order_payload(order_id=5100243, total_price="abc", customer={"id": 787878, "email": "compl@example.com"}),
+    )
+    ShopifyStore.objects.filter(pk=shopify_store.pk).delete()
+
+    req = GdprRequest.objects.create(
+        topic=GdprRequest.Topic.CUSTOMERS_DATA_REQUEST,
+        shop_domain=SHOP_DOMAIN,
+        customer_id=787878,
+        customer_email="compl@example.com",
+        payload={"customer": {"id": 787878, "email": "compl@example.com"}},
+        payload_signature="sig-a5pr2b-orphan-completion",
+        status=GdprRequest.Status.PENDING,
+    )
+    result = execute_customer_data_request(req)
+    assert result["companies_matched"] == 1
+    assert result["rejected_evidence_matched"] == 1
+    from events.types import EventTypes
+
+    assert Notification.objects.filter(company=company, title="GDPR data request received").exists()
+    assert BusinessEvent.objects.filter(company=company, event_type=EventTypes.SHOPIFY_GDPR_REQUEST_COMPLETED).exists()
+
+
 def test_redaction_clears_acknowledgment_note(shopify_store, company, user):
     """Codex round-1 P2: the acknowledgment note is free-form operator input
     shown next to the raw evidence — an operator can copy shopper PII into it,
