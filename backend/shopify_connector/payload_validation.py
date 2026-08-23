@@ -115,14 +115,23 @@ def _money_defect(value, fld: str) -> dict | None:
     return None
 
 
-def _bounded_text_defect(value, fld: str, max_length: int, *, allow_none: bool) -> dict | None:
+def _bounded_text_defect(
+    value, fld: str, max_length: int, *, allow_none: bool, require_str: bool = True
+) -> dict | None:
     """CharField-bound payload strings: None crashes the NOT NULL column (unless
     the live code coerces it), and an over-long value is unstorable on
-    PostgreSQL. Non-str scalars are tolerated — Django str()-coerces them."""
+    PostgreSQL. ``require_str`` (the default): most of these values are also
+    copied VERBATIM into typed event payloads — Django str()-coerces at the
+    column, but ``validate_event_payload`` rejects a non-str at emission, AFTER
+    the canonical row write, rolling everything back into the retryable loop
+    (Codex round-1). Only a field the live code str()-coerces on BOTH the model
+    and the event path (order_number) may relax it."""
     if value is None:
         if allow_none:
             return None
         return _defect(MALFORMED_STRUCTURE, fld, f"{fld} is null")
+    if require_str and not isinstance(value, str):
+        return _defect(MALFORMED_STRUCTURE, fld, f"{fld} is not a string: {_short(value)}")
     if len(str(value)) > max_length:
         return _defect(MALFORMED_STRUCTURE, fld, f"{fld} longer than {max_length} characters")
     return None
@@ -225,12 +234,24 @@ def validate_order_paid_payload(payload) -> PayloadVerdict:
             # Present-as-null: Decimal(str(None)) raises in the live coercion.
             errors.append(_defect(MALFORMED_MONEY, fld, f"{fld} is null"))
 
-    # 3. Currency: absent ⇒ live default; present must be a ≤3-char string.
+    # 3. Currency: absent ⇒ live default; present must satisfy the EVENT
+    #    contract's currency rule (events/types.py currency_fields: exactly 3
+    #    uppercase letters) — anything looser is unemittable: the event
+    #    validation rejects it AFTER the row write, into the retryable loop.
     if "currency" in payload:
         currency = payload["currency"]
-        if not isinstance(currency, str) or len(currency) > 3:
+        if (
+            not isinstance(currency, str)
+            or len(currency) != 3
+            or not currency.isalpha()
+            or currency != currency.upper()
+        ):
             errors.append(
-                _defect(MALFORMED_CURRENCY, "currency", f"currency is not a ≤3-char string: {_short(currency)}")
+                _defect(
+                    MALFORMED_CURRENCY,
+                    "currency",
+                    f"currency is not a 3-letter uppercase ISO code: {_short(currency)}",
+                )
             )
 
     # 4. transactions: any falsy value tolerated (the live payment-verification
@@ -280,8 +301,10 @@ def validate_order_paid_payload(payload) -> PayloadVerdict:
         if name_defect:
             errors.append(name_defect)
     if "order_number" in payload and payload["order_number"] is not None:
-        # Live code str()-coerces (None included), so only length can break it.
-        number_defect = _bounded_text_defect(payload["order_number"], "order_number", 50, allow_none=True)
+        # str()-coerced on BOTH the model and the event path — only length breaks it.
+        number_defect = _bounded_text_defect(
+            payload["order_number"], "order_number", 50, allow_none=True, require_str=False
+        )
         if number_defect:
             errors.append(number_defect)
     if "financial_status" in payload:
@@ -312,10 +335,18 @@ def validate_order_paid_payload(payload) -> PayloadVerdict:
             errors.append(gateway_defect)
 
     # 9. customer: null is the documented tolerated shape; a truthy non-dict
-    #    crashes `customer.get(...)`.
+    #    crashes `customer.get(...)`. A null email inside the dict is ROUTINE
+    #    (guest checkout) — normalized at the event build; a non-str non-null
+    #    email is unemittable (customer_email: str at emission).
     customer = payload.get("customer")
     if customer and not isinstance(customer, dict):
         errors.append(_defect(MALFORMED_STRUCTURE, "customer", f"customer is not an object: {_short(customer)}"))
+    elif isinstance(customer, dict):
+        email = customer.get("email")
+        if email is not None and not isinstance(email, str):
+            errors.append(
+                _defect(MALFORMED_STRUCTURE, "customer.email", f"customer email is not a string: {_short(email)}")
+            )
 
     # 10. created_at is RAW-stored into shopify_created_at when truthy (see
     #     _raw_stored_datetime_defect). updated_at is only parsed with a
@@ -385,5 +416,29 @@ def validate_refund_payload(payload) -> PayloadVerdict:
     date_defect = _raw_stored_datetime_defect(payload, "created_at")
     if date_defect:
         errors.append(date_defect)
+
+    # Aggregate bound (Codex round-1 P2): each amount can individually fit
+    # numeric(18,2) while their SUM overflows at the ShopifyRefund.amount write
+    # (the same aggregate rides the negative-ERROR-row and zero-marker branches
+    # too) — a post-validation overflow would loop instead of rejecting. Mirror
+    # the live aggregation exactly (kind/status-filtered transaction sum, then
+    # the refund_line_items subtotal fallback when it nets to zero). Only
+    # computable once the per-element checks passed.
+    if not errors:
+        total = Decimal("0")
+        for txn in payload.get("transactions") or []:
+            if txn.get("kind") == "refund" and txn.get("status") == "success":
+                total += Decimal(str(txn.get("amount", "0")))
+        if total == 0:
+            for line in payload.get("refund_line_items") or []:
+                total += Decimal(str(line.get("subtotal", "0")))
+        if abs(total) >= _MONEY_MAX:
+            errors.append(
+                _defect(
+                    MALFORMED_MONEY,
+                    "transactions",
+                    f"aggregate refund amount exceeds the storable money magnitude: {total}",
+                )
+            )
 
     return _verdict(errors, external_id, parent_external_id)

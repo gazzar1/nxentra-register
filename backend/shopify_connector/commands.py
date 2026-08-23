@@ -1507,7 +1507,10 @@ def _process_order_paid_inner(
             financial_status=payload.get("financial_status", ""),
             gateway=order.gateway,
             line_items=line_items,
-            customer_email=customer.get("email", ""),
+            # `or ""`: Shopify routinely sends "email": null (guest checkout) —
+            # .get's default doesn't cover a present-null key, and the typed
+            # event payload rejects None at emission (Codex round-1).
+            customer_email=customer.get("email") or "",
             customer_name=f"{customer.get('first_name', '')} {customer.get('last_name', '')}".strip(),
         ),
     )

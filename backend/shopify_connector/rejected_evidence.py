@@ -299,10 +299,13 @@ def redact_evidence(queryset) -> int:
     ``raw_body_b64``, scrub the payload-value fragments embedded in
     ``rejection_message`` / ``validation_errors`` (the validator's defect
     messages quote a truncated repr of the offending value, which can itself
-    carry PII), and stamp ``redacted_at``. Hashes, CODES, defect FIELD names,
-    timestamps and evidence identity remain unchanged; re-sighting never
-    restores PII (:func:`record_rejected_evidence` writes no payload or message
-    field on a bump). Idempotent — already-redacted rows are left untouched."""
+    carry PII), clear ``acknowledgment_note`` (free-form operator input shown
+    next to the raw evidence — an operator may have copied shopper PII into it;
+    Codex round-1), and stamp ``redacted_at``. Hashes, CODES, defect FIELD
+    names, timestamps, the acknowledged/at/by audit facts and evidence identity
+    remain unchanged; re-sighting never restores PII
+    (:func:`record_rejected_evidence` writes no payload or message field on a
+    bump). Idempotent — already-redacted rows are left untouched."""
     scrubbed = 0
     now = timezone.now()
     for row in queryset.filter(redacted_at__isnull=True):
@@ -315,6 +318,7 @@ def redact_evidence(queryset) -> int:
                 for e in (row.validation_errors or [])
                 if isinstance(e, dict)
             ],
+            acknowledgment_note="",
             redacted_at=now,
         )
         scrubbed += 1

@@ -1066,3 +1066,118 @@ def test_invalid_utf8_body_is_captured_as_malformed_json(shopify_store, company)
     row = _evidence(company)
     assert row.rejection_code == ShopifyRejectedEvidence.RejectionCode.MALFORMED_JSON
     assert base64.b64decode(row.raw_body_b64) == raw
+
+
+# =============================================================================
+# Codex round-1 fix pins (PR #130, 2026-08-23)
+# =============================================================================
+
+
+def test_non_string_event_bound_fields_reject_permanently(shopify_store, company):
+    """Codex round-1 P2: values copied verbatim into typed event payloads must
+    be actual strings — Django str()-coerces at the column, but
+    validate_event_payload rejects a non-str at EMISSION, after the row write,
+    rolling back into the retryable loop. Each is a permanent provider-data
+    error → evidence + 200."""
+    # Order: financial_status rides ShopifyOrderPaidData.financial_status: str.
+    resp = _post_webhook("orders/paid", _order_payload(order_id=5100110, financial_status=123))
+    assert resp.status_code == 200
+    # Order: name rides the event as order_name/document_ref verbatim.
+    resp = _post_webhook("orders/paid", _order_payload(order_id=5100111, name=123))
+    assert resp.status_code == 200
+    # Order: a non-str customer email rides customer_email: str.
+    resp = _post_webhook("orders/paid", _order_payload(order_id=5100112, customer={"email": 5}))
+    assert resp.status_code == 200
+    rows = ShopifyRejectedEvidence.objects.filter(company=company)
+    assert rows.count() == 3
+    assert all(r.rejection_code == ShopifyRejectedEvidence.RejectionCode.MALFORMED_STRUCTURE for r in rows)
+    assert ShopifyOrder.objects.filter(company=company).count() == 0
+
+    # Refund: note rides ShopifyRefundCreatedData.reason: str via the in-memory
+    # model attribute (get_prep_value only coerces at the SQL layer).
+    resp = _post_webhook("refunds/create", _refund_payload(refund_id=5200110, note=123))
+    assert resp.status_code == 200
+    refund_evidence = ShopifyRejectedEvidence.objects.get(
+        company=company, resource_kind=ShopifyRejectedEvidence.ResourceKind.REFUND
+    )
+    assert refund_evidence.rejection_code == ShopifyRejectedEvidence.RejectionCode.MALFORMED_STRUCTURE
+
+
+def test_currency_must_match_the_event_contract(shopify_store, company):
+    """Codex round-1 class sweep: the event contract requires exactly 3
+    uppercase letters (events/types.py currency_fields) — anything looser
+    passes storage but fails emission into the loop. Absent stays valid (the
+    live default)."""
+    for bad_currency in ("egp", "EG1", "", "EGPX"):
+        resp = _post_webhook("orders/paid", _order_payload(order_id=5100113, currency=bad_currency))
+        assert resp.status_code == 200, f"currency {bad_currency!r} must reject, not loop"
+    rows = ShopifyRejectedEvidence.objects.filter(company=company)
+    assert rows.count() == 4  # four distinct payloads
+    assert all(r.rejection_code == ShopifyRejectedEvidence.RejectionCode.MALFORMED_CURRENCY for r in rows)
+
+    payload = _order_payload(order_id=5100114)
+    del payload["currency"]
+    assert commands.process_order_paid(shopify_store, payload).success  # absent ⇒ live default
+
+
+def test_null_customer_email_is_routine_and_normalized(shopify_store, company):
+    """A present-null customer email (guest checkout) is an honest order — the
+    event build normalizes it to "" instead of handing None to the typed
+    payload (which rejects None at emission)."""
+    payload = _order_payload(order_id=5100115, customer={"email": None, "first_name": "Guest"})
+    result = commands.process_order_paid(shopify_store, payload)
+    assert result.success, result.error
+    event = BusinessEvent.objects.get(company=company, idempotency_key="shopify.order.paid:5100115")
+    assert event.get_data()["customer_email"] == ""
+    assert ShopifyRejectedEvidence.objects.filter(company=company).count() == 0
+
+
+def test_aggregate_refund_amount_is_bounded(shopify_store, company):
+    """Codex round-1 P2: two amounts that each fit numeric(18,2) can SUM over
+    it — the overflow would hit the ShopifyRefund.amount write after
+    validation. The aggregate (and the refund_line_items fallback aggregate)
+    must reject as MALFORMED_MONEY."""
+    payload = _refund_payload(
+        refund_id=5200111,
+        transactions=[
+            {"kind": "refund", "status": "success", "amount": "6000000000000000"},
+            {"kind": "refund", "status": "success", "amount": "6000000000000000"},
+        ],
+    )
+    resp = _post_webhook("refunds/create", payload)
+    assert resp.status_code == 200
+    row = _evidence(company)
+    assert row.rejection_code == ShopifyRejectedEvidence.RejectionCode.MALFORMED_MONEY
+    assert ShopifyRefund.objects.filter(company=company).count() == 0
+    row.delete()
+
+    fallback = _refund_payload(
+        refund_id=5200112,
+        transactions=[],
+        refund_line_items=[{"subtotal": "6000000000000000"}, {"subtotal": "6000000000000000"}],
+    )
+    resp = _post_webhook("refunds/create", fallback)
+    assert resp.status_code == 200
+    assert _evidence(company).rejection_code == ShopifyRejectedEvidence.RejectionCode.MALFORMED_MONEY
+
+
+def test_redaction_clears_acknowledgment_note(shopify_store, company, user):
+    """Codex round-1 P2: the acknowledgment note is free-form operator input
+    shown next to the raw evidence — an operator can copy shopper PII into it,
+    so redaction clears it (the acknowledged/at/by audit facts survive)."""
+    from django.utils import timezone as tz
+
+    _post_webhook("orders/paid", _order_payload(order_id=5100116, total_price="abc"))
+    row = _evidence(company)
+    ShopifyRejectedEvidence.objects.filter(pk=row.pk).update(
+        acknowledged=True,
+        acknowledged_at=tz.now(),
+        acknowledged_by=user,
+        acknowledgment_note="shopper Jane Doe, jane@example.com — contacted",
+    )
+
+    assert re_mod.redact_evidence(ShopifyRejectedEvidence.objects.filter(pk=row.pk)) == 1
+    row.refresh_from_db()
+    assert row.acknowledgment_note == ""
+    assert row.acknowledged is True
+    assert row.acknowledged_by_id == user.pk
