@@ -48,6 +48,22 @@ def _patch_shopify_secret(monkeypatch):
     monkeypatch.setattr(commands, "SHOPIFY_API_SECRET", TEST_SECRET)
 
 
+@pytest.fixture(autouse=True)
+def _throttle_neutral():
+    """The global AnonRateThrottle (anon: 100/hour) counts EVERY anonymous
+    request in the whole battery process against one cache-backed counter —
+    this file's webhook volume alone would push it over the ceiling and spill
+    429s into every later anonymous-endpoint test (register, OAuth callback,
+    session-login, Stripe webhooks). Clear the throttle cache around each test
+    so the file neither inherits earlier files' counts nor leaks its own.
+    In-test throttle behavior (a test making N requests) is unaffected."""
+    from django.core.cache import cache
+
+    cache.clear()
+    yield
+    cache.clear()
+
+
 @pytest.fixture
 def shopify_store(db, company):
     return ShopifyStore.objects.create(
