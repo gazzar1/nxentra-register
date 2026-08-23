@@ -1561,6 +1561,67 @@ def test_redaction_racing_acknowledgment_conflicts(shopify_store, company, owner
     assert row.redacted_at is not None
 
 
+# =============================================================================
+# Codex round-7 fix pins (PR #130, 2026-08-23)
+# =============================================================================
+
+
+def test_lone_surrogate_rejects_and_evidence_is_storable(shopify_store, company):
+    """Codex round-7 P2: json.loads accepts a lone \\ud800 escape, but UTF-8
+    encoding of the unpaired surrogate raises — poisoning BOTH the canonical
+    raw_payload write and (unfixed) the canonical hash before the evidence
+    insert. It must reject as evidence, and the evidence must store with the
+    surrogate sanitized to a visible escape."""
+    template = json.dumps(_order_payload(order_id=5100170, tags="SURROGATE_HERE"))
+    raw = template.replace('"SURROGATE_HERE"', '"a\\ud800b"').encode("utf-8")
+    resp = _post_raw_webhook("orders/paid", raw)
+    assert resp.status_code == 200
+    row = _evidence(company)
+    assert row.rejection_code == ShopifyRejectedEvidence.RejectionCode.MALFORMED_STRUCTURE
+    assert any("surrogate" in e["message"] for e in row.validation_errors)
+    # Stored evidence is UTF-8/jsonb-safe: the surrogate became a visible escape.
+    assert row.parsed_payload["tags"] == "a\\ud800b"
+    json.dumps(row.parsed_payload).encode("utf-8")  # must not raise
+    assert ShopifyOrder.objects.filter(company=company).count() == 0
+
+
+def test_projection_consumed_metadata_shapes_reject(shopify_store, company):
+    """Codex round-7 P2: _resolve_dimensions runs UNGUARDED before every
+    handler and reads these raw_payload fields AFTER the canonical order +
+    event committed — each bad shape must reject at ingress instead of
+    deterministically failing the projection."""
+    cases = [
+        {"tags": 123},  # tags_str.split on non-str
+        {"discount_codes": "SUMMER"},  # [0].get on a str's first char
+        {"discount_codes": [123]},  # .get on a non-dict entry
+        {"shipping_address": "Cairo"},  # .get on a non-dict
+        {"referring_site": 123},  # .upper() on the urlparse fallback
+        {"customer": {"tags": 123}},  # customer tags .split
+    ]
+    for index, overrides in enumerate(cases):
+        resp = _post_webhook("orders/paid", _order_payload(order_id=5100180 + index, **overrides))
+        assert resp.status_code == 200, f"case {overrides} must reject, not loop"
+    rows = ShopifyRejectedEvidence.objects.filter(company=company)
+    assert rows.count() == len(cases)
+    assert all(r.rejection_code == ShopifyRejectedEvidence.RejectionCode.MALFORMED_STRUCTURE for r in rows)
+    assert ShopifyOrder.objects.filter(company=company).count() == 0
+
+
+def test_projection_metadata_tolerated_shapes_still_process(shopify_store, company):
+    """The consumers skip falsy values and str()-coerce code/name VALUES — those
+    shapes must keep processing."""
+    payload = _order_payload(
+        order_id=5100190,
+        tags="",
+        discount_codes=[{"code": 123}],  # code VALUE is str()-coerced
+        shipping_address={"country": "EG", "city": "Cairo"},
+        referring_site="",
+        customer=None,
+    )
+    assert commands.process_order_paid(shopify_store, payload).success
+    assert ShopifyRejectedEvidence.objects.filter(company=company).count() == 0
+
+
 def test_redaction_clears_acknowledgment_note(shopify_store, company, user):
     """Codex round-1 P2: the acknowledgment note is free-form operator input
     shown next to the raw evidence — an operator can copy shopper PII into it,

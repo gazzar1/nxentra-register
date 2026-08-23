@@ -162,31 +162,43 @@ def _dict_list_defects(value, fld: str, money_keys: tuple[str, ...]) -> list[dic
     return defects
 
 
+def _unstorable_text_reason(value: str) -> str | None:
+    """A string json.loads accepts but PostgreSQL jsonb refuses: U+0000 (NUL,
+    Codex round-6) or a lone Unicode surrogate from a \\ud800-style escape
+    (Codex round-7 — UTF-8 encoding of an unpaired surrogate raises, so both
+    the jsonb write and a naive canonical hash would fail on it)."""
+    if "\x00" in value:
+        return "NUL (\\u0000) in string is not JSON-storable"
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return "lone Unicode surrogate is not JSON-storable"
+    return None
+
+
 def _jsonb_unstorable_defects(payload) -> list[dict]:
     """Values json.loads accepts but PostgreSQL jsonb refuses — either would
     crash the canonical ``raw_payload`` write AFTER validation, into the
     retryable loop: bare NaN/Infinity tokens ANYWHERE (Codex round-2), and
-    U+0000 (NUL) inside string values OR object keys (Codex round-6; jsonb
-    cannot store \\u0000). The evidence writer sanitizes its own storage, so
-    rejecting here yields durable evidence. Iterative walk — a deeply nested
-    payload must not RecursionError the validator — capped at 10 reported
-    sites (one is enough to reject)."""
+    NUL / lone-surrogate strings in values OR object keys (rounds 6-7). The
+    evidence writer sanitizes its own storage, so rejecting here yields durable
+    evidence. Iterative walk — a deeply nested payload must not RecursionError
+    the validator — capped at 10 reported sites (one is enough to reject)."""
     defects: list[dict] = []
     stack: list[tuple[str, object]] = [("payload", payload)]
     while stack and len(defects) < 10:
         path, value = stack.pop()
         if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
             defects.append(_defect(MALFORMED_STRUCTURE, path, "non-finite number is not JSON-storable"))
-        elif isinstance(value, str) and "\x00" in value:
-            defects.append(_defect(MALFORMED_STRUCTURE, path, "NUL (\\u0000) in string is not JSON-storable"))
+        elif isinstance(value, str):
+            reason = _unstorable_text_reason(value)
+            if reason:
+                defects.append(_defect(MALFORMED_STRUCTURE, path, reason))
         elif isinstance(value, dict):
             for key, item in value.items():
-                if isinstance(key, str) and "\x00" in key:
-                    defects.append(
-                        _defect(
-                            MALFORMED_STRUCTURE, f"{path}.<key>", "NUL (\\u0000) in object key is not JSON-storable"
-                        )
-                    )
+                key_reason = _unstorable_text_reason(key) if isinstance(key, str) else None
+                if key_reason:
+                    defects.append(_defect(MALFORMED_STRUCTURE, f"{path}.<key>", f"object key: {key_reason}"))
                     if len(defects) >= 10:
                         break
                 stack.append((f"{path}.{key[:40]}", item))
@@ -380,6 +392,62 @@ def validate_order_paid_payload(payload) -> PayloadVerdict:
             errors.append(
                 _defect(MALFORMED_STRUCTURE, "customer.email", f"customer email is not a string: {_short(email)}")
             )
+        # customer.tags rides the projection's dimension enrichment
+        # (_resolve_dimensions): a truthy non-str crashes .split() AFTER the
+        # canonical order + event committed (Codex round-7).
+        customer_tags = customer.get("tags")
+        if customer_tags and not isinstance(customer_tags, str):
+            errors.append(
+                _defect(MALFORMED_STRUCTURE, "customer.tags", f"customer tags is not a string: {_short(customer_tags)}")
+            )
+
+    # 9b. Projection-consumed metadata (Codex round-7): the dimension
+    #     enrichment (_resolve_dimensions, called UNGUARDED before every
+    #     handler) reads these raw_payload fields AFTER the canonical order +
+    #     event committed — a bad shape deterministically fails the projection
+    #     instead of quarantining at ingress. Falsy values are skipped by the
+    #     consumer and stay tolerated; str()-coerced fields (source_name,
+    #     gateway names, shipping country/city, discount code VALUES) need no
+    #     check.
+    tags = payload.get("tags")
+    if tags and not isinstance(tags, str):
+        # tags_str.split(",") on a truthy non-str.
+        errors.append(_defect(MALFORMED_STRUCTURE, "tags", f"tags is not a string: {_short(tags)}"))
+    discount_codes = payload.get("discount_codes")
+    if discount_codes:
+        # discount_codes[0].get("code") — must be a list whose FIRST element is
+        # an object (only [0] is read).
+        if not isinstance(discount_codes, list):
+            errors.append(
+                _defect(
+                    MALFORMED_STRUCTURE, "discount_codes", f"discount_codes is not a list: {_short(discount_codes)}"
+                )
+            )
+        elif not isinstance(discount_codes[0], dict):
+            errors.append(
+                _defect(
+                    MALFORMED_STRUCTURE,
+                    "discount_codes[0]",
+                    f"discount code entry is not an object: {_short(discount_codes[0])}",
+                )
+            )
+    shipping_address = payload.get("shipping_address")
+    if shipping_address and not isinstance(shipping_address, dict):
+        # shipping.get(...) on a truthy non-dict (falsy takes the `or {}`).
+        errors.append(
+            _defect(
+                MALFORMED_STRUCTURE,
+                "shipping_address",
+                f"shipping_address is not an object: {_short(shipping_address)}",
+            )
+        )
+    referring_site = payload.get("referring_site")
+    if referring_site and not isinstance(referring_site, str):
+        # urlparse's failure is caught, but the fallback then runs
+        # domain.upper() OUTSIDE the try — a truthy non-str crashes it.
+        errors.append(
+            _defect(MALFORMED_STRUCTURE, "referring_site", f"referring_site is not a string: {_short(referring_site)}")
+        )
 
     # 10. created_at is RAW-stored into shopify_created_at when truthy (see
     #     _raw_stored_datetime_defect). updated_at is only parsed with a

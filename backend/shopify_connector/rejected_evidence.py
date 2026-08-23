@@ -78,18 +78,29 @@ def poller_ingress(topic: str) -> IngressContext:
 
 def canonical_payload_hash(payload) -> str:
     """SHA-256 of deterministic canonical JSON (sorted keys, compact separators,
-    raw unicode). Two payloads equal up to key order hash identically."""
+    raw unicode). Two payloads equal up to key order hash identically.
+    ``surrogatepass``: a lone \\ud800-style surrogate (which json.loads happily
+    produces) would make a plain UTF-8 encode raise BEFORE the evidence insert
+    (Codex round-7) — surrogatepass encodes it deterministically and keeps
+    distinct payloads distinct. Normal payloads are byte-identical either way."""
     canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return hashlib.sha256(canonical.encode("utf-8", "surrogatepass")).hexdigest()
 
 
 def _fix_scalar(value):
     if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
         return repr(value)
-    if isinstance(value, str) and "\x00" in value:
-        # PostgreSQL jsonb cannot store U+0000 (Codex round-6) — keep the
-        # evidence storable with a visible escape in place of the raw NUL.
-        return value.replace("\x00", "\\u0000")
+    if isinstance(value, str):
+        # PostgreSQL jsonb cannot store U+0000 (Codex round-6) or a lone
+        # Unicode surrogate (round-7 — UTF-8 encoding raises on it) — keep the
+        # evidence storable with visible escapes in their place.
+        if "\x00" in value:
+            value = value.replace("\x00", "\\u0000")
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            value = value.encode("utf-8", "backslashreplace").decode("utf-8")
+        return value
     return value
 
 
