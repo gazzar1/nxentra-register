@@ -83,21 +83,46 @@ def canonical_payload_hash(payload) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _storable_json(value):
-    """Replace non-finite floats with their string form, recursively. Python's
-    json.loads accepts bare NaN/Infinity tokens, but PostgreSQL jsonb refuses
-    them — an unsanitized parsed_payload would make the evidence INSERT itself
-    fail, turning a permanent provider-data error into the endless retry loop
-    this table exists to prevent. Identity is unaffected: payload_hash is
-    computed from the ORIGINAL parsed value before sanitization. No-op (returns
-    the same structure) for every normal payload."""
+def _fix_scalar(value):
     if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
         return repr(value)
-    if isinstance(value, dict):
-        return {key: _storable_json(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_storable_json(item) for item in value]
     return value
+
+
+def _storable_json(value):
+    """Replace non-finite floats with their string form throughout the
+    document. Python's json.loads accepts bare NaN/Infinity tokens, but
+    PostgreSQL jsonb refuses them — an unsanitized parsed_payload would make
+    the evidence INSERT itself fail, turning a permanent provider-data error
+    into the endless retry loop this table exists to prevent. Identity is
+    unaffected: payload_hash is computed from the ORIGINAL parsed value before
+    sanitization. ITERATIVE (Codex round-3 P2): a deeply nested but parseable
+    payload must never RecursionError the evidence writer — that would strand
+    the delivery in the retry loop with no preserved evidence. Structure-
+    preserving copy; a no-op-shaped result for every normal payload."""
+    if not isinstance(value, dict | list):
+        return _fix_scalar(value)
+    root: dict | list = {} if isinstance(value, dict) else []
+    stack: list[tuple[dict | list, dict | list]] = [(value, root)]
+    while stack:
+        source, target = stack.pop()
+        if isinstance(source, dict):
+            for key, item in source.items():
+                if isinstance(item, dict | list):
+                    child: dict | list = {} if isinstance(item, dict) else []
+                    target[key] = child
+                    stack.append((item, child))
+                else:
+                    target[key] = _fix_scalar(item)
+        else:
+            for item in source:
+                if isinstance(item, dict | list):
+                    child = {} if isinstance(item, dict) else []
+                    target.append(child)
+                    stack.append((item, child))
+                else:
+                    target.append(_fix_scalar(item))
+    return root
 
 
 def compute_dedup_hash(company_id: int, store_public_id, resource_kind: str, payload_hash: str) -> str:
@@ -205,30 +230,38 @@ def record_rejected_evidence(
         # PII), and Notification rows sit outside the evidence table's
         # GDPR-redaction path — the reviewable detail lives in the queue.
         #
-        # BEST-EFFORT (Codex round-2): the evidence transaction above has
-        # COMMITTED. Raising here would 503 a delivery whose durable record
-        # already exists, and every redelivery takes the dedup path
-        # (created=False) — so the raise could never be retried into a
-        # notification anyway; it would only loop the webhook. The spec is
-        # explicit that Notification is delivery/visibility, NOT the durable
+        # BEST-EFFORT (Codex round-2): raising here would 503/500 a delivery
+        # whose durable record is (sav)committed, and every redelivery takes
+        # the dedup path (created=False) — so the raise could never be retried
+        # into a notification anyway; it would only loop the webhook. The spec
+        # is explicit that Notification is delivery/visibility, NOT the durable
         # source record — and /_health/alerts pages on the OPEN evidence count
         # regardless, so a lost notification never hides the rejection.
+        #
+        # The inner atomic is LOAD-BEARING (Codex round-3 P1): when the caller
+        # holds an outer transaction (process_refund's @transaction.atomic; the
+        # paid orders/create delegation; the poller's per-order savepoint), the
+        # evidence write above is only a SAVEPOINT — catching a real database
+        # error here WITHOUT this savepoint would mark the outer transaction
+        # rollback-only, silently discarding the evidence while the webhook
+        # still acks 200 (the exact never-ack-unstored-evidence violation).
         try:
             from accounts.models import Notification
 
-            Notification.notify_company_admins(
-                company=store.company,
-                title=f"Shopify {resource_kind.lower()} rejected — malformed payload",
-                message=(
-                    f"A Shopify {resource_kind.lower()} payload ({ingress.topic}, "
-                    f"{'id ' + external_id if external_id else 'no trustworthy id'}) could not be processed "
-                    f"({rejection_code}). The authenticated payload is preserved as rejected evidence — no order, "
-                    f"refund, event or journal was created. Review it under Finance → Exceptions."
-                ),
-                level=Notification.Level.ERROR,
-                link="/finance/exceptions",
-                source_module="shopify_connector",
-            )
+            with transaction.atomic():
+                Notification.notify_company_admins(
+                    company=store.company,
+                    title=f"Shopify {resource_kind.lower()} rejected — malformed payload",
+                    message=(
+                        f"A Shopify {resource_kind.lower()} payload ({ingress.topic}, "
+                        f"{'id ' + external_id if external_id else 'no trustworthy id'}) could not be processed "
+                        f"({rejection_code}). The authenticated payload is preserved as rejected evidence — no order, "
+                        f"refund, event or journal was created. Review it under Finance → Exceptions."
+                    ),
+                    level=Notification.Level.ERROR,
+                    link="/finance/exceptions",
+                    source_module="shopify_connector",
+                )
         except Exception:
             logger.exception(
                 "Rejected-evidence notification failed for %s (%s) — the durable record is committed "

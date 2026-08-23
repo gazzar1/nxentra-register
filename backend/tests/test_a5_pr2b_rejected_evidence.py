@@ -1266,6 +1266,81 @@ def test_notification_failure_never_blocks_committed_evidence(shopify_store, com
     assert state["open_rejected_evidence"] == 1
 
 
+# =============================================================================
+# Codex round-3 fix pins (PR #130, 2026-08-23)
+# =============================================================================
+
+
+def test_notification_db_error_never_rolls_back_evidence(shopify_store, company, owner_membership, monkeypatch):
+    """Codex round-3 P1: inside process_refund's outer @transaction.atomic the
+    evidence write is only a SAVEPOINT — a real database error raised by the
+    notification, caught without its own savepoint, would mark the outer
+    transaction rollback-only and silently discard the evidence while the
+    webhook still acks 200. The notification's inner atomic isolates it."""
+    from django.db import connection as db_connection
+
+    from accounts.models import Notification as NotificationModel
+
+    def _broken_sql(**kwargs):
+        # A GENUINE failed query (not a raised-from-Python exception) — the
+        # only thing that marks the enclosing atomic rollback-only.
+        with db_connection.cursor() as cur:
+            cur.execute("SELECT * FROM nonexistent_table_a5pr2b")
+
+    monkeypatch.setattr(NotificationModel, "notify_company_admins", _broken_sql)
+
+    # The refund path runs the writer INSIDE @transaction.atomic.
+    payload = _refund_payload(refund_id=5200120, transactions="not-a-list")
+    resp = _post_webhook("refunds/create", payload)
+    assert resp.status_code == 200
+
+    row = ShopifyRejectedEvidence.objects.get(company=company)
+    assert row.rejection_code == ShopifyRejectedEvidence.RejectionCode.MALFORMED_STRUCTURE
+    assert row.occurrence_count == 1  # the evidence survived the notification failure
+
+
+def test_storable_json_is_iteration_safe(shopify_store):
+    """Codex round-3 P2: the evidence sanitizer must never RecursionError on a
+    deeply nested but parseable payload — that would strand the delivery in the
+    retry loop with no preserved evidence."""
+    deep: list = [float("inf")]
+    for _ in range(5000):
+        deep = [deep]
+    result = re_mod._storable_json({"id": 1, "metadata": deep})
+    node = result["metadata"]
+    for _ in range(5000):
+        node = node[0]
+    assert node == ["inf"]  # the non-finite leaf was sanitized at full depth
+
+
+def test_moderately_deep_malformed_payload_persists_evidence(shopify_store, company):
+    """End-to-end: a malformed payload with a few hundred nesting levels still
+    becomes durable evidence (webhook 200), not a retry loop."""
+    nested: list = []
+    for _ in range(300):
+        nested = [nested]
+    payload = _order_payload(order_id=5100130, total_price="abc", note_attributes=nested)
+    resp = _post_webhook("orders/paid", payload)
+    assert resp.status_code == 200
+    assert _evidence(company).rejection_code == ShopifyRejectedEvidence.RejectionCode.MALFORMED_MONEY
+
+
+def test_aggregate_shipping_amount_is_bounded(shopify_store, company):
+    """Codex round-3 P2: two individually storable shipping prices can SUM past
+    numeric(18,2) — the sum rides the event as total_shipping and becomes a
+    projection unit_price that deterministically fails to post. Reject as
+    MALFORMED_MONEY evidence instead of emitting an unpostable canonical order."""
+    payload = _order_payload(
+        order_id=5100131,
+        shipping_lines=[{"price": "6000000000000000"}, {"price": "6000000000000000"}],
+    )
+    resp = _post_webhook("orders/paid", payload)
+    assert resp.status_code == 200
+    assert _evidence(company).rejection_code == ShopifyRejectedEvidence.RejectionCode.MALFORMED_MONEY
+    assert ShopifyOrder.objects.filter(company=company).count() == 0
+    assert BusinessEvent.objects.filter(company=company).count() == 0
+
+
 def test_redaction_clears_acknowledgment_note(shopify_store, company, user):
     """Codex round-1 P2: the acknowledgment note is free-form operator input
     shown next to the raw evidence — an operator can copy shopper PII into it,

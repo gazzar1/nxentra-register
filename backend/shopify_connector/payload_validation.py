@@ -376,6 +376,25 @@ def validate_order_paid_payload(payload) -> PayloadVerdict:
     if date_defect:
         errors.append(date_defect)
 
+    # 10b. Aggregate shipping bound (Codex round-3 P2): each shipping price can
+    #      individually fit numeric(18,2) while their SUM overflows — the sum
+    #      rides the event as total_shipping and becomes a SalesInvoiceLine
+    #      unit_price in the projection, which would then deterministically
+    #      fail to post a canonical order. Mirror the live aggregation exactly;
+    #      only computable once the per-element checks passed.
+    if not errors:
+        shipping_total = Decimal("0")
+        for shipping_line in payload.get("shipping_lines") or []:
+            shipping_total += Decimal(str(shipping_line.get("price", "0")))
+        if abs(shipping_total) >= _MONEY_MAX:
+            errors.append(
+                _defect(
+                    MALFORMED_MONEY,
+                    "shipping_lines",
+                    f"aggregate shipping amount exceeds the storable money magnitude: {shipping_total}",
+                )
+            )
+
     # 11. Non-finite floats ANYWHERE poison the canonical raw_payload jsonb
     #     write. Runs LAST so a money-field NaN keeps its specific
     #     MALFORMED_MONEY primary code (this may add a duplicate entry for such
