@@ -1622,6 +1622,33 @@ def test_projection_metadata_tolerated_shapes_still_process(shopify_store, compa
     assert ShopifyRejectedEvidence.objects.filter(company=company).count() == 0
 
 
+# =============================================================================
+# Codex round-8 fix pin (PR #130, 2026-08-23)
+# =============================================================================
+
+
+def test_unsafe_object_keys_never_poison_validation_errors(shopify_store, company):
+    """Codex round-8 P2: defect PATHS quote payload object keys — a raw
+    NUL/surrogate KEY whose child also triggers a defect used to ride the path
+    into validation_errors, which (unlike parsed_payload) reached the INSERT
+    unsanitized and poisoned the evidence write itself. Paths now escape keys
+    and the writer sanitizes every caller-supplied text/JSON field."""
+    template = json.dumps(_order_payload(order_id=5100200, note_attributes=[{"KEY_TOKEN": "VAL_TOKEN"}]))
+    raw = template.replace('"KEY_TOKEN"', '"k\\ud800ey"').replace('"VAL_TOKEN"', '"v\\ud800al"').encode("utf-8")
+    resp = _post_raw_webhook("orders/paid", raw)
+    assert resp.status_code == 200
+
+    row = _evidence(company)
+    assert row.rejection_code == ShopifyRejectedEvidence.RejectionCode.MALFORMED_STRUCTURE
+    # Every stored evidence field is UTF-8/jsonb-safe — including the defect
+    # paths that quoted the malicious key.
+    json.dumps(row.validation_errors).encode("utf-8")  # must not raise
+    json.dumps(row.parsed_payload).encode("utf-8")  # must not raise
+    row.rejection_message.encode("utf-8")  # must not raise
+    assert any("surrogate" in e["message"] for e in row.validation_errors)
+    assert ShopifyOrder.objects.filter(company=company).count() == 0
+
+
 def test_redaction_clears_acknowledgment_note(shopify_store, company, user):
     """Codex round-1 P2: the acknowledgment note is free-form operator input
     shown next to the raw evidence — an operator can copy shopper PII into it,

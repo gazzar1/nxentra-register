@@ -176,6 +176,21 @@ def _unstorable_text_reason(value: str) -> str | None:
     return None
 
 
+def _safe_path_fragment(key) -> str:
+    """Defect paths quote payload OBJECT KEYS — an attacker-controlled key can
+    itself carry NUL or a lone surrogate, which would make the defect path (and
+    so validation_errors) jsonb-unstorable (Codex round-8). Escape to visible
+    text and cap the length."""
+    text = str(key)[:40]
+    if "\x00" in text:
+        text = text.replace("\x00", "\\u0000")
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        text = text.encode("utf-8", "backslashreplace").decode("utf-8")
+    return text
+
+
 def _jsonb_unstorable_defects(payload) -> list[dict]:
     """Values json.loads accepts but PostgreSQL jsonb refuses — either would
     crash the canonical ``raw_payload`` write AFTER validation, into the
@@ -201,7 +216,10 @@ def _jsonb_unstorable_defects(payload) -> list[dict]:
                     defects.append(_defect(MALFORMED_STRUCTURE, f"{path}.<key>", f"object key: {key_reason}"))
                     if len(defects) >= 10:
                         break
-                stack.append((f"{path}.{key[:40]}", item))
+                # _safe_path_fragment (Codex round-8): a raw NUL/surrogate KEY
+                # copied into a child path would land in validation_errors and
+                # poison the EVIDENCE insert itself.
+                stack.append((f"{path}.{_safe_path_fragment(key)}", item))
         elif isinstance(value, list):
             stack.extend((f"{path}[{index}]", item) for index, item in enumerate(value))
     return defects

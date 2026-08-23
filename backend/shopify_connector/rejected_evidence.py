@@ -202,8 +202,14 @@ def record_rejected_evidence(
                     store_public_id=store.public_id,
                     shop_domain=store.shop_domain,
                     resource_kind=resource_kind,
+                    # _storable_json/_fix_scalar on EVERY caller-supplied text/
+                    # JSON field (Codex round-8): validation_errors and
+                    # rejection_message can quote payload fragments (defect
+                    # paths embed object KEYS), and provenance strings ride
+                    # HTTP headers — none may carry a jsonb-unstorable NUL or
+                    # lone surrogate into the evidence INSERT itself.
                     ingress_kind=ingress.kind,
-                    source_topic=ingress.topic[:64],
+                    source_topic=_fix_scalar(ingress.topic[:64]),
                     external_id=external_id,
                     parent_external_id=parent_external_id,
                     parsed_payload=_storable_json(parsed_payload) if parsed_payload is not None else None,
@@ -211,10 +217,10 @@ def record_rejected_evidence(
                     payload_hash=payload_hash,
                     transport_hash=transport_hash,
                     rejection_code=rejection_code,
-                    rejection_message=rejection_message,
-                    validation_errors=validation_errors,
+                    rejection_message=_fix_scalar(rejection_message),
+                    validation_errors=_storable_json(validation_errors),
                     last_seen_at=now,
-                    last_delivery_id=ingress.delivery_id[:128],
+                    last_delivery_id=_fix_scalar(ingress.delivery_id[:128]),
                     dedup_hash=dedup_hash,
                 )
                 created = True
@@ -226,7 +232,7 @@ def record_rejected_evidence(
                 # F() so concurrent duplicate deliveries never lose a count.
                 "occurrence_count": F("occurrence_count") + 1,
                 "last_seen_at": now,
-                "last_delivery_id": ingress.delivery_id[:128],
+                "last_delivery_id": _fix_scalar(ingress.delivery_id[:128]),
             }
             if row.superseded_at is None:
                 # Reopen: the payload is STILL arriving malformed — a stale
