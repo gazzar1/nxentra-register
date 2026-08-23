@@ -86,6 +86,10 @@ def canonical_payload_hash(payload) -> str:
 def _fix_scalar(value):
     if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
         return repr(value)
+    if isinstance(value, str) and "\x00" in value:
+        # PostgreSQL jsonb cannot store U+0000 (Codex round-6) — keep the
+        # evidence storable with a visible escape in place of the raw NUL.
+        return value.replace("\x00", "\\u0000")
     return value
 
 
@@ -108,6 +112,7 @@ def _storable_json(value):
         source, target = stack.pop()
         if isinstance(source, dict):
             for key, item in source.items():
+                key = _fix_scalar(key)  # jsonb refuses NUL in object keys too
                 if isinstance(item, dict | list):
                     child: dict | list = {} if isinstance(item, dict) else []
                     target[key] = child

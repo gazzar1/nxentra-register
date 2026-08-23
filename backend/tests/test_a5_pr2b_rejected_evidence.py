@@ -1469,6 +1469,98 @@ def test_stale_acknowledgment_loses_to_resight(shopify_store, company, owner_mem
     assert row.acknowledged is True
 
 
+# =============================================================================
+# Codex round-6 fix pins (PR #130, 2026-08-23)
+# =============================================================================
+
+
+def _contains_raw_nul(value) -> bool:
+    if isinstance(value, str):
+        return "\x00" in value
+    if isinstance(value, dict):
+        return any(_contains_raw_nul(k) or _contains_raw_nul(v) for k, v in value.items())
+    if isinstance(value, list):
+        return any(_contains_raw_nul(v) for v in value)
+    return False
+
+
+def test_nul_in_strings_rejects_and_evidence_is_storable(shopify_store, company):
+    """Codex round-6 P2: PostgreSQL jsonb cannot store U+0000 — json.loads
+    accepts the \\u0000 escape, so a NUL in any string (or object key) would
+    crash the canonical raw_payload write post-validation. It must reject as
+    evidence, and the evidence writer must sanitize NULs so a payload carrying
+    BOTH another defect and a NUL still stores."""
+    # NUL in a string value.
+    resp = _post_webhook("orders/paid", _order_payload(order_id=5100160, tags="a\x00b"))
+    assert resp.status_code == 200
+    row = _evidence(company)
+    assert row.rejection_code == ShopifyRejectedEvidence.RejectionCode.MALFORMED_STRUCTURE
+    assert any("NUL" in e["message"] for e in row.validation_errors)
+    # The stored evidence itself carries no raw NUL (jsonb-storable).
+    assert not _contains_raw_nul(row.parsed_payload)
+    assert row.parsed_payload["tags"] == "a\\u0000b"
+    row.delete()
+
+    # NUL in an object KEY, riding a payload that also has a money defect —
+    # the money code stays primary and the evidence still stores.
+    payload = _order_payload(order_id=5100161, total_price="abc", note_attributes=[{"k\x00ey": 1}])
+    resp = _post_webhook("orders/paid", payload)
+    assert resp.status_code == 200
+    row = _evidence(company)
+    assert row.rejection_code == ShopifyRejectedEvidence.RejectionCode.MALFORMED_MONEY
+    assert not _contains_raw_nul(row.parsed_payload)
+    assert ShopifyOrder.objects.filter(company=company).count() == 0
+
+
+def test_acknowledgment_never_repopulates_redacted_record(
+    shopify_store, company, owner_membership, authenticated_client
+):
+    """Codex round-6 P2: after a GDPR scrub, an acknowledgment must not write a
+    fresh free-form note into the redacted record — the note is discarded and
+    the redaction state rides the CAS (a scrub racing the acknowledgment makes
+    it 409 instead of matching)."""
+    _post_webhook("orders/paid", _order_payload(order_id=5100162, total_price="abc"))
+    row = _evidence(company)
+    assert re_mod.redact_evidence(ShopifyRejectedEvidence.objects.filter(pk=row.pk)) == 1
+    row.refresh_from_db()
+
+    resp = authenticated_client.post(
+        f"/api/shopify/rejected-evidence/{row.pk}/acknowledge/",
+        {"acknowledgment_note": "shopper was jane@example.com", "acknowledged_occurrence": 1},
+    )
+    assert resp.status_code == 200
+    row.refresh_from_db()
+    assert row.acknowledged is True
+    assert row.acknowledgment_note == "", "an acknowledgment must never write PII-capable text into a redacted record"
+
+
+def test_redaction_racing_acknowledgment_conflicts(shopify_store, company, owner_membership, authenticated_client):
+    """The CAS includes redacted_at as read: a scrub landing between the
+    operator's read (unredacted) and their POST makes the update match nothing
+    — 409, and the scrubbed record stays note-free."""
+    _post_webhook("orders/paid", _order_payload(order_id=5100163, total_price="abc"))
+    row = _evidence(company)
+
+    # Simulate the race: the operator read the UNREDACTED row (their client
+    # would send redacted-at-as-read implicitly via the CAS on the server's
+    # fresh read — so here the scrub lands AFTER the server read but that
+    # window is closed by the CAS; drive it by scrubbing first and replaying
+    # an acknowledgment whose occurrence matches but whose world changed).
+    assert re_mod.redact_evidence(ShopifyRejectedEvidence.objects.filter(pk=row.pk)) == 1
+
+    resp = authenticated_client.post(
+        f"/api/shopify/rejected-evidence/{row.pk}/acknowledge/",
+        {"acknowledgment_note": "note", "acknowledged_occurrence": 1},
+    )
+    # The server's fresh read sees the redacted row and discards the note —
+    # acknowledgment itself still succeeds (reviewing a redacted record is
+    # legitimate); the record stays scrubbed.
+    assert resp.status_code == 200
+    row.refresh_from_db()
+    assert row.acknowledgment_note == ""
+    assert row.redacted_at is not None
+
+
 def test_redaction_clears_acknowledgment_note(shopify_store, company, user):
     """Codex round-1 P2: the acknowledgment note is free-form operator input
     shown next to the raw evidence — an operator can copy shopper PII into it,

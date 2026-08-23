@@ -1628,16 +1628,25 @@ class ShopifyRejectedEvidenceAcknowledgeView(APIView):
         from django.utils import timezone as dj_timezone
 
         note = (request.data.get("acknowledgment_note") or "").strip()[:2000]
-        # Compare-and-set on (acknowledged=False, occurrence_count=<reviewed>):
-        # a concurrent re-sight both bumps the count and clears acknowledgment
-        # atomically, so a stale operator request — read before the re-sight,
-        # posted after — matches nothing and can never re-hide the newly
-        # observed delivery (never read-modify-write instance state).
+        # A redacted record stays scrubbed (Codex round-6): the free-form note
+        # is treated as capable of carrying copied shopper PII, so an
+        # acknowledgment on (or racing with) a GDPR-scrubbed row never persists
+        # one — the redaction state joins the CAS below so a scrub landing
+        # between this read and the update can't be repopulated either.
+        if row.redacted_at is not None:
+            note = ""
+        # Compare-and-set on (acknowledged=False, occurrence_count=<reviewed>,
+        # redacted_at=<as read>): a concurrent re-sight bumps the count
+        # atomically with the reopen, and a concurrent redaction changes
+        # redacted_at — either way a stale operator request matches nothing and
+        # can never re-hide a new delivery or write into a scrubbed record
+        # (never read-modify-write instance state).
         updated = ShopifyRejectedEvidence.objects.filter(
             pk=row.pk,
             company=actor.company,
             acknowledged=False,
             occurrence_count=acknowledged_occurrence,
+            redacted_at=row.redacted_at,
         ).update(
             acknowledged=True,
             acknowledged_at=dj_timezone.now(),
@@ -1654,8 +1663,8 @@ class ShopifyRejectedEvidenceAcknowledgeView(APIView):
             return Response(
                 {
                     "detail": (
-                        "The payload was re-sighted since you reviewed it — review the newest "
-                        "delivery before acknowledging."
+                        "The evidence changed since you reviewed it (re-sighted or redacted) — "
+                        "review the current state before acknowledging."
                     ),
                     **_serialize_rejected_evidence(row),
                 },
