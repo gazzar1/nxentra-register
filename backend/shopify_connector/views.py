@@ -581,14 +581,15 @@ class ShopifyWebhookView(APIView):
 
         try:
             payload = json.loads(body)
-        except (json.JSONDecodeError, UnicodeDecodeError, RecursionError) as json_error:
-            # UnicodeDecodeError: an HMAC-valid body that is not even UTF-8 —
-            # json.loads raises it BEFORE JSONDecodeError, and it is not a
-            # JSONDecodeError subclass; uncaught it would 500-loop the delivery.
-            # RecursionError (Codex round-4): a syntactically valid body nested
-            # past the parser's depth limit raises it instead of JSONDecodeError
-            # — same authenticated-malformed-body class, same capture (the
-            # evidence writer stores hash + raw bytes only, depth-immune).
+        except (ValueError, RecursionError) as json_error:
+            # ValueError is the whole json.loads failure family (Codex rounds
+            # 4/10): JSONDecodeError and UnicodeDecodeError (non-UTF-8 body) are
+            # both ValueError subclasses, and CPython's int-conversion limit
+            # raises a PLAIN ValueError for an absurdly long integer literal —
+            # any ValueError here means an unparseable authenticated body.
+            # RecursionError: a body nested past the parser's depth limit.
+            # Either way, same capture — the evidence writer stores hash + raw
+            # bytes only, so it is depth/size/encoding-immune.
             logger.error("Invalid JSON in Shopify webhook body")
             # A5-PR2b: an HMAC-VALID but unparseable body for an order/refund
             # topic is authenticated malformed evidence — persist it durably
@@ -1629,11 +1630,19 @@ class ShopifyRejectedEvidenceAcknowledgeView(APIView):
 
         from .rejected_evidence import sanitize_operator_text
 
+        raw_note = request.data.get("acknowledgment_note")
+        if raw_note is not None and not isinstance(raw_note, str):
+            # Codex round-10: a truthy non-string note would crash .strip()
+            # into a 500 — answer a validation error instead.
+            return Response(
+                {"detail": "acknowledgment_note must be a string."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         # sanitize_operator_text (Codex round-9): DRF's JSON parser materializes
         # \u0000 escapes and lone surrogates from the request body — PostgreSQL
         # text columns refuse both, which would 500 the acknowledgment and
         # strand the evidence open.
-        note = sanitize_operator_text((request.data.get("acknowledgment_note") or "").strip()[:2000])
+        note = sanitize_operator_text((raw_note or "").strip()[:2000])
         # A redacted record stays scrubbed (Codex round-6): the free-form note
         # is treated as capable of carrying copied shopper PII, so an
         # acknowledgment on (or racing with) a GDPR-scrubbed row never persists

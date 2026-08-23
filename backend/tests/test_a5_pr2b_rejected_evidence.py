@@ -1683,6 +1683,46 @@ def test_acknowledgment_note_with_unstorable_text_is_sanitized(
     assert "\\ud800" in row.acknowledgment_note
 
 
+# =============================================================================
+# Codex round-10 fix pins (PR #130, 2026-08-24)
+# =============================================================================
+
+
+def test_huge_integer_literal_is_captured_as_malformed_json(shopify_store, company):
+    """Codex round-10 P2: an integer literal past CPython's int-conversion
+    limit makes json.loads raise a PLAIN ValueError (not JSONDecodeError) —
+    it must be captured as MALFORMED_JSON evidence like every other
+    unparseable authenticated body."""
+    raw = b'{"id": ' + b"9" * 5000 + b"}"
+    with pytest.raises(ValueError) as exc_info:
+        json.loads(raw)
+    assert not isinstance(exc_info.value, json.JSONDecodeError)  # the distinct class
+
+    resp = _post_raw_webhook("orders/paid", raw)
+    assert resp.status_code == 200
+    row = _evidence(company)
+    assert row.rejection_code == ShopifyRejectedEvidence.RejectionCode.MALFORMED_JSON
+    assert base64.b64decode(row.raw_body_b64) == raw
+
+
+def test_non_string_acknowledgment_note_is_a_validation_error(
+    shopify_store, company, owner_membership, authenticated_client
+):
+    """Codex round-10 P2: a truthy non-string note crashed .strip() into a 500
+    — it must answer 400 and leave the row untouched."""
+    _post_webhook("orders/paid", _order_payload(order_id=5100220, total_price="abc"))
+    row = _evidence(company)
+
+    resp = authenticated_client.post(
+        f"/api/shopify/rejected-evidence/{row.pk}/acknowledge/",
+        {"acknowledgment_note": 123, "acknowledged_occurrence": 1},
+        format="json",
+    )
+    assert resp.status_code == 400
+    row.refresh_from_db()
+    assert row.acknowledged is False
+
+
 def test_redaction_clears_acknowledgment_note(shopify_store, company, user):
     """Codex round-1 P2: the acknowledgment note is free-form operator input
     shown next to the raw evidence — an operator can copy shopper PII into it,
