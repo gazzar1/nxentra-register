@@ -110,7 +110,12 @@ def _money_defect(value, fld: str) -> dict | None:
         return _defect(MALFORMED_MONEY, fld, f"{fld} does not parse as a decimal: {_short(value)}")
     if not parsed.is_finite():
         return _defect(MALFORMED_MONEY, fld, f"{fld} is not finite: {_short(value)}")
-    if abs(parsed) >= _MONEY_MAX:
+    # copy_abs() is CONTEXT-FREE (Codex round-12): abs() applies the active
+    # Decimal context, so a finite value with an exponent past Emax (e.g.
+    # "1e1000000") raises decimal.Overflow inside the validator — comparisons
+    # never round, so copy_abs() >= bound is the safe magnitude check (same at
+    # the two aggregate sites).
+    if parsed.copy_abs() >= _MONEY_MAX:
         return _defect(MALFORMED_MONEY, fld, f"{fld} exceeds the storable money magnitude: {_short(value)}")
     return None
 
@@ -484,7 +489,7 @@ def validate_order_paid_payload(payload) -> PayloadVerdict:
         shipping_total = Decimal("0")
         for shipping_line in payload.get("shipping_lines") or []:
             shipping_total += Decimal(str(shipping_line.get("price", "0")))
-        if abs(shipping_total) >= _MONEY_MAX:
+        if shipping_total.copy_abs() >= _MONEY_MAX:
             errors.append(
                 _defect(
                     MALFORMED_MONEY,
@@ -610,7 +615,7 @@ def validate_refund_payload(payload) -> PayloadVerdict:
         if total == 0:
             for line in payload.get("refund_line_items") or []:
                 total += Decimal(str(line.get("subtotal", "0")))
-        if abs(total) >= _MONEY_MAX:
+        if total.copy_abs() >= _MONEY_MAX:
             errors.append(
                 _defect(
                     MALFORMED_MONEY,

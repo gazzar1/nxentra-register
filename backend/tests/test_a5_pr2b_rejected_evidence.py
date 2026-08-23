@@ -1782,6 +1782,93 @@ def test_identifiable_malformed_body_is_exported_by_data_request(shopify_store, 
     assert exported[0]["payload"] is None  # unparseable — the raw text IS the export
 
 
+# =============================================================================
+# Codex round-12 fix pins (PR #130, 2026-08-24)
+# =============================================================================
+
+
+def test_huge_exponent_money_rejects_without_decimal_overflow(shopify_store, company):
+    """Codex round-12 P2: Decimal('1e1000000') is finite but abs() applies the
+    active context and raises decimal.Overflow — the magnitude check must use
+    context-free copy_abs() and classify as MALFORMED_MONEY, never crash the
+    validator into the retry loop."""
+    resp = _post_webhook("orders/paid", _order_payload(order_id=5100230, total_price="1e1000000"))
+    assert resp.status_code == 200
+    assert _evidence(company).rejection_code == ShopifyRejectedEvidence.RejectionCode.MALFORMED_MONEY
+
+
+def test_nul_in_malformed_body_export_is_jsonb_safe(shopify_store, company):
+    """Codex round-12 P2: a matched MALFORMED_JSON body containing a literal
+    NUL byte must not ride raw_body_text into the GdprRequest.evidence
+    JSONField unsanitized — the export completes with a visible escape."""
+    from shopify_connector.gdpr import execute_customer_data_request
+    from shopify_connector.models import GdprRequest
+
+    raw = b'{"id": 6100003, "customer": {"email": "nulbody@example.com"}, "note": "a\x00b", "broken": '
+    assert _post_raw_webhook("orders/paid", raw).status_code == 200
+
+    req = GdprRequest.objects.create(
+        topic=GdprRequest.Topic.CUSTOMERS_DATA_REQUEST,
+        shop_domain=SHOP_DOMAIN,
+        customer_email="nulbody@example.com",
+        payload={"customer": {"email": "nulbody@example.com"}},
+        payload_signature="sig-a5pr2b-nul-body-export",
+        status=GdprRequest.Status.PENDING,
+    )
+    result = execute_customer_data_request(req)
+    exported = [e for e in result["export"] if e.get("rejected_evidence")]
+    assert len(exported) == 1
+    assert "\x00" not in exported[0]["raw_body_text"]
+    assert "\\u0000" in exported[0]["raw_body_text"]
+    req.refresh_from_db()
+    assert req.status == GdprRequest.Status.COMPLETED  # the jsonb write landed
+
+
+def test_orphaned_evidence_is_reached_by_customer_jobs(shopify_store, company):
+    """Codex round-12 P2: evidence survives ShopifyStore deletion by design —
+    the customer-level jobs must reach it via the shop_domain snapshot (the
+    per-store loop never sees it once the store row is gone)."""
+    from shopify_connector.gdpr import execute_customer_data_request, execute_customer_redact
+    from shopify_connector.models import GdprRequest
+
+    _post_webhook(
+        "orders/paid",
+        _order_payload(order_id=5100231, total_price="abc", customer={"id": 424255, "email": "orphan@example.com"}),
+    )
+    row = _evidence(company)
+    ShopifyStore.objects.filter(pk=shopify_store.pk).delete()
+    row.refresh_from_db()
+    assert row.store_id is None
+
+    export_req = GdprRequest.objects.create(
+        topic=GdprRequest.Topic.CUSTOMERS_DATA_REQUEST,
+        shop_domain=SHOP_DOMAIN,
+        customer_id=424255,
+        customer_email="orphan@example.com",
+        payload={"customer": {"id": 424255, "email": "orphan@example.com"}},
+        payload_signature="sig-a5pr2b-orphan-export",
+        status=GdprRequest.Status.PENDING,
+    )
+    result = execute_customer_data_request(export_req)
+    exported = [e for e in result["export"] if e.get("rejected_evidence")]
+    assert len(exported) == 1
+    assert exported[0]["customer"]["email"] == "orphan@example.com"
+
+    redact_req = GdprRequest.objects.create(
+        topic=GdprRequest.Topic.CUSTOMERS_REDACT,
+        shop_domain=SHOP_DOMAIN,
+        customer_id=424255,
+        customer_email="orphan@example.com",
+        payload={"customer": {"id": 424255, "email": "orphan@example.com"}},
+        payload_signature="sig-a5pr2b-orphan-redact",
+        status=GdprRequest.Status.PENDING,
+    )
+    execute_customer_redact(redact_req)
+    row.refresh_from_db()
+    assert row.redacted_at is not None
+    assert row.parsed_payload is None
+
+
 def test_redaction_clears_acknowledgment_note(shopify_store, company, user):
     """Codex round-1 P2: the acknowledgment note is free-form operator input
     shown next to the raw evidence — an operator can copy shopper PII into it,

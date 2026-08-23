@@ -130,7 +130,30 @@ def _matching_rejected_evidence(store, customer_id, customer_email, order_ids):
     customer-level scrub or be absent from the export. Tiny identifiers are
     skipped to avoid false substring hits; over-matching errs privacy-safe
     (the data all belongs to the requesting merchant's own webhook stream)."""
-    qs = ShopifyRejectedEvidence.objects.filter(company=store.company, shop_domain=store.shop_domain)
+    return _match_evidence_in(
+        ShopifyRejectedEvidence.objects.filter(company=store.company, shop_domain=store.shop_domain),
+        customer_id,
+        customer_email,
+        order_ids,
+    )
+
+
+def _orphan_matching_rejected_evidence(shop_domain, customer_id, customer_email, order_ids):
+    """Codex round-12: evidence deliberately SURVIVES ShopifyStore deletion
+    (SET_NULL + snapshots), but the customer-level jobs only matched while
+    iterating existing store rows — orphaned evidence was unreachable by
+    customers/redact and customers/data_request even though shop/redact already
+    sweeps it. Same matching core, scoped by the shop_domain snapshot to rows
+    whose store FK is gone (cross-company, like _stores_for_domain)."""
+    return _match_evidence_in(
+        ShopifyRejectedEvidence.objects.filter(shop_domain=shop_domain, store__isnull=True),
+        customer_id,
+        customer_email,
+        order_ids,
+    )
+
+
+def _match_evidence_in(qs, customer_id, customer_email, order_ids):
     matched_pks: set[int] = set()
     if order_ids:
         ids = [str(oid) for oid in order_ids]
@@ -182,6 +205,37 @@ def _matching_rejected_evidence(store, customer_id, customer_email, order_ids):
                 matched_pks.add(row.pk)
 
     return ShopifyRejectedEvidence.objects.filter(pk__in=matched_pks)
+
+
+def _evidence_export_entry(row) -> dict:
+    """One export record for a matched rejected-evidence row. raw_body_text is
+    sanitized (Codex round-12): a literal NUL in the decoded bytes would make
+    the assembled export unstorable in the GdprRequest.evidence JSONField and
+    fail the whole data-request job."""
+    from .rejected_evidence import sanitize_operator_text
+
+    parsed = row.parsed_payload if isinstance(row.parsed_payload, dict) else {}
+    raw_body_text = ""
+    if row.parsed_payload is None and row.raw_body_b64:
+        import base64 as b64
+
+        try:
+            raw_body_text = sanitize_operator_text(b64.b64decode(row.raw_body_b64).decode("utf-8", errors="replace"))
+        except Exception:
+            raw_body_text = ""
+    return {
+        "company": str(row.company.public_id),
+        "rejected_evidence": True,
+        "resource_kind": row.resource_kind,
+        "external_id": row.external_id,
+        "parent_external_id": row.parent_external_id,
+        "rejection_code": row.rejection_code,
+        "first_seen_at": row.first_seen_at.isoformat() if row.first_seen_at else "",
+        "redacted": row.redacted_at is not None,
+        "customer": parsed.get("customer"),
+        "payload": row.parsed_payload,
+        "raw_body_text": raw_body_text,
+    }
 
 
 def _emit_completed(req, company, *, orders_matched, records_scrubbed, events_exempted):
@@ -241,7 +295,11 @@ def execute_customer_data_request(req: GdprRequest) -> dict:
             # rls_bypass() wrap: a previous iteration's emits cleared the RLS
             # session and the evidence table is FORCE-RLS.
             with rls_bypass():
-                rejected_rows = list(_matching_rejected_evidence(store, req.customer_id, req.customer_email, order_ids))
+                rejected_rows = list(
+                    _matching_rejected_evidence(store, req.customer_id, req.customer_email, order_ids).select_related(
+                        "company"
+                    )
+                )
             if not orders and not rejected_rows and not order_ids:
                 continue
             evidence["companies_matched"] += 1
@@ -263,35 +321,7 @@ def execute_customer_data_request(req: GdprRequest) -> dict:
                     }
                 )
             for row in rejected_rows:
-                # A malformed payload has no trustworthy shape — export the
-                # COMPLETE preserved payload (the shopper's data can sit
-                # anywhere in it). Parsed-less rows (MALFORMED_JSON) export
-                # their decoded authenticated bytes instead (Codex round-11).
-                # A redacted row exports its metadata only.
-                parsed = row.parsed_payload if isinstance(row.parsed_payload, dict) else {}
-                raw_body_text = ""
-                if row.parsed_payload is None and row.raw_body_b64:
-                    import base64 as b64
-
-                    try:
-                        raw_body_text = b64.b64decode(row.raw_body_b64).decode("utf-8", errors="replace")
-                    except Exception:
-                        raw_body_text = ""
-                evidence["export"].append(
-                    {
-                        "company": str(store.company.public_id),
-                        "rejected_evidence": True,
-                        "resource_kind": row.resource_kind,
-                        "external_id": row.external_id,
-                        "parent_external_id": row.parent_external_id,
-                        "rejection_code": row.rejection_code,
-                        "first_seen_at": row.first_seen_at.isoformat() if row.first_seen_at else "",
-                        "redacted": row.redacted_at is not None,
-                        "customer": parsed.get("customer"),
-                        "payload": row.parsed_payload,
-                        "raw_body_text": raw_body_text,
-                    }
-                )
+                evidence["export"].append(_evidence_export_entry(row))
             with command_writes_allowed():
                 Notification.notify_company_admins(
                     store.company,
@@ -312,6 +342,20 @@ def execute_customer_data_request(req: GdprRequest) -> dict:
                 records_scrubbed=0,
                 events_exempted=0,
             )
+
+        # Codex round-12: orphaned evidence (store row hard-deleted) never
+        # enters the per-store loop — sweep it by the shop_domain snapshot.
+        # Fresh rls_bypass(): earlier emits cleared the RLS session and the
+        # evidence table is FORCE-RLS.
+        with rls_bypass():
+            orphan_rows = list(
+                _orphan_matching_rejected_evidence(
+                    req.shop_domain, req.customer_id, req.customer_email, order_ids
+                ).select_related("company")
+            )
+        evidence["rejected_evidence_matched"] += len(orphan_rows)
+        for row in orphan_rows:
+            evidence["export"].append(_evidence_export_entry(row))
 
     _complete(req, evidence, note=f"Export assembled for {evidence['orders_matched']} order(s).")
     return evidence
@@ -413,6 +457,15 @@ def execute_customer_redact(req: GdprRequest) -> dict:
                 if older.customer_email or changed:
                     older.customer_email = ""
                     older.save(update_fields=["customer_email", "payload"])
+
+        # Codex round-12: orphaned evidence (store row hard-deleted) never
+        # enters the per-store loop — scrub it via the shop_domain snapshot,
+        # mirroring shop/redact's orphan sweep. Fresh rls_bypass(): earlier
+        # emits cleared the RLS session and the evidence table is FORCE-RLS.
+        with rls_bypass():
+            evidence["records_scrubbed"] += redact_evidence(
+                _orphan_matching_rejected_evidence(req.shop_domain, req.customer_id, req.customer_email, order_ids)
+            )
 
     _complete(
         req,
