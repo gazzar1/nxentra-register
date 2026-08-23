@@ -287,6 +287,7 @@ def execute_customer_data_request(req: GdprRequest) -> dict:
     evidence = {"companies_matched": 0, "orders_matched": 0, "rejected_evidence_matched": 0, "export": []}
 
     completed_company_ids: set[int] = set()
+    exported_evidence_pks: set[int] = set()
     with rls_bypass():
         for store in _stores_for_domain(req.shop_domain):
             orders = _matching_orders(store, req.customer_id, req.customer_email, order_ids)
@@ -322,6 +323,7 @@ def execute_customer_data_request(req: GdprRequest) -> dict:
                     }
                 )
             for row in rejected_rows:
+                exported_evidence_pks.add(row.pk)
                 evidence["export"].append(_evidence_export_entry(row))
             with command_writes_allowed():
                 Notification.notify_company_admins(
@@ -349,11 +351,15 @@ def execute_customer_data_request(req: GdprRequest) -> dict:
         # enters the per-store loop — sweep it by the shop_domain snapshot.
         # Fresh rls_bypass(): earlier emits cleared the RLS session and the
         # evidence table is FORCE-RLS.
+        # .exclude (Codex round-14): when a REPLACEMENT store exists for the
+        # same company/domain, the store-loop matcher already reached these
+        # snapshot-scoped orphan rows — the sweep must not export them twice or
+        # inflate rejected_evidence_matched.
         with rls_bypass():
             orphan_rows = list(
-                _orphan_matching_rejected_evidence(
-                    req.shop_domain, req.customer_id, req.customer_email, order_ids
-                ).select_related("company")
+                _orphan_matching_rejected_evidence(req.shop_domain, req.customer_id, req.customer_email, order_ids)
+                .exclude(pk__in=exported_evidence_pks)
+                .select_related("company")
             )
         evidence["rejected_evidence_matched"] += len(orphan_rows)
         for row in orphan_rows:

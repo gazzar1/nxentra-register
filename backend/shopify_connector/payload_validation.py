@@ -318,13 +318,24 @@ def validate_order_paid_payload(payload) -> PayloadVerdict:
         if header_total_tax > 0:
             revenue_amount = header_subtotal if header_subtotal > 0 else header_total - header_total_tax
             if revenue_amount > 0:
-                implied_rate = (header_total_tax / revenue_amount).quantize(Decimal("0.0001"))
-                if implied_rate >= Decimal("10"):
+                # try/except (Codex round-14): individually valid values can
+                # make the DIVISION itself trap — e.g. subtotal "1e-1000000"
+                # passes the magnitude check but 1 / 1e-1000000 overflows the
+                # Decimal context. An uncomputable ratio is exactly as
+                # unstorable as an oversized one.
+                try:
+                    implied_rate = (header_total_tax / revenue_amount).quantize(Decimal("0.0001"))
+                    rate_defect = implied_rate >= Decimal("10")
+                    rate_text = str(implied_rate)
+                except ArithmeticError:
+                    rate_defect = True
+                    rate_text = "uncomputable"
+                if rate_defect:
                     errors.append(
                         _defect(
                             MALFORMED_MONEY,
                             "total_tax",
-                            f"implied tax rate {implied_rate} exceeds the storable TaxCode bound",
+                            f"implied tax rate {rate_text} exceeds the storable TaxCode bound",
                         )
                     )
 

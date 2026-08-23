@@ -1950,6 +1950,61 @@ def test_orphan_export_runs_per_company_completion(shopify_store, company, owner
     assert BusinessEvent.objects.filter(company=company, event_type=EventTypes.SHOPIFY_GDPR_REQUEST_COMPLETED).exists()
 
 
+# =============================================================================
+# Codex round-14 fix pins (PR #130, 2026-08-24)
+# =============================================================================
+
+
+def test_subnormal_subtotal_rejects_without_decimal_trap(shopify_store, company):
+    """Codex round-14 P2: individually valid values can make the implied-rate
+    DIVISION itself trap (1 / 1e-1000000 overflows the Decimal context) — an
+    uncomputable ratio classifies as MALFORMED_MONEY, never a 500 loop."""
+    payload = _order_payload(order_id=5100250, subtotal_price="1e-1000000", total_tax="1.00", total_price="1.00")
+    resp = _post_webhook("orders/paid", payload)
+    assert resp.status_code == 200
+    row = _evidence(company)
+    assert row.rejection_code == ShopifyRejectedEvidence.RejectionCode.MALFORMED_MONEY
+    assert any("uncomputable" in e["message"] or "tax rate" in e["message"] for e in row.validation_errors)
+
+
+def test_orphan_export_never_duplicates_replacement_store_rows(shopify_store, company, owner_membership):
+    """Codex round-14 P2: with a REPLACEMENT store for the same company/domain,
+    the store-loop matcher already reaches snapshot-scoped orphan rows — the
+    orphan sweep must not export them twice or inflate the matched count."""
+    from shopify_connector.gdpr import execute_customer_data_request
+    from shopify_connector.models import GdprRequest
+
+    _post_webhook(
+        "orders/paid",
+        _order_payload(order_id=5100251, total_price="abc", customer={"id": 909090, "email": "dedup@example.com"}),
+    )
+    row = _evidence(company)
+    ShopifyStore.objects.filter(pk=shopify_store.pk).delete()
+    ShopifyStore.objects.create(
+        company=company,
+        shop_domain=SHOP_DOMAIN,
+        access_token="replacement",
+        status=ShopifyStore.Status.ACTIVE,
+    )
+    row.refresh_from_db()
+    assert row.store_id is None  # orphaned, but the replacement store's loop will match it
+
+    req = GdprRequest.objects.create(
+        topic=GdprRequest.Topic.CUSTOMERS_DATA_REQUEST,
+        shop_domain=SHOP_DOMAIN,
+        customer_id=909090,
+        customer_email="dedup@example.com",
+        payload={"customer": {"id": 909090, "email": "dedup@example.com"}},
+        payload_signature="sig-a5pr2b-orphan-dedup",
+        status=GdprRequest.Status.PENDING,
+    )
+    result = execute_customer_data_request(req)
+    exported = [e for e in result["export"] if e.get("rejected_evidence")]
+    assert len(exported) == 1, "the same evidence row must never be exported twice"
+    assert result["rejected_evidence_matched"] == 1
+    assert result["companies_matched"] == 1
+
+
 def test_redaction_clears_acknowledgment_note(shopify_store, company, user):
     """Codex round-1 P2: the acknowledgment note is free-form operator input
     shown next to the raw evidence — an operator can copy shopper PII into it,
