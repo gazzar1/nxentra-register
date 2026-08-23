@@ -1349,6 +1349,16 @@ def _process_order_paid_inner(
     ).first()
     if existing_order and existing_order.event_id:
         logger.info("Order %s already processed — skipping", shopify_order_id)
+        # A5-PR2b: the canonical row + event already exist, so any OPEN rejected
+        # evidence for this identity (e.g. a malformed duplicate that arrived
+        # AFTER the order processed) is healed by this very existence — without
+        # this, the skip would strand it open forever.
+        rejected_evidence.supersede_open_evidence(
+            store=store,
+            resource_kind=ShopifyRejectedEvidence.ResourceKind.ORDER,
+            external_id=shopify_order_id,
+            order=existing_order,
+        )
         return CommandResult.ok(data={"skipped": True})
 
     # Parse order data
@@ -1559,10 +1569,22 @@ def process_refund(
         # Defense in depth — the validator already rejects these durably.
         return CommandResult.fail("Missing refund or order ID.")
 
-    if ShopifyRefund.objects.filter(
+    existing_refund = ShopifyRefund.objects.filter(
         company=store.company,
         shopify_refund_id=shopify_refund_id,
-    ).exists():
+    ).first()
+    if existing_refund is not None:
+        # A5-PR2b: a PROCESSED (or handled-zero) canonical refund heals any open
+        # rejected evidence for this identity — mirror the order-side skip. An
+        # ERROR row is evidence of invalidity, not successful processing, so it
+        # never supersedes.
+        if existing_refund.status != ShopifyRefund.Status.ERROR:
+            rejected_evidence.supersede_open_evidence(
+                store=store,
+                resource_kind=ShopifyRejectedEvidence.ResourceKind.REFUND,
+                external_id=shopify_refund_id,
+                refund=existing_refund,
+            )
         return CommandResult.ok(data={"skipped": True})
 
     try:
@@ -1613,7 +1635,7 @@ def process_refund(
                 shopify_refund_id=shopify_refund_id,
                 amount=refund_amount,
                 currency=order.currency,
-                reason=payload.get("note", ""),
+                reason=payload.get("note") or "",
                 shopify_created_at=payload.get("created_at", "") or datetime.now().isoformat(),
                 raw_payload=payload,
                 status=ShopifyRefund.Status.ERROR,
@@ -1658,7 +1680,7 @@ def process_refund(
                 shopify_refund_id=shopify_refund_id,
                 amount=refund_amount,
                 currency=order.currency,
-                reason=payload.get("note", ""),
+                reason=payload.get("note") or "",
                 shopify_created_at=refund_date_str or datetime.now().isoformat(),
                 raw_payload=payload,
                 status=ShopifyRefund.Status.PROCESSED,
@@ -1680,7 +1702,7 @@ def process_refund(
             shopify_refund_id=shopify_refund_id,
             amount=refund_amount,
             currency=order.currency,
-            reason=payload.get("note", ""),
+            reason=payload.get("note") or "",
             shopify_created_at=refund_date_str or datetime.now().isoformat(),
             raw_payload=payload,
         )

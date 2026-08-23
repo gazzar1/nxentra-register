@@ -47,8 +47,9 @@ export interface ShopifyRejectedEvidenceListResponse {
 }
 
 export interface ShopifyRejectedEvidenceListParams {
+  // Tri-state: "false"/absent = OPEN queue (unacknowledged, unsuperseded);
+  // "true" = CLOSED (acknowledged OR healed/superseded); "all" = everything.
   acknowledged?: "true" | "false" | "all";
-  include_superseded?: "true";
   resource_kind?: EvidenceResourceKind;
   rejection_code?: string;
   limit?: number;

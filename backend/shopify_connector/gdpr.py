@@ -122,7 +122,9 @@ def _matching_rejected_evidence(store, customer_id, customer_email, order_ids):
     Matched by the ``shop_domain`` SNAPSHOT so evidence whose store FK was
     SET_NULLed is still reached. Already-redacted rows have no parsed_payload
     left to match — the id-based arms still re-match them harmlessly
-    (redact_evidence is idempotent)."""
+    (redact_evidence is idempotent). MALFORMED_JSON evidence (unparseable
+    bytes, no ids) is structurally unattributable to a single shopper — only
+    shop/redact reaches it, by design."""
     qs = ShopifyRejectedEvidence.objects.filter(company=store.company, shop_domain=store.shop_domain)
     matched_pks: set[int] = set()
     if order_ids:
@@ -262,9 +264,15 @@ def execute_customer_redact(req: GdprRequest) -> dict:
             orders = _matching_orders(store, req.customer_id, req.customer_email, order_ids)
             # A5-PR2b: the shopper's data can live ONLY in rejected source
             # evidence (a malformed payload that never became an order) — match
-            # it independently of orders.
-            rejected_qs = _matching_rejected_evidence(store, req.customer_id, req.customer_email, order_ids)
-            if not orders and not rejected_qs.exists():
+            # it independently of orders. Fresh rls_bypass() wrap: the PREVIOUS
+            # iteration's _emit_completed cleared this connection's RLS session
+            # settings (emit_event_no_actor's finally), and the evidence table
+            # is FORCE-RLS — without re-asserting, later stores would silently
+            # match zero rows on shared-tenant PostgreSQL.
+            with rls_bypass():
+                rejected_qs = _matching_rejected_evidence(store, req.customer_id, req.customer_email, order_ids)
+                has_rejected_evidence = rejected_qs.exists()
+            if not orders and not has_rejected_evidence:
                 continue
             evidence["companies_matched"] += 1
             evidence["orders_matched"] += len(orders)
@@ -307,10 +315,12 @@ def execute_customer_redact(req: GdprRequest) -> dict:
                         evidence["records_scrubbed"] += 1
 
                 # A5-PR2b: scrub the shopper's rejected source evidence —
-                # parsed_payload/raw_body_b64 cleared and redacted_at stamped;
-                # hashes, codes, timestamps and identity stay, and a later
-                # re-sighting never restores the PII.
-                evidence["records_scrubbed"] += redact_evidence(rejected_qs)
+                # payload fields + defect-message value fragments cleared and
+                # redacted_at stamped; hashes, codes, defect fields, timestamps
+                # and identity stay, and a later re-sighting never restores the
+                # PII. Fresh rls_bypass() wrap: see the matcher note above.
+                with rls_bypass():
+                    evidence["records_scrubbed"] += redact_evidence(rejected_qs)
 
             exempted = _count_exempt_events(store.company, req.customer_email)
             evidence["events_exempted"] += exempted
@@ -392,14 +402,18 @@ def execute_shop_redact(req: GdprRequest) -> dict:
 
                 # A5-PR2b: scrub ALL rejected source evidence for this shop —
                 # matched by the shop_domain SNAPSHOT so evidence whose store FK
-                # was SET_NULLed is reached too. Payload fields cleared,
-                # hashes/codes/identity kept, redacted_at stamped.
-                company_scrubbed += redact_evidence(
-                    ShopifyRejectedEvidence.objects.filter(
-                        company=store.company,
-                        shop_domain=req.shop_domain,
+                # was SET_NULLed is reached too. Payload fields + defect-message
+                # fragments cleared, hashes/codes/identity kept, redacted_at
+                # stamped. Fresh rls_bypass() wrap: a previous iteration's
+                # _emit_completed cleared the RLS session on this connection and
+                # the evidence table is FORCE-RLS.
+                with rls_bypass():
+                    company_scrubbed += redact_evidence(
+                        ShopifyRejectedEvidence.objects.filter(
+                            company=store.company,
+                            shop_domain=req.shop_domain,
+                        )
                     )
-                )
 
             evidence["records_scrubbed"] += company_scrubbed
             _emit_completed(
@@ -413,6 +427,17 @@ def execute_shop_redact(req: GdprRequest) -> dict:
         with command_writes_allowed():
             deleted, _ = PendingShopifyInstall.objects.filter(shop_domain=req.shop_domain).delete()
             evidence["pending_installs_deleted"] = deleted
+
+            # A5-PR2b: rejected evidence survives ShopifyStore deletion by design
+            # (SET_NULL + snapshots), so when the store rows themselves are gone
+            # the per-store loop above never runs — sweep the domain's evidence
+            # directly by its shop_domain snapshot, across companies. Fresh
+            # rls_bypass() wrap (FORCE-RLS table; earlier emits cleared the
+            # session). Idempotent over rows the per-store pass already scrubbed.
+            with rls_bypass():
+                evidence["records_scrubbed"] += redact_evidence(
+                    ShopifyRejectedEvidence.objects.filter(shop_domain=req.shop_domain)
+                )
 
     _complete(
         req,

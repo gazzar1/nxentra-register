@@ -581,7 +581,10 @@ class ShopifyWebhookView(APIView):
 
         try:
             payload = json.loads(body)
-        except json.JSONDecodeError as json_error:
+        except (json.JSONDecodeError, UnicodeDecodeError) as json_error:
+            # UnicodeDecodeError: an HMAC-valid body that is not even UTF-8 —
+            # json.loads raises it BEFORE JSONDecodeError, and it is not a
+            # JSONDecodeError subclass; uncaught it would 500-loop the delivery.
             logger.error("Invalid JSON in Shopify webhook body")
             # A5-PR2b: an HMAC-VALID but unparseable body for an order/refund
             # topic is authenticated malformed evidence — persist it durably
@@ -1501,8 +1504,10 @@ class ShopifyRejectedEvidenceListView(APIView):
     (its evidence never enters any financial reader — separate table).
 
     Default listing is the OPEN operator queue: acknowledged=False AND not
-    superseded. Filters: acknowledged (true|false|all), resource_kind,
-    rejection_code, include_superseded (default false).
+    superseded. The acknowledged filter is tri-state: "false"/absent = open;
+    "true" = CLOSED (operator-acknowledged OR healed/superseded — a superseded
+    row left the queue without needing an ack); "all" = everything. Additional
+    filters: resource_kind, rejection_code.
 
     Pagination is KEYSET on the immutable primary key, newest first (`-id`):
     `limit` (default 100, max 500) + `cursor` (the previous page's
@@ -1520,16 +1525,18 @@ class ShopifyRejectedEvidenceListView(APIView):
         # PII) — same read gate as the sibling import-reject queue.
         require(actor, "reports.view")
 
+        from django.db.models import Q
+
         qs = ShopifyRejectedEvidence.objects.filter(company=actor.company)
 
         acknowledged = request.query_params.get("acknowledged")
         if acknowledged == "true":
-            qs = qs.filter(acknowledged=True)
+            # Closed: operator-acknowledged OR healed by a corrected redelivery.
+            qs = qs.filter(Q(acknowledged=True) | Q(superseded_at__isnull=False))
         elif acknowledged == "false" or acknowledged is None:
-            qs = qs.filter(acknowledged=False)
-
-        if request.query_params.get("include_superseded") != "true":
-            qs = qs.filter(superseded_at__isnull=True)
+            # Open: the operator queue predicate (matches the partial index).
+            qs = qs.filter(acknowledged=False, superseded_at__isnull=True)
+        # "all": everything, superseded included.
 
         resource_kind = request.query_params.get("resource_kind")
         if resource_kind:
@@ -1602,9 +1609,20 @@ class ShopifyRejectedEvidenceAcknowledgeView(APIView):
         from django.utils import timezone as dj_timezone
 
         note = (request.data.get("acknowledgment_note") or "").strip()[:2000]
-        row.acknowledged = True
-        row.acknowledged_at = dj_timezone.now()
-        row.acknowledged_by = request.user
-        row.acknowledgment_note = note
-        row.save(update_fields=["acknowledged", "acknowledged_at", "acknowledged_by", "acknowledgment_note"])
+        # Conditional queryset UPDATE (not read-modify-write): a concurrent
+        # re-sight clears acknowledgment atomically, and this must not clobber
+        # that reopen with stale instance state — acknowledge only the row as it
+        # is NOW (still unacknowledged), else report the current state.
+        updated = ShopifyRejectedEvidence.objects.filter(pk=row.pk, company=actor.company, acknowledged=False).update(
+            acknowledged=True,
+            acknowledged_at=dj_timezone.now(),
+            acknowledged_by=request.user,
+            acknowledgment_note=note,
+        )
+        row.refresh_from_db()
+        if not updated:
+            return Response(
+                {"detail": "Already acknowledged.", **_serialize_rejected_evidence(row)},
+                status=status.HTTP_200_OK,
+            )
         return Response(_serialize_rejected_evidence(row))

@@ -518,6 +518,12 @@ def test_redaction_clears_pii_and_resight_never_restores_it(shopify_store, compa
     assert row.parsed_payload is None
     assert row.raw_body_b64 == ""
     assert row.redacted_at is not None
+    # Defect messages quoted payload value reprs — those are scrubbed too;
+    # codes and field names (interpretation, not PII) survive.
+    assert "abc" not in row.rejection_message
+    assert row.rejection_code in row.rejection_message
+    assert all(e["message"] == "[redacted]" for e in row.validation_errors)
+    assert all(e["code"] for e in row.validation_errors)
     payload_hash_before = row.payload_hash
     redacted_at_before = row.redacted_at
 
@@ -711,11 +717,14 @@ def test_queue_defaults_to_open_and_keyset_paginates(shopify_store, company, own
     assert body2["results"] == []
     assert body2["next_cursor"] is None
 
-    # acknowledged=all + include_superseded=true surfaces everything.
-    resp3 = authenticated_client.get(
-        "/api/shopify/rejected-evidence/", {"acknowledged": "all", "include_superseded": "true"}
-    )
+    # acknowledged=all surfaces everything, superseded included.
+    resp3 = authenticated_client.get("/api/shopify/rejected-evidence/", {"acknowledged": "all"})
     assert resp3.json()["total_count"] == 3
+
+    # acknowledged=true is CLOSED semantics: acknowledged OR healed/superseded —
+    # a superseded row must not vanish from both Open and Resolved.
+    resp4 = authenticated_client.get("/api/shopify/rejected-evidence/", {"acknowledged": "true"})
+    assert resp4.json()["total_count"] == 2
 
 
 def test_acknowledge_endpoint_owner_only(
@@ -865,3 +874,179 @@ def test_null_customer_payload_stays_valid(shopify_store, company):
     del payload["shipping_lines"]
     assert commands.process_order_paid(shopify_store, payload).success
     assert ShopifyRejectedEvidence.objects.filter(company=company).count() == 0
+
+
+# =============================================================================
+# Adversarial-review fix pins (pre-push multi-lens review, 2026-08-23)
+# =============================================================================
+
+
+def test_null_note_refund_is_routine_and_processes(shopify_store, company):
+    """note: null is a ROUTINE Shopify refund shape (the poller's GraphQL mapper
+    normalizes it with `r.get("note") or ""`); the webhook ingress must process
+    it, not reject it as evidence."""
+    assert commands.process_order_paid(shopify_store, _order_payload(order_id=5100100)).success
+
+    result = commands.process_refund(shopify_store, _refund_payload(refund_id=5200100, order_id=5100100, note=None))
+    assert result.success, result.error
+    refund = ShopifyRefund.objects.get(company=company, shopify_refund_id=5200100)
+    assert refund.reason == ""
+    assert ShopifyRejectedEvidence.objects.filter(company=company).count() == 0
+
+
+def test_nonfinite_money_rejects_and_evidence_is_storable(shopify_store, company):
+    """json.loads accepts bare NaN/Infinity tokens; PostgreSQL jsonb refuses
+    them. The verdict must be MALFORMED_MONEY and the stored parsed_payload
+    must be sanitized so the evidence INSERT itself can never fail over the
+    very token that made the payload malformed."""
+    raw = json.dumps(_order_payload(order_id=5100101)).replace('"500.00"', "NaN", 1).encode()
+    assert json.loads(raw)["total_price"] != json.loads(raw)["total_price"]  # NaN round-trips
+
+    resp = _post_raw_webhook("orders/paid", raw)
+    assert resp.status_code == 200
+    row = _evidence(company)
+    assert row.rejection_code == ShopifyRejectedEvidence.RejectionCode.MALFORMED_MONEY
+    assert row.parsed_payload["total_price"] == "nan"  # sanitized for storage
+    # Identity was hashed from the ORIGINAL parsed value, not the sanitized one.
+    assert row.payload_hash == re_mod.canonical_payload_hash(json.loads(raw))
+
+
+def test_exotic_id_strings_classify_instead_of_crashing(shopify_store, company):
+    """str.isdigit() accepts superscripts that make int() raise, and CPython
+    caps int() conversion length — both must classify as untrustworthy ids, not
+    crash the validator into a 500/503 loop."""
+    superscript_two = "²"
+    arabic_digits = "١٢٣"
+    for bad_id in (superscript_two, "9" * 5000, arabic_digits):
+        resp = _post_webhook("orders/paid", _order_payload(id=bad_id))
+        assert resp.status_code == 200, f"id {bad_id[:10]!r} must be classified, not crash"
+    rows = ShopifyRejectedEvidence.objects.filter(company=company)
+    assert rows.count() == 3  # three distinct payloads -> three evidence rows
+    assert all(r.rejection_code == ShopifyRejectedEvidence.RejectionCode.MISSING_EXTERNAL_ID for r in rows)
+    assert all(r.external_id is None for r in rows)
+
+
+def test_null_nested_money_is_permanent_not_retry_loop(shopify_store, company):
+    """A present-as-null amount inside transactions crashes the live
+    Decimal(str(None)) coercion — it must classify as MALFORMED_MONEY evidence,
+    never fall through to the transient 503 path."""
+    payload = _order_payload(
+        order_id=5100102,
+        transactions=[{"kind": "sale", "status": "success", "amount": None}],
+    )
+    resp = _post_webhook("orders/paid", payload)
+    assert resp.status_code == 200
+    assert _evidence(company).rejection_code == ShopifyRejectedEvidence.RejectionCode.MALFORMED_MONEY
+
+
+def test_truthy_garbage_created_at_is_malformed_date(shopify_store, company):
+    """The live writer stores the RAW created_at into shopify_created_at when
+    truthy (`order_date_str or now()`) — the date FALLBACK only covers the
+    falsy case. A truthy unparseable value must be MALFORMED_DATE evidence, not
+    a post-validation crash into the endless retry loop."""
+    resp = _post_webhook("orders/paid", _order_payload(order_id=5100103, created_at="not-a-date"))
+    assert resp.status_code == 200
+    assert _evidence(company).rejection_code == ShopifyRejectedEvidence.RejectionCode.MALFORMED_DATE
+    assert ShopifyOrder.objects.filter(company=company).count() == 0
+
+
+def test_falsy_or_absent_created_at_keeps_the_fallback(shopify_store, company):
+    """The documented fallback shapes stay VALID: absent or empty created_at
+    books on now() exactly as today."""
+    p1 = _order_payload(order_id=5100104, created_at="")
+    assert commands.process_order_paid(shopify_store, p1).success
+    p2 = _order_payload(order_id=5100105)
+    del p2["created_at"]
+    assert commands.process_order_paid(shopify_store, p2).success
+    assert ShopifyRejectedEvidence.objects.filter(company=company).count() == 0
+
+
+def test_money_bound_guards_database_rounding(shopify_store, company):
+    """A value the database would ROUND over the 16-integer-digit ceiling must
+    reject as MALFORMED_MONEY, not overflow numeric(18,2) post-validation."""
+    resp = _post_webhook("orders/paid", _order_payload(order_id=5100106, total_price="9999999999999999.999"))
+    assert resp.status_code == 200
+    assert _evidence(company).rejection_code == ShopifyRejectedEvidence.RejectionCode.MALFORMED_MONEY
+
+
+def test_skip_guard_supersedes_open_order_evidence(shopify_store, company):
+    """A malformed duplicate arriving AFTER the order already processed leaves
+    open evidence; the NEXT valid redelivery hits the idempotency skip-guard —
+    which must supersede that evidence, not strand it open forever."""
+    good = _order_payload(order_id=5100107)
+    assert commands.process_order_paid(shopify_store, good).success
+
+    bad = _order_payload(order_id=5100107, total_price="abc")
+    assert _post_webhook("orders/paid", bad).status_code == 200
+    evidence = _evidence(company)
+    assert evidence.superseded_at is None
+
+    resp = _post_webhook("orders/paid", good)
+    assert resp.status_code == 200  # skipped (already processed)
+    evidence.refresh_from_db()
+    order = ShopifyOrder.objects.get(company=company, shopify_order_id=5100107)
+    assert evidence.superseded_at is not None
+    assert evidence.superseded_by_order_id == order.pk
+    assert evidence.superseded_target_public_id == order.public_id
+
+
+def test_skip_guard_supersedes_open_refund_evidence(shopify_store, company):
+    """The refund-side mirror: a processed canonical refund heals open evidence
+    for its identity via the dedup skip-guard."""
+    assert commands.process_order_paid(shopify_store, _order_payload(order_id=5100108)).success
+    good = _refund_payload(refund_id=5200108, order_id=5100108)
+    assert commands.process_refund(shopify_store, good).success
+
+    bad = _refund_payload(refund_id=5200108, order_id=5100108, transactions=None)
+    assert _post_webhook("refunds/create", bad).status_code == 200
+    evidence = ShopifyRejectedEvidence.objects.get(
+        company=company, resource_kind=ShopifyRejectedEvidence.ResourceKind.REFUND
+    )
+    assert evidence.superseded_at is None
+
+    assert _post_webhook("refunds/create", good).status_code == 200  # skipped
+    evidence.refresh_from_db()
+    refund = ShopifyRefund.objects.get(company=company, shopify_refund_id=5200108)
+    assert evidence.superseded_at is not None
+    assert evidence.superseded_by_refund_id == refund.pk
+
+
+def test_shop_redact_reaches_evidence_after_store_deletion(shopify_store, company):
+    """Evidence survives ShopifyStore deletion by design (SET_NULL + snapshots);
+    shop/redact must still scrub it via the shop_domain snapshot sweep."""
+    from shopify_connector.gdpr import execute_shop_redact
+    from shopify_connector.models import GdprRequest
+
+    _post_webhook(
+        "orders/paid",
+        _order_payload(order_id=5100109, total_price="abc", customer={"id": 9, "email": "gone@example.com"}),
+    )
+    row = _evidence(company)
+    ShopifyStore.objects.filter(pk=shopify_store.pk).delete()
+    row.refresh_from_db()
+    assert row.store_id is None  # SET_NULL fired; snapshots remain
+
+    req = GdprRequest.objects.create(
+        topic=GdprRequest.Topic.SHOP_REDACT,
+        shop_domain=SHOP_DOMAIN,
+        payload={"shop_domain": SHOP_DOMAIN},
+        payload_signature="sig-a5pr2b-store-deleted",
+        status=GdprRequest.Status.PENDING,
+    )
+    execute_shop_redact(req)
+    row.refresh_from_db()
+    assert row.redacted_at is not None
+    assert row.parsed_payload is None
+    assert row.shop_domain == SHOP_DOMAIN  # attribution snapshot survives
+
+
+def test_invalid_utf8_body_is_captured_as_malformed_json(shopify_store, company):
+    """json.loads raises UnicodeDecodeError (not JSONDecodeError) for an
+    HMAC-valid non-UTF-8 body — it must be captured as MALFORMED_JSON evidence,
+    not escape as an unhandled 500 loop."""
+    raw = b'\xff\xfe{"id": 1}'
+    resp = _post_raw_webhook("orders/paid", raw)
+    assert resp.status_code == 200
+    row = _evidence(company)
+    assert row.rejection_code == ShopifyRejectedEvidence.RejectionCode.MALFORMED_JSON
+    assert base64.b64decode(row.raw_body_b64) == raw

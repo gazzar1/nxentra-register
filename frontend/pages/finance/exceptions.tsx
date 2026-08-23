@@ -196,11 +196,11 @@ export default function ExceptionsPage() {
         importRejectedRowsService.list({ resolved: resolvedFilter, limit: 100 }),
         // Filter-independent unresolved count for the summary card (see state).
         importRejectedRowsService.list({ resolved: "false", limit: 1 }),
-        // A5-PR2b: the Shopify evidence queue maps the page filter onto its
-        // acknowledged/superseded semantics ("all" includes superseded rows).
+        // A5-PR2b: the Shopify evidence queue's acknowledged filter is
+        // tri-state and maps 1:1 onto the page filter ("true" = closed:
+        // acknowledged OR healed/superseded).
         shopifyRejectedEvidenceService.list({
-          acknowledged: resolvedFilter === "all" ? "all" : resolvedFilter,
-          ...(resolvedFilter === "all" ? { include_superseded: "true" as const } : {}),
+          acknowledged: resolvedFilter,
           limit: 100,
         }),
         // Filter-independent OPEN count for the summary fold.
@@ -294,8 +294,7 @@ export default function ExceptionsPage() {
     setLoadingMoreEvidence(true);
     try {
       const next = await shopifyRejectedEvidenceService.list({
-        acknowledged: resolvedFilter === "all" ? "all" : resolvedFilter,
-        ...(resolvedFilter === "all" ? { include_superseded: "true" as const } : {}),
+        acknowledged: resolvedFilter,
         limit: 100,
         cursor,
       });
@@ -903,16 +902,16 @@ export default function ExceptionsPage() {
                               {r.redacted_at ? (
                                 <p className="text-xs text-muted-foreground">
                                   Payload redacted (GDPR) on {r.redacted_at} — hashes and rejection
-                                  detail retained.
+                                  codes retained.
                                 </p>
-                              ) : r.parsed_payload ? (
+                              ) : r.parsed_payload !== null ? (
                                 <pre className="max-h-64 overflow-auto rounded border bg-background p-3 font-mono text-xs">
                                   {JSON.stringify(r.parsed_payload, null, 2)}
                                 </pre>
                               ) : (
                                 <p className="text-xs text-muted-foreground">
                                   Body was not valid JSON — the exact authenticated bytes are
-                                  preserved server-side (base64, {r.raw_body_b64.length} chars).
+                                  preserved (base64, {r.raw_body_b64.length} chars).
                                 </p>
                               )}
                             </div>

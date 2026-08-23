@@ -24,15 +24,22 @@ the canonical row write not to crash post-validation (CharField null/length
 bounds, non-dict ``customer``, non-indexable ``payment_gateway_names``) — each
 such payload is precisely one from which the honest row cannot be constructed.
 Anything the live code tolerates today (absent keys, ``customer: null``,
-``transactions: null`` on orders, malformed dates → documented date fallback)
-stays VALID: the validator must never reject a payload the pipeline can
-honestly process. MALFORMED_DATE stays a reserved code — unparseable dates fall
-back (never reject) because quarantining an otherwise-real sale is worse for a
-reconciliation ledger than booking on the fallback date.
+``transactions: null`` on orders, ``note: null`` on refunds — normalized at the
+ingress, absent/empty dates → documented fallback) stays VALID: the validator
+must never reject a payload the pipeline can honestly process.
+
+MALFORMED_DATE is emitted ONLY for a truthy ``created_at`` the DateTimeField
+cannot store: the live writers store the RAW ``created_at`` string into
+``shopify_created_at`` whenever it is truthy (``order_date_str or now()``), so
+a truthy unparseable value crashes the row write — the date FALLBACK only ever
+covers the falsy/absent case (and the derived ``order_date``/``paid_date``,
+which keep their fallback and are never validated).
 """
 
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
+
+from django.utils.dateparse import parse_date, parse_datetime
 
 # Mirror ShopifyRejectedEvidence.RejectionCode values without importing models
 # (pure-module contract; equality is pinned by tests).
@@ -40,11 +47,13 @@ MALFORMED_JSON = "MALFORMED_JSON"
 MISSING_EXTERNAL_ID = "MISSING_EXTERNAL_ID"
 MALFORMED_MONEY = "MALFORMED_MONEY"
 MALFORMED_CURRENCY = "MALFORMED_CURRENCY"
-MALFORMED_DATE = "MALFORMED_DATE"  # reserved — see module docstring
+MALFORMED_DATE = "MALFORMED_DATE"  # raw-stored created_at only — see module docstring
 MALFORMED_STRUCTURE = "MALFORMED_STRUCTURE"
 
 # DecimalField(max_digits=18, decimal_places=2) holds < 10^16 in integer digits.
-_MONEY_MAX = Decimal(10) ** 16
+# The extra unit of margin keeps a value like 9999999999999999.999 — which the
+# database would ROUND over the 16-digit ceiling — out of the storable range.
+_MONEY_MAX = Decimal(10) ** 16 - 1
 _BIGINT_MAX = 9223372036854775807
 
 
@@ -74,13 +83,16 @@ def _defect(code: str, fld: str, message: str) -> dict:
 
 def trustworthy_external_id(value) -> str | None:
     """A Shopify id we can honestly key rows on: a positive BigInteger-range int,
-    or a pure-digit string of one. Anything else is untrustworthy and must stay
-    in the raw evidence only."""
+    or a pure ASCII-digit string of one. Anything else is untrustworthy and must
+    stay in the raw evidence only. ASCII + length are checked BEFORE int(): bare
+    str.isdigit() accepts superscripts ("²") that make int() raise ValueError,
+    and an unbounded digit string would trip CPython's int-conversion limit —
+    either would crash the validator instead of classifying the payload."""
     if isinstance(value, bool):
         return None
     if isinstance(value, int) and 0 < value <= _BIGINT_MAX:
         return str(value)
-    if isinstance(value, str) and value.isdigit():
+    if isinstance(value, str) and value.isascii() and value.isdigit() and len(value) <= 19:
         as_int = int(value)
         if 0 < as_int <= _BIGINT_MAX:
             return str(as_int)
@@ -118,7 +130,9 @@ def _bounded_text_defect(value, fld: str, max_length: int, *, allow_none: bool) 
 
 def _dict_list_defects(value, fld: str, money_keys: tuple[str, ...]) -> list[dict]:
     """Founder-enumerated shape: a list of dicts whose money keys, when present,
-    are finite numerics."""
+    are finite numerics. Present-as-null money is a defect too — the live
+    coercion is ``Decimal(str(element.get(key, "0")))``, and ``str(None)``
+    raises, so a null amount crashes post-validation into the retry loop."""
     if not isinstance(value, list):
         return [_defect(MALFORMED_STRUCTURE, fld, f"{fld} is not a list: {_short(value)}")]
     defects: list[dict] = []
@@ -129,11 +143,38 @@ def _dict_list_defects(value, fld: str, money_keys: tuple[str, ...]) -> list[dic
             )
             continue
         for key in money_keys:
-            if key in element and element[key] is not None:
+            if key in element:
+                if element[key] is None:
+                    defects.append(_defect(MALFORMED_MONEY, f"{fld}[{index}].{key}", f"{key} is null"))
+                    continue
                 money = _money_defect(element[key], f"{fld}[{index}].{key}")
                 if money:
                     defects.append(money)
     return defects
+
+
+def _raw_stored_datetime_defect(payload, fld: str) -> dict | None:
+    """The live writers store the RAW ``created_at`` value into the NOT NULL
+    ``shopify_created_at`` DateTimeField whenever it is truthy (falsy falls back
+    to now()). A truthy value must therefore be a string Django's
+    DateTimeField.to_python accepts (parse_datetime, then parse_date) — anything
+    else crashes the row write AFTER validation, which would misclassify a
+    permanent provider-data error as an endless transient retry."""
+    value = payload.get(fld)
+    if not value:
+        return None  # falsy ⇒ the live `or now()` fallback
+    if not isinstance(value, str):
+        return _defect(MALFORMED_DATE, fld, f"{fld} is not a datetime string: {_short(value)}")
+    try:
+        parsed = parse_datetime(value)
+        if parsed is None:
+            parsed = parse_date(value)
+    except ValueError:
+        # Well-formatted but impossible (e.g. month 13) — same storage crash.
+        parsed = None
+    if parsed is None:
+        return _defect(MALFORMED_DATE, fld, f"{fld} is not a storable datetime: {_short(value)}")
+    return None
 
 
 def _verdict(errors: list[dict], external_id: str | None, parent_external_id: str | None) -> PayloadVerdict:
@@ -276,6 +317,13 @@ def validate_order_paid_payload(payload) -> PayloadVerdict:
     if customer and not isinstance(customer, dict):
         errors.append(_defect(MALFORMED_STRUCTURE, "customer", f"customer is not an object: {_short(customer)}"))
 
+    # 10. created_at is RAW-stored into shopify_created_at when truthy (see
+    #     _raw_stored_datetime_defect). updated_at is only parsed with a
+    #     fallback (paid_date) and never stored raw — no constraint.
+    date_defect = _raw_stored_datetime_defect(payload, "created_at")
+    if date_defect:
+        errors.append(date_defect)
+
     return _verdict(errors, external_id, None)
 
 
@@ -323,11 +371,19 @@ def validate_refund_payload(payload) -> PayloadVerdict:
         else:
             errors.extend(_dict_list_defects(payload["refund_line_items"], "refund_line_items", ("subtotal",)))
 
-    # note: null crashes ShopifyRefund.reason (live code passes it through);
-    # other scalars are str()-coerced. Length is bounded by the 255-char column.
+    # note: null is a ROUTINE Shopify shape (the poller's GraphQL mapper already
+    # normalizes it with `r.get("note") or ""`; process_refund now applies the
+    # same normalization at the shared ingress) — tolerated. Only an over-long
+    # value is unstorable in the 255-char column.
     if "note" in payload:
-        note_defect = _bounded_text_defect(payload["note"], "note", 255, allow_none=False)
+        note_defect = _bounded_text_defect(payload["note"], "note", 255, allow_none=True)
         if note_defect:
             errors.append(note_defect)
+
+    # created_at is RAW-stored into ShopifyRefund.shopify_created_at when truthy
+    # (all three creation sites use `refund_date_str or now()`).
+    date_defect = _raw_stored_datetime_defect(payload, "created_at")
+    if date_defect:
+        errors.append(date_defect)
 
     return _verdict(errors, external_id, parent_external_id)

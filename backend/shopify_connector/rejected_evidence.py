@@ -29,13 +29,18 @@ Write-barrier posture: plain operational write-model (the ``ImportRejectedRow``
 precedent) — records the ABSENCE of a canonical fact; no barrier context.
 
 RLS posture: ``shopify_rejected_evidence`` carries a FORCED tenant-isolation
-policy (migration 0024). The webhook request session has no tenant context
-(``AllowAny``; ``TenantRlsMiddleware`` CASE 5), so the writer establishes
+policy (migration 0024). The webhook request session has no tenant context of
+its own (``AllowAny``; ``TenantRlsMiddleware`` CASE 5 — which today also sets
+the session ``rls_bypass`` GUC for unauthenticated paths, a pre-existing
+middleware posture this PR does not change), so the writer establishes
 ``app.current_company_id`` for the store's company on the working connection
-before writing — the write passes the policy's company predicate on its own,
-with no bypass granted here (founder decision: no broad bypass for normal
-evidence writes). No-op on SQLite; idempotent under the poller's already
-established tenant context.
+before writing. THIS module grants no bypass anywhere (founder decision: no
+broad bypass for normal evidence writes) — the write passes the policy's
+company predicate on its own, proven under a NOBYPASSRLS role with bypass OFF
+by tests/e2e/test_a5_pr2b_rejected_evidence_rls.py. No-op on SQLite; idempotent
+under the poller's already established tenant context. The same context
+re-establishment guards :func:`supersede_open_evidence`, which runs after
+``emit_event_no_actor`` has CLEARED the connection's RLS session settings.
 """
 
 import base64
@@ -76,6 +81,23 @@ def canonical_payload_hash(payload) -> str:
     raw unicode). Two payloads equal up to key order hash identically."""
     canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _storable_json(value):
+    """Replace non-finite floats with their string form, recursively. Python's
+    json.loads accepts bare NaN/Infinity tokens, but PostgreSQL jsonb refuses
+    them — an unsanitized parsed_payload would make the evidence INSERT itself
+    fail, turning a permanent provider-data error into the endless retry loop
+    this table exists to prevent. Identity is unaffected: payload_hash is
+    computed from the ORIGINAL parsed value before sanitization. No-op (returns
+    the same structure) for every normal payload."""
+    if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+        return repr(value)
+    if isinstance(value, dict):
+        return {key: _storable_json(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_storable_json(item) for item in value]
+    return value
 
 
 def compute_dedup_hash(company_id: int, store_public_id, resource_kind: str, payload_hash: str) -> str:
@@ -143,7 +165,7 @@ def record_rejected_evidence(
                     source_topic=ingress.topic[:64],
                     external_id=external_id,
                     parent_external_id=parent_external_id,
-                    parsed_payload=parsed_payload,
+                    parsed_payload=_storable_json(parsed_payload) if parsed_payload is not None else None,
                     raw_body_b64=raw_body_b64,
                     payload_hash=payload_hash,
                     transport_hash=transport_hash,
@@ -242,6 +264,13 @@ def supersede_open_evidence(
     target = order if order is not None else refund
     if not external_id or target is None:
         return 0
+    # FORCED RLS: re-establish the company context on this connection before the
+    # UPDATE. The healing paths run AFTER emit_event_no_actor, whose `finally`
+    # CLEARS the connection's RLS session settings (the documented
+    # _reassert_shopify_rls exposure) — without this, the UPDATE would silently
+    # match ZERO rows on a shared-tenant PostgreSQL deployment and supersession
+    # would never be recorded. No-op on SQLite; idempotent elsewhere.
+    rls.set_current_company_id(store.company_id)
     # Canonical digit form — evidence stores trustworthy ids via
     # payload_validation.trustworthy_external_id, which normalizes "0123" → "123".
     ext = str(external_id)
@@ -263,12 +292,26 @@ def supersede_open_evidence(
 
 def redact_evidence(queryset) -> int:
     """GDPR scrub for the given evidence rows: clear ``parsed_payload`` /
-    ``raw_body_b64`` and stamp ``redacted_at``. Hashes, codes, timestamps and
-    evidence identity remain unchanged; re-sighting never restores PII
-    (:func:`record_rejected_evidence` writes no payload field on a bump).
-    Idempotent — already-redacted rows are left untouched."""
-    return queryset.filter(redacted_at__isnull=True).update(
-        parsed_payload=None,
-        raw_body_b64="",
-        redacted_at=timezone.now(),
-    )
+    ``raw_body_b64``, scrub the payload-value fragments embedded in
+    ``rejection_message`` / ``validation_errors`` (the validator's defect
+    messages quote a truncated repr of the offending value, which can itself
+    carry PII), and stamp ``redacted_at``. Hashes, CODES, defect FIELD names,
+    timestamps and evidence identity remain unchanged; re-sighting never
+    restores PII (:func:`record_rejected_evidence` writes no payload or message
+    field on a bump). Idempotent — already-redacted rows are left untouched."""
+    scrubbed = 0
+    now = timezone.now()
+    for row in queryset.filter(redacted_at__isnull=True):
+        ShopifyRejectedEvidence.objects.filter(pk=row.pk).update(
+            parsed_payload=None,
+            raw_body_b64="",
+            rejection_message=f"{row.rejection_code} (defect details redacted under GDPR)",
+            validation_errors=[
+                {"code": e.get("code", ""), "field": e.get("field", ""), "message": "[redacted]"}
+                for e in (row.validation_errors or [])
+                if isinstance(e, dict)
+            ],
+            redacted_at=now,
+        )
+        scrubbed += 1
+    return scrubbed
