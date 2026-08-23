@@ -162,6 +162,27 @@ def _dict_list_defects(value, fld: str, money_keys: tuple[str, ...]) -> list[dic
     return defects
 
 
+def _nonfinite_defects(payload) -> list[dict]:
+    """json.loads accepts bare NaN/Infinity tokens ANYWHERE in the document, but
+    PostgreSQL jsonb refuses them — a non-finite float in even an unchecked
+    metadata field would crash the canonical ``raw_payload`` write AFTER
+    validation, into the retryable loop (Codex round-2; the evidence writer
+    already sanitizes its own storage, so rejecting here yields durable
+    evidence). Iterative walk — a deeply nested payload must not RecursionError
+    the validator — capped at 10 reported sites (one is enough to reject)."""
+    defects: list[dict] = []
+    stack: list[tuple[str, object]] = [("payload", payload)]
+    while stack and len(defects) < 10:
+        path, value = stack.pop()
+        if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+            defects.append(_defect(MALFORMED_STRUCTURE, path, "non-finite number is not JSON-storable"))
+        elif isinstance(value, dict):
+            stack.extend((f"{path}.{key}", item) for key, item in value.items())
+        elif isinstance(value, list):
+            stack.extend((f"{path}[{index}]", item) for index, item in enumerate(value))
+    return defects
+
+
 def _raw_stored_datetime_defect(payload, fld: str) -> dict | None:
     """The live writers store the RAW ``created_at`` value into the NOT NULL
     ``shopify_created_at`` DateTimeField whenever it is truthy (falsy falls back
@@ -355,6 +376,12 @@ def validate_order_paid_payload(payload) -> PayloadVerdict:
     if date_defect:
         errors.append(date_defect)
 
+    # 11. Non-finite floats ANYWHERE poison the canonical raw_payload jsonb
+    #     write. Runs LAST so a money-field NaN keeps its specific
+    #     MALFORMED_MONEY primary code (this may add a duplicate entry for such
+    #     fields — validation_errors deliberately records every detected defect).
+    errors.extend(_nonfinite_defects(payload))
+
     return _verdict(errors, external_id, None)
 
 
@@ -440,5 +467,9 @@ def validate_refund_payload(payload) -> PayloadVerdict:
                     f"aggregate refund amount exceeds the storable money magnitude: {total}",
                 )
             )
+
+    # Non-finite floats anywhere poison the canonical raw_payload jsonb write —
+    # same rule as the order validator (runs last; see _nonfinite_defects).
+    errors.extend(_nonfinite_defects(payload))
 
     return _verdict(errors, external_id, parent_external_id)

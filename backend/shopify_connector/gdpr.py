@@ -145,8 +145,12 @@ def _matching_rejected_evidence(store, customer_id, customer_email, order_ids):
         customer = (row.parsed_payload or {}).get("customer") if isinstance(row.parsed_payload, dict) else None
         if not isinstance(customer, dict):
             continue
+        # isinstance guard (Codex round-2): rejected evidence deliberately
+        # preserves malformed shapes — a non-str email must not crash the GDPR
+        # job with .lower(); it simply cannot match by email.
+        row_email = customer.get("email")
         if (customer_id and str(customer.get("id")) == str(customer_id)) or (
-            customer_email and (customer.get("email") or "").lower() == customer_email.lower()
+            customer_email and isinstance(row_email, str) and row_email.lower() == customer_email.lower()
         ):
             matched_pks.add(row.pk)
     return ShopifyRejectedEvidence.objects.filter(pk__in=matched_pks)
@@ -198,15 +202,23 @@ def execute_customer_data_request(req: GdprRequest) -> dict:
 
     payload = req.payload or {}
     order_ids = payload.get("orders_requested") or []
-    evidence = {"companies_matched": 0, "orders_matched": 0, "export": []}
+    evidence = {"companies_matched": 0, "orders_matched": 0, "rejected_evidence_matched": 0, "export": []}
 
     with rls_bypass():
         for store in _stores_for_domain(req.shop_domain):
             orders = _matching_orders(store, req.customer_id, req.customer_email, order_ids)
-            if not orders and not order_ids:
+            # A5-PR2b (Codex round-2): the shopper's data can live ONLY in
+            # rejected source evidence (a malformed payload that never became a
+            # canonical order) — a complete export must include it. Fresh
+            # rls_bypass() wrap: a previous iteration's emits cleared the RLS
+            # session and the evidence table is FORCE-RLS.
+            with rls_bypass():
+                rejected_rows = list(_matching_rejected_evidence(store, req.customer_id, req.customer_email, order_ids))
+            if not orders and not rejected_rows and not order_ids:
                 continue
             evidence["companies_matched"] += 1
             evidence["orders_matched"] += len(orders)
+            evidence["rejected_evidence_matched"] += len(rejected_rows)
             for order in orders:
                 raw = order.raw_payload or {}
                 evidence["export"].append(
@@ -220,6 +232,25 @@ def execute_customer_data_request(req: GdprRequest) -> dict:
                         "customer": raw.get("customer"),
                         "billing_address": raw.get("billing_address"),
                         "shipping_address": raw.get("shipping_address"),
+                    }
+                )
+            for row in rejected_rows:
+                # A malformed payload has no trustworthy shape — export the
+                # COMPLETE preserved payload (the shopper's data can sit
+                # anywhere in it). A redacted row exports its metadata only.
+                parsed = row.parsed_payload if isinstance(row.parsed_payload, dict) else {}
+                evidence["export"].append(
+                    {
+                        "company": str(store.company.public_id),
+                        "rejected_evidence": True,
+                        "resource_kind": row.resource_kind,
+                        "external_id": row.external_id,
+                        "parent_external_id": row.parent_external_id,
+                        "rejection_code": row.rejection_code,
+                        "first_seen_at": row.first_seen_at.isoformat() if row.first_seen_at else "",
+                        "redacted": row.redacted_at is not None,
+                        "customer": parsed.get("customer"),
+                        "payload": row.parsed_payload,
                     }
                 )
             with command_writes_allowed():

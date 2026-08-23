@@ -204,21 +204,38 @@ def record_rejected_evidence(
         # can quote a truncated repr of the offending payload value (possible
         # PII), and Notification rows sit outside the evidence table's
         # GDPR-redaction path — the reviewable detail lives in the queue.
-        from accounts.models import Notification
+        #
+        # BEST-EFFORT (Codex round-2): the evidence transaction above has
+        # COMMITTED. Raising here would 503 a delivery whose durable record
+        # already exists, and every redelivery takes the dedup path
+        # (created=False) — so the raise could never be retried into a
+        # notification anyway; it would only loop the webhook. The spec is
+        # explicit that Notification is delivery/visibility, NOT the durable
+        # source record — and /_health/alerts pages on the OPEN evidence count
+        # regardless, so a lost notification never hides the rejection.
+        try:
+            from accounts.models import Notification
 
-        Notification.notify_company_admins(
-            company=store.company,
-            title=f"Shopify {resource_kind.lower()} rejected — malformed payload",
-            message=(
-                f"A Shopify {resource_kind.lower()} payload ({ingress.topic}, "
-                f"{'id ' + external_id if external_id else 'no trustworthy id'}) could not be processed "
-                f"({rejection_code}). The authenticated payload is preserved as rejected evidence — no order, "
-                f"refund, event or journal was created. Review it under Finance → Exceptions."
-            ),
-            level=Notification.Level.ERROR,
-            link="/finance/exceptions",
-            source_module="shopify_connector",
-        )
+            Notification.notify_company_admins(
+                company=store.company,
+                title=f"Shopify {resource_kind.lower()} rejected — malformed payload",
+                message=(
+                    f"A Shopify {resource_kind.lower()} payload ({ingress.topic}, "
+                    f"{'id ' + external_id if external_id else 'no trustworthy id'}) could not be processed "
+                    f"({rejection_code}). The authenticated payload is preserved as rejected evidence — no order, "
+                    f"refund, event or journal was created. Review it under Finance → Exceptions."
+                ),
+                level=Notification.Level.ERROR,
+                link="/finance/exceptions",
+                source_module="shopify_connector",
+            )
+        except Exception:
+            logger.exception(
+                "Rejected-evidence notification failed for %s (%s) — the durable record is committed "
+                "and /_health/alerts still pages on it",
+                store.shop_domain,
+                resource_kind,
+            )
 
     return row, created
 

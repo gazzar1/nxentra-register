@@ -1161,6 +1161,111 @@ def test_aggregate_refund_amount_is_bounded(shopify_store, company):
     assert _evidence(company).rejection_code == ShopifyRejectedEvidence.RejectionCode.MALFORMED_MONEY
 
 
+# =============================================================================
+# Codex round-2 fix pins (PR #130, 2026-08-23)
+# =============================================================================
+
+
+def test_nonfinite_float_anywhere_rejects_permanently(shopify_store, company):
+    """Codex round-2 P2: json.loads accepts NaN/Infinity tokens anywhere;
+    PostgreSQL jsonb refuses them at the CANONICAL raw_payload write — a
+    non-finite value in even an unchecked metadata field must reject as
+    evidence up front, never crash post-validation into the retry loop."""
+    raw = json.dumps(_order_payload(order_id=5100120, note_attributes=[{"weight": 1.5}])).replace("1.5", "Infinity", 1)
+    resp = _post_raw_webhook("orders/paid", raw.encode())
+    assert resp.status_code == 200
+    row = _evidence(company)
+    assert row.rejection_code == ShopifyRejectedEvidence.RejectionCode.MALFORMED_STRUCTURE
+    assert any("non-finite" in e["message"] for e in row.validation_errors)
+    assert ShopifyOrder.objects.filter(company=company).count() == 0
+
+
+def test_data_request_export_includes_rejected_evidence(shopify_store, company):
+    """Codex round-2 P2: a shopper whose data exists ONLY as rejected evidence
+    (the malformed order never became a canonical row) must still appear in the
+    customers/data_request export."""
+    from shopify_connector.gdpr import execute_customer_data_request
+    from shopify_connector.models import GdprRequest
+
+    _post_webhook(
+        "orders/paid",
+        _order_payload(
+            order_id=5100121,
+            total_price="abc",
+            customer={"id": 4242, "email": "only-evidence@example.com"},
+        ),
+    )
+    assert ShopifyOrder.objects.filter(company=company).count() == 0
+
+    req = GdprRequest.objects.create(
+        topic=GdprRequest.Topic.CUSTOMERS_DATA_REQUEST,
+        shop_domain=SHOP_DOMAIN,
+        customer_id=4242,
+        customer_email="only-evidence@example.com",
+        payload={"customer": {"id": 4242, "email": "only-evidence@example.com"}},
+        payload_signature="sig-a5pr2b-data-request",
+        status=GdprRequest.Status.PENDING,
+    )
+    result = execute_customer_data_request(req)
+    assert result["rejected_evidence_matched"] == 1
+    exported = [e for e in result["export"] if e.get("rejected_evidence")]
+    assert len(exported) == 1
+    assert exported[0]["rejection_code"] == "MALFORMED_MONEY"
+    assert exported[0]["customer"]["email"] == "only-evidence@example.com"
+    assert exported[0]["payload"]["id"] == 5100121
+
+
+def test_redact_matcher_survives_non_string_email_in_evidence(shopify_store, company):
+    """Codex round-2 P2: evidence deliberately preserves malformed shapes — a
+    non-str customer.email must not crash the redact job's matcher; the row
+    still matches by customer id."""
+    from shopify_connector.gdpr import execute_customer_redact
+    from shopify_connector.models import GdprRequest
+
+    _post_webhook(
+        "orders/paid",
+        _order_payload(order_id=5100122, customer={"id": 777, "email": 12345}),
+    )
+    row = _evidence(company)
+    assert row.rejection_code == ShopifyRejectedEvidence.RejectionCode.MALFORMED_STRUCTURE
+
+    req = GdprRequest.objects.create(
+        topic=GdprRequest.Topic.CUSTOMERS_REDACT,
+        shop_domain=SHOP_DOMAIN,
+        customer_id=777,
+        customer_email="someone@example.com",
+        payload={"customer": {"id": 777, "email": "someone@example.com"}},
+        payload_signature="sig-a5pr2b-nonstr-email",
+        status=GdprRequest.Status.PENDING,
+    )
+    execute_customer_redact(req)  # must not raise
+    row.refresh_from_db()
+    assert row.redacted_at is not None
+    assert row.parsed_payload is None
+
+
+def test_notification_failure_never_blocks_committed_evidence(shopify_store, company, owner_membership, monkeypatch):
+    """Codex round-2 P2: once the evidence transaction has committed, a failing
+    notification must not 503 the delivery — every redelivery would take the
+    dedup path (created=False) and could never retry the notification anyway.
+    Notification is delivery-only; /_health/alerts pages on the open evidence."""
+    from accounts.models import Notification as NotificationModel
+    from ops.health import compute_alert_state
+
+    def _boom(**kwargs):
+        raise RuntimeError("notification backend down")
+
+    monkeypatch.setattr(NotificationModel, "notify_company_admins", _boom)
+    resp = _post_webhook("orders/paid", _order_payload(order_id=5100123, total_price="abc"))
+    assert resp.status_code == 200
+    row = _evidence(company)
+    assert row.occurrence_count == 1
+    assert NotificationModel.objects.filter(company=company).count() == 0
+    # The guaranteed pager still fires on the durable record.
+    state = compute_alert_state()
+    assert state["open_rejected_evidence"] == 1
+
+
 def test_redaction_clears_acknowledgment_note(shopify_store, company, user):
     """Codex round-1 P2: the acknowledgment note is free-form operator input
     shown next to the raw evidence — an operator can copy shopper PII into it,
