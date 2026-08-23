@@ -199,7 +199,11 @@ def record_rejected_evidence(
 
     if created:
         # Delivery/visibility only — the durable source record is the row above.
-        # Newly-created gate = the no-repeat-notification guarantee.
+        # Newly-created gate = the no-repeat-notification guarantee. The message
+        # carries CODES and ids only, never the defect detail: rejection_message
+        # can quote a truncated repr of the offending payload value (possible
+        # PII), and Notification rows sit outside the evidence table's
+        # GDPR-redaction path — the reviewable detail lives in the queue.
         from accounts.models import Notification
 
         Notification.notify_company_admins(
@@ -207,8 +211,8 @@ def record_rejected_evidence(
             title=f"Shopify {resource_kind.lower()} rejected — malformed payload",
             message=(
                 f"A Shopify {resource_kind.lower()} payload ({ingress.topic}, "
-                f"{'id ' + external_id if external_id else 'no trustworthy id'}) could not be processed: "
-                f"{rejection_message} The authenticated payload is preserved as rejected evidence — no order, "
+                f"{'id ' + external_id if external_id else 'no trustworthy id'}) could not be processed "
+                f"({rejection_code}). The authenticated payload is preserved as rejected evidence — no order, "
                 f"refund, event or journal was created. Review it under Finance → Exceptions."
             ),
             level=Notification.Level.ERROR,

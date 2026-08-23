@@ -240,3 +240,62 @@ def test_evidence_writer_passes_policy_without_bypass():
         if role_applied:
             with connection.cursor() as cur:
                 cur.execute("RESET ROLE")
+
+
+def test_supersession_survives_cleared_rls_session():
+    """The P1 the pre-push review confirmed: the healing paths call
+    supersede_open_evidence AFTER emit_event_no_actor, whose `finally` CLEARS
+    the connection's RLS session settings — under the FORCED policy the UPDATE
+    would then silently match ZERO rows. supersede_open_evidence must
+    re-establish the company context itself, so supersession is recorded even
+    from a cleared session with no bypass."""
+    from shopify_connector import rejected_evidence as re_mod
+    from shopify_connector.models import ShopifyOrder, ShopifyRejectedEvidence
+
+    role_applied = _make_role_enforce_rls()
+    try:
+        if _role_bypasses_rls():
+            pytest.skip("effective role bypasses RLS — cannot prove the cleared-session supersession")
+
+        a = _make_company()
+        store_a = _make_store(a)
+        row = _make_evidence(a, store_a, "to-be-superseded")
+        # Give the evidence a trustworthy identity the healer will match.
+        with rls.rls_bypass():
+            ShopifyRejectedEvidence.objects.filter(pk=row.pk).update(external_id="1")
+            from django.utils import timezone as tz
+
+            order = ShopifyOrder.objects.create(
+                company=a,
+                store=store_a,
+                shopify_order_id=1,
+                shopify_order_number="1",
+                total_price=1,
+                subtotal_price=1,
+                currency="EGP",
+                order_date=tz.now().date(),
+                shopify_created_at=tz.now(),
+            )
+
+        # Simulate the post-emit state: RLS session completely CLEARED, no
+        # bypass — exactly what emit_event_no_actor's finally leaves behind.
+        rls.set_rls_bypass(False)
+        rls.set_current_company_id(None)
+
+        updated = re_mod.supersede_open_evidence(
+            store=store_a,
+            resource_kind=ShopifyRejectedEvidence.ResourceKind.ORDER,
+            external_id="1",
+            order=order,
+        )
+        assert updated == 1, "supersession must not silently no-op from a cleared RLS session"
+        with rls.rls_bypass():
+            row.refresh_from_db()
+        assert row.superseded_at is not None
+        assert row.superseded_target_public_id == order.public_id
+    finally:
+        rls.set_current_company_id(None)
+        rls.set_rls_bypass(True)
+        if role_applied:
+            with connection.cursor() as cur:
+                cur.execute("RESET ROLE")
