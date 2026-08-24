@@ -23,6 +23,7 @@ from events.emitter import emit_event
 from events.types import EventTypes
 from projections.write_barrier import command_writes_allowed, projection_writes_allowed
 
+from . import rejected_evidence
 from .event_types import (
     ShopifyDisputeCreatedData,
     ShopifyDisputeWonData,
@@ -40,8 +41,10 @@ from .models import (
     ShopifyPayout,
     ShopifyPayoutTransaction,
     ShopifyRefund,
+    ShopifyRejectedEvidence,
     ShopifyStore,
 )
+from .payload_validation import validate_order_paid_payload, validate_refund_payload
 
 logger = logging.getLogger(__name__)
 
@@ -1218,7 +1221,55 @@ def verify_webhook_hmac(body: bytes, hmac_header: str) -> bool:
     return hmac.compare_digest(computed_b64, hmac_header)
 
 
-def process_order_paid(store: ShopifyStore, payload: dict) -> CommandResult:
+def _reject_malformed_payload(
+    store: ShopifyStore,
+    verdict,
+    *,
+    resource_kind: str,
+    ingress: "rejected_evidence.IngressContext",
+    payload,
+) -> CommandResult:
+    """A5-PR2b: a PERMANENT structural provider-data error — persist the durable
+    ``ShopifyRejectedEvidence`` record (own committed transaction, Notification
+    only when the row is newly created), then fail WITHOUT the retryable flag so
+    the webhook acknowledges (200, no 503 loop) and the poller merely counts an
+    error. No ShopifyOrder/ShopifyRefund row, no event, no journal.
+
+    If the durable record itself cannot be committed, the failure is RETRYABLE —
+    never acknowledge malformed evidence as handled when its record was not
+    stored (the view 503s; Shopify redelivers with backoff)."""
+    try:
+        row, _created = rejected_evidence.record_rejected_evidence(
+            store=store,
+            resource_kind=resource_kind,
+            rejection_code=verdict.rejection_code,
+            rejection_message=verdict.rejection_message,
+            validation_errors=verdict.errors,
+            ingress=ingress,
+            parsed_payload=payload,
+            external_id=verdict.external_id,
+            parent_external_id=verdict.parent_external_id,
+        )
+    except Exception:
+        logger.exception(
+            "Could not persist rejected %s evidence for %s — keeping the delivery retryable",
+            resource_kind,
+            store.shop_domain,
+        )
+        return CommandResult.fail(
+            f"Malformed {resource_kind.lower()} payload, and its rejected-evidence record could not "
+            f"be stored: {verdict.rejection_message}",
+            data={"retryable": True},
+        )
+    return CommandResult.fail(
+        f"Malformed {resource_kind.lower()} payload rejected: {verdict.rejection_message}",
+        data={"rejected": True, "rejected_evidence_id": row.id},
+    )
+
+
+def process_order_paid(
+    store: ShopifyStore, payload: dict, *, ingress: "rejected_evidence.IngressContext | None" = None
+) -> CommandResult:
     """
     Process an orders/paid webhook.
     Creates local ShopifyOrder record and emits event for projection.
@@ -1230,13 +1281,32 @@ def process_order_paid(store: ShopifyStore, payload: dict) -> CommandResult:
     currency) is resolved HERE, BEFORE the serialized mutation transaction, so the
     Company admission lock is never held across a Shopify network request. The
     frozen metadata is then applied under the lock in _process_order_paid_inner.
+
+    A5-PR2b ingress classification: the pure up-front validator (no lock, no
+    remote read, no write — safe in the A4 pre-lock region) decides PERMANENT:
+    a structurally malformed payload becomes durable ShopifyRejectedEvidence and
+    a non-retryable fail (webhook acks 200). Everything AFTER validation is
+    classified TRANSIENT (DB/network/lock — including Phase-1 remote metadata
+    failures): retryable, so the webhook 503s and Shopify redelivers instead of
+    silently consuming the order. ``ingress`` is delivery provenance (webhook
+    topic + delivery id + raw body); ``None`` means a poller-driven caller.
     """
+    ingress = ingress or rejected_evidence.poller_ingress("poller/orders-paid")
+    verdict = validate_order_paid_payload(payload)
+    if not verdict.ok:
+        return _reject_malformed_payload(
+            store,
+            verdict,
+            resource_kind=ShopifyRejectedEvidence.ResourceKind.ORDER,
+            ingress=ingress,
+            payload=payload,
+        )
     try:
         prepared_items = _prepare_order_item_metadata(store, payload)
         return _process_order_paid_inner(store, payload, prepared_items)
     except Exception as e:
-        logger.error("process_order_paid failed for store %s: %s", store.shop_domain, e)
-        return CommandResult.fail(str(e))
+        logger.exception("process_order_paid failed for store %s: %s", store.shop_domain, e)
+        return CommandResult.fail(str(e), data={"retryable": True})
 
 
 @transaction.atomic
@@ -1279,6 +1349,16 @@ def _process_order_paid_inner(
     ).first()
     if existing_order and existing_order.event_id:
         logger.info("Order %s already processed — skipping", shopify_order_id)
+        # A5-PR2b: the canonical row + event already exist, so any OPEN rejected
+        # evidence for this identity (e.g. a malformed duplicate that arrived
+        # AFTER the order processed) is healed by this very existence — without
+        # this, the skip would strand it open forever.
+        rejected_evidence.supersede_open_evidence(
+            store=store,
+            resource_kind=ShopifyRejectedEvidence.ResourceKind.ORDER,
+            external_id=shopify_order_id,
+            order=existing_order,
+        )
         return CommandResult.ok(data={"skipped": True})
 
     # Parse order data
@@ -1427,7 +1507,10 @@ def _process_order_paid_inner(
             financial_status=payload.get("financial_status", ""),
             gateway=order.gateway,
             line_items=line_items,
-            customer_email=customer.get("email", ""),
+            # `or ""`: Shopify routinely sends "email": null (guest checkout) —
+            # .get's default doesn't cover a present-null key, and the typed
+            # event payload rejects None at emission (Codex round-1).
+            customer_email=customer.get("email") or "",
             customer_name=f"{customer.get('first_name', '')} {customer.get('last_name', '')}".strip(),
         ),
     )
@@ -1435,6 +1518,17 @@ def _process_order_paid_inner(
     with command_writes_allowed():
         order.event_id = event.id if event else None
         order.save(update_fields=["event_id"])
+
+    # A5-PR2b corrected redelivery: this payload just became the canonical order
+    # + event, so mark earlier OPEN rejected evidence for the same external
+    # identity superseded and link it here — inside this same committing
+    # transaction, so supersession is recorded iff the healing commit lands.
+    rejected_evidence.supersede_open_evidence(
+        store=store,
+        resource_kind=ShopifyRejectedEvidence.ResourceKind.ORDER,
+        external_id=shopify_order_id,
+        order=order,
+    )
 
     # F13: drain any COGS_PENDING fulfillments now that the COD order is
     # collected — dated paid_date so cost sits with the revenue. Log-only
@@ -1445,18 +1539,55 @@ def _process_order_paid_inner(
 
 
 @transaction.atomic
-def process_refund(store: ShopifyStore, payload: dict) -> CommandResult:
-    """Process a refunds/create webhook."""
+def process_refund(
+    store: ShopifyStore, payload: dict, *, ingress: "rejected_evidence.IngressContext | None" = None
+) -> CommandResult:
+    """Process a refunds/create webhook.
+
+    A5-PR2b: the pure up-front validator classifies structurally malformed
+    payloads (missing/untrustworthy ids, non-list transactions, non-finite
+    amounts, null note) as PERMANENT — durable ShopifyRejectedEvidence (its own
+    committed savepoint inside this transaction) + non-retryable fail, so the
+    webhook acks 200. Post-validation semantics are unchanged: the refund-races-
+    its-order miss stays explicitly retryable, and unexpected exceptions
+    propagate to the view's 500 (retryable by definition). The negative-amount
+    ERROR row and zero handled-marker remain ShopifyRefund territory — those
+    payloads are structurally VALID; only unconstructable ones become evidence.
+    """
+    ingress = ingress or rejected_evidence.poller_ingress("poller/refunds")
+    verdict = validate_refund_payload(payload)
+    if not verdict.ok:
+        return _reject_malformed_payload(
+            store,
+            verdict,
+            resource_kind=ShopifyRejectedEvidence.ResourceKind.REFUND,
+            ingress=ingress,
+            payload=payload,
+        )
+
     shopify_refund_id = payload.get("id")
     order_id = payload.get("order_id")
 
     if not shopify_refund_id or not order_id:
+        # Defense in depth — the validator already rejects these durably.
         return CommandResult.fail("Missing refund or order ID.")
 
-    if ShopifyRefund.objects.filter(
+    existing_refund = ShopifyRefund.objects.filter(
         company=store.company,
         shopify_refund_id=shopify_refund_id,
-    ).exists():
+    ).first()
+    if existing_refund is not None:
+        # A5-PR2b: a PROCESSED (or handled-zero) canonical refund heals any open
+        # rejected evidence for this identity — mirror the order-side skip. An
+        # ERROR row is evidence of invalidity, not successful processing, so it
+        # never supersedes.
+        if existing_refund.status != ShopifyRefund.Status.ERROR:
+            rejected_evidence.supersede_open_evidence(
+                store=store,
+                resource_kind=ShopifyRejectedEvidence.ResourceKind.REFUND,
+                external_id=shopify_refund_id,
+                refund=existing_refund,
+            )
         return CommandResult.ok(data={"skipped": True})
 
     try:
@@ -1507,7 +1638,7 @@ def process_refund(store: ShopifyStore, payload: dict) -> CommandResult:
                 shopify_refund_id=shopify_refund_id,
                 amount=refund_amount,
                 currency=order.currency,
-                reason=payload.get("note", ""),
+                reason=payload.get("note") or "",
                 shopify_created_at=payload.get("created_at", "") or datetime.now().isoformat(),
                 raw_payload=payload,
                 status=ShopifyRefund.Status.ERROR,
@@ -1552,11 +1683,19 @@ def process_refund(store: ShopifyStore, payload: dict) -> CommandResult:
                 shopify_refund_id=shopify_refund_id,
                 amount=refund_amount,
                 currency=order.currency,
-                reason=payload.get("note", ""),
+                reason=payload.get("note") or "",
                 shopify_created_at=refund_date_str or datetime.now().isoformat(),
                 raw_payload=payload,
                 status=ShopifyRefund.Status.PROCESSED,
             )
+        # A5-PR2b: the handled-zero marker IS the canonical ShopifyRefund row —
+        # a previously-rejected payload corrected into a zero refund heals.
+        rejected_evidence.supersede_open_evidence(
+            store=store,
+            resource_kind=ShopifyRejectedEvidence.ResourceKind.REFUND,
+            external_id=shopify_refund_id,
+            refund=refund,
+        )
         return CommandResult.ok(data={"refund": refund, "handled_zero": True})
 
     with command_writes_allowed():
@@ -1566,7 +1705,7 @@ def process_refund(store: ShopifyStore, payload: dict) -> CommandResult:
             shopify_refund_id=shopify_refund_id,
             amount=refund_amount,
             currency=order.currency,
-            reason=payload.get("note", ""),
+            reason=payload.get("note") or "",
             shopify_created_at=refund_date_str or datetime.now().isoformat(),
             raw_payload=payload,
         )
@@ -1597,11 +1736,23 @@ def process_refund(store: ShopifyStore, payload: dict) -> CommandResult:
         refund.event_id = event.id if event else None
         refund.save(update_fields=["event_id"])
 
+    # A5-PR2b corrected redelivery: canonical refund + event exist in this same
+    # committing transaction — supersede earlier open rejected evidence for the
+    # refund's external identity.
+    rejected_evidence.supersede_open_evidence(
+        store=store,
+        resource_kind=ShopifyRejectedEvidence.ResourceKind.REFUND,
+        external_id=shopify_refund_id,
+        refund=refund,
+    )
+
     return CommandResult.ok(data={"refund": refund, "event": event})
 
 
 @transaction.atomic
-def process_order_pending(store: ShopifyStore, payload: dict) -> CommandResult:
+def process_order_pending(
+    store: ShopifyStore, payload: dict, *, ingress: "rejected_evidence.IngressContext | None" = None
+) -> CommandResult:
     """
     Process an orders/create webhook.
 
@@ -1610,11 +1761,13 @@ def process_order_pending(store: ShopifyStore, payload: dict) -> CommandResult:
 
     If the order is already paid at creation time (e.g. Paymob/PayPal where
     payment clears before the webhook), route directly to process_order_paid.
-    """
-    shopify_order_id = payload.get("id")
-    if not shopify_order_id:
-        return CommandResult.fail("Missing order ID in payload.")
 
+    ``ingress`` (A5-PR2b) is delivery provenance handed through to
+    process_order_paid on the paid-at-creation delegation, so evidence for a
+    malformed paid orders/create payload records its true webhook topic. The
+    metadata-only PENDING_CAPTURE path itself is out of the A5-PR2b validation
+    scope (founder spec: orders/paid + refunds/create ingresses).
+    """
     # A paid-at-creation order (e.g. Paymob / PayPal, where payment clears before
     # the orders/create webhook) routes to process_order_paid — which owns its OWN
     # Phase-1 remote item-metadata preparation, Company admission lock and EGP-only
@@ -1623,9 +1776,16 @@ def process_order_pending(store: ShopifyStore, payload: dict) -> CommandResult:
     # currency skip below is unchanged: skip_pilot_currency returns the identical
     # structured result regardless of which task label logs it, and process_order_
     # paid re-applies it on its own locked Company for the paid branch.
+    # A5-PR2b: delegate BEFORE the missing-id check too — a malformed PAID
+    # payload (id included) belongs to the paid path's validator + durable
+    # evidence, not to a bare fail the webhook acks and loses.
     financial_status = (payload.get("financial_status") or "").lower()
     if financial_status in ("paid", "authorized", "partially_paid"):
-        return process_order_paid(store, payload)
+        return process_order_paid(store, payload, ingress=ingress)
+
+    shopify_order_id = payload.get("id")
+    if not shopify_order_id:
+        return CommandResult.fail("Missing order ID in payload.")
 
     # A4: pilot ingests EGP only — skip a non-EGP order before any record is
     # written (webhook context: no mutation, no retry). Serialize the decision on

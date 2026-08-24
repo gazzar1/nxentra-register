@@ -29,7 +29,16 @@ from events.types import EventTypes
 from projections.write_barrier import command_writes_allowed
 
 from .event_types import ShopifyGdprRequestCompletedData
-from .models import GdprRequest, PendingShopifyInstall, ShopifyFulfillment, ShopifyOrder, ShopifyRefund, ShopifyStore
+from .models import (
+    GdprRequest,
+    PendingShopifyInstall,
+    ShopifyFulfillment,
+    ShopifyOrder,
+    ShopifyRefund,
+    ShopifyRejectedEvidence,
+    ShopifyStore,
+)
+from .rejected_evidence import redact_evidence
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +114,130 @@ def _stores_for_domain(shop_domain):
     return list(ShopifyStore.objects.filter(shop_domain=shop_domain).select_related("company"))
 
 
+def _matching_rejected_evidence(store, customer_id, customer_email, order_ids):
+    """A5-PR2b: rejected-evidence rows belonging to the shopper — ORDER evidence
+    keyed by the named order ids (its external_id IS the order id), REFUND
+    evidence by parent order id, plus ORDER evidence whose parsed customer
+    matches by id/email (the missing-id class has no external_id to key on).
+    Matched by the ``shop_domain`` SNAPSHOT so evidence whose store FK was
+    SET_NULLed is still reached. Already-redacted rows have no parsed_payload
+    left to match — the id-based arms still re-match them harmlessly
+    (redact_evidence is idempotent). MALFORMED_JSON evidence (unparseable
+    bytes, no promoted ids) is matched CONSERVATIVELY by scanning the decoded
+    authenticated bytes for the request's identifiers (Codex round-11) — a body
+    malformed only near its end can still visibly contain the shopper's order
+    id, customer id, or email, and its preserved bytes must not survive a
+    customer-level scrub or be absent from the export. Tiny identifiers are
+    skipped to avoid false substring hits; over-matching errs privacy-safe
+    (the data all belongs to the requesting merchant's own webhook stream)."""
+    return _match_evidence_in(
+        ShopifyRejectedEvidence.objects.filter(company=store.company, shop_domain=store.shop_domain),
+        customer_id,
+        customer_email,
+        order_ids,
+    )
+
+
+def _orphan_matching_rejected_evidence(shop_domain, customer_id, customer_email, order_ids):
+    """Codex round-12: evidence deliberately SURVIVES ShopifyStore deletion
+    (SET_NULL + snapshots), but the customer-level jobs only matched while
+    iterating existing store rows — orphaned evidence was unreachable by
+    customers/redact and customers/data_request even though shop/redact already
+    sweeps it. Same matching core, scoped by the shop_domain snapshot to rows
+    whose store FK is gone (cross-company, like _stores_for_domain)."""
+    return _match_evidence_in(
+        ShopifyRejectedEvidence.objects.filter(shop_domain=shop_domain, store__isnull=True),
+        customer_id,
+        customer_email,
+        order_ids,
+    )
+
+
+def _match_evidence_in(qs, customer_id, customer_email, order_ids):
+    matched_pks: set[int] = set()
+    if order_ids:
+        ids = [str(oid) for oid in order_ids]
+        matched_pks.update(
+            qs.filter(
+                resource_kind=ShopifyRejectedEvidence.ResourceKind.ORDER,
+                external_id__in=ids,
+            ).values_list("pk", flat=True)
+        )
+        matched_pks.update(
+            qs.filter(
+                resource_kind=ShopifyRejectedEvidence.ResourceKind.REFUND,
+                parent_external_id__in=ids,
+            ).values_list("pk", flat=True)
+        )
+    for row in qs.filter(parsed_payload__isnull=False).iterator(chunk_size=500):
+        customer = (row.parsed_payload or {}).get("customer") if isinstance(row.parsed_payload, dict) else None
+        if not isinstance(customer, dict):
+            continue
+        # isinstance guard (Codex round-2): rejected evidence deliberately
+        # preserves malformed shapes — a non-str email must not crash the GDPR
+        # job with .lower(); it simply cannot match by email.
+        row_email = customer.get("email")
+        if (customer_id and str(customer.get("id")) == str(customer_id)) or (
+            customer_email and isinstance(row_email, str) and row_email.lower() == customer_email.lower()
+        ):
+            matched_pks.add(row.pk)
+
+    # Raw-bytes arm (Codex round-11): parsed-less rows (MALFORMED_JSON) whose
+    # authenticated bytes visibly contain a requested identifier.
+    needles: list[str] = []
+    for oid in order_ids or []:
+        text = str(oid)
+        if len(text) >= 4:
+            needles.append(text)
+    if customer_id and len(str(customer_id)) >= 4:
+        needles.append(str(customer_id))
+    if customer_email and len(customer_email) >= 5:
+        needles.append(customer_email.lower())
+    if needles:
+        import base64 as b64
+
+        for row in qs.filter(parsed_payload__isnull=True).exclude(raw_body_b64="").iterator(chunk_size=500):
+            try:
+                body_text = b64.b64decode(row.raw_body_b64).decode("utf-8", errors="replace").lower()
+            except Exception:
+                continue
+            if any(needle.lower() in body_text for needle in needles):
+                matched_pks.add(row.pk)
+
+    return ShopifyRejectedEvidence.objects.filter(pk__in=matched_pks)
+
+
+def _evidence_export_entry(row) -> dict:
+    """One export record for a matched rejected-evidence row. raw_body_text is
+    sanitized (Codex round-12): a literal NUL in the decoded bytes would make
+    the assembled export unstorable in the GdprRequest.evidence JSONField and
+    fail the whole data-request job."""
+    from .rejected_evidence import sanitize_operator_text
+
+    parsed = row.parsed_payload if isinstance(row.parsed_payload, dict) else {}
+    raw_body_text = ""
+    if row.parsed_payload is None and row.raw_body_b64:
+        import base64 as b64
+
+        try:
+            raw_body_text = sanitize_operator_text(b64.b64decode(row.raw_body_b64).decode("utf-8", errors="replace"))
+        except Exception:
+            raw_body_text = ""
+    return {
+        "company": str(row.company.public_id),
+        "rejected_evidence": True,
+        "resource_kind": row.resource_kind,
+        "external_id": row.external_id,
+        "parent_external_id": row.parent_external_id,
+        "rejection_code": row.rejection_code,
+        "first_seen_at": row.first_seen_at.isoformat() if row.first_seen_at else "",
+        "redacted": row.redacted_at is not None,
+        "customer": parsed.get("customer"),
+        "payload": row.parsed_payload,
+        "raw_body_text": raw_body_text,
+    }
+
+
 def _emit_completed(req, company, *, orders_matched, records_scrubbed, events_exempted):
     emit_event_no_actor(
         company=company,
@@ -151,15 +284,29 @@ def execute_customer_data_request(req: GdprRequest) -> dict:
 
     payload = req.payload or {}
     order_ids = payload.get("orders_requested") or []
-    evidence = {"companies_matched": 0, "orders_matched": 0, "export": []}
+    evidence = {"companies_matched": 0, "orders_matched": 0, "rejected_evidence_matched": 0, "export": []}
 
+    completed_company_ids: set[int] = set()
+    exported_evidence_pks: set[int] = set()
     with rls_bypass():
         for store in _stores_for_domain(req.shop_domain):
             orders = _matching_orders(store, req.customer_id, req.customer_email, order_ids)
-            if not orders and not order_ids:
+            # A5-PR2b (Codex round-2): the shopper's data can live ONLY in
+            # rejected source evidence (a malformed payload that never became a
+            # canonical order) — a complete export must include it. Fresh
+            # rls_bypass() wrap: a previous iteration's emits cleared the RLS
+            # session and the evidence table is FORCE-RLS.
+            with rls_bypass():
+                rejected_rows = list(
+                    _matching_rejected_evidence(store, req.customer_id, req.customer_email, order_ids).select_related(
+                        "company"
+                    )
+                )
+            if not orders and not rejected_rows and not order_ids:
                 continue
             evidence["companies_matched"] += 1
             evidence["orders_matched"] += len(orders)
+            evidence["rejected_evidence_matched"] += len(rejected_rows)
             for order in orders:
                 raw = order.raw_payload or {}
                 evidence["export"].append(
@@ -175,6 +322,9 @@ def execute_customer_data_request(req: GdprRequest) -> dict:
                         "shipping_address": raw.get("shipping_address"),
                     }
                 )
+            for row in rejected_rows:
+                exported_evidence_pks.add(row.pk)
+                evidence["export"].append(_evidence_export_entry(row))
             with command_writes_allowed():
                 Notification.notify_company_admins(
                     store.company,
@@ -195,6 +345,55 @@ def execute_customer_data_request(req: GdprRequest) -> dict:
                 records_scrubbed=0,
                 events_exempted=0,
             )
+            completed_company_ids.add(store.company_id)
+
+        # Codex round-12: orphaned evidence (store row hard-deleted) never
+        # enters the per-store loop — sweep it by the shop_domain snapshot.
+        # Fresh rls_bypass(): earlier emits cleared the RLS session and the
+        # evidence table is FORCE-RLS.
+        # .exclude (Codex round-14): when a REPLACEMENT store exists for the
+        # same company/domain, the store-loop matcher already reached these
+        # snapshot-scoped orphan rows — the sweep must not export them twice or
+        # inflate rejected_evidence_matched.
+        with rls_bypass():
+            orphan_rows = list(
+                _orphan_matching_rejected_evidence(req.shop_domain, req.customer_id, req.customer_email, order_ids)
+                .exclude(pk__in=exported_evidence_pks)
+                .select_related("company")
+            )
+        evidence["rejected_evidence_matched"] += len(orphan_rows)
+        for row in orphan_rows:
+            evidence["export"].append(_evidence_export_entry(row))
+        # Codex round-13: an orphan-ONLY company still owes the per-company
+        # completion work — the 30-day-delivery admin notification, the
+        # companies_matched count, and the completion event. Companies already
+        # completed by the store loop are skipped (their rows are exported
+        # above; notifying/emitting twice would duplicate).
+        for orphan_company in sorted(
+            {row.company for row in orphan_rows if row.company_id not in completed_company_ids},
+            key=lambda c: c.id,
+        ):
+            evidence["companies_matched"] += 1
+            with command_writes_allowed():
+                Notification.notify_company_admins(
+                    orphan_company,
+                    title="GDPR data request received",
+                    message=(
+                        f"Shopify forwarded a customer data request for {req.shop_domain} "
+                        f"(customer {req.customer_id or req.customer_email}). The export is "
+                        f"attached to GDPR request #{req.id}; you must provide it to the "
+                        f"customer within 30 days."
+                    ),
+                    level="WARNING",
+                    source_module="shopify_connector",
+                )
+            _emit_completed(
+                req,
+                orphan_company,
+                orders_matched=0,
+                records_scrubbed=0,
+                events_exempted=0,
+            )
 
     _complete(req, evidence, note=f"Export assembled for {evidence['orders_matched']} order(s).")
     return evidence
@@ -212,10 +411,21 @@ def execute_customer_redact(req: GdprRequest) -> dict:
         "policy": "mutable stores scrubbed; append-only event ledger retained under documented lawful basis",
     }
 
+    completed_company_ids: set[int] = set()
     with rls_bypass():
         for store in _stores_for_domain(req.shop_domain):
             orders = _matching_orders(store, req.customer_id, req.customer_email, order_ids)
-            if not orders:
+            # A5-PR2b: the shopper's data can live ONLY in rejected source
+            # evidence (a malformed payload that never became an order) — match
+            # it independently of orders. Fresh rls_bypass() wrap: the PREVIOUS
+            # iteration's _emit_completed cleared this connection's RLS session
+            # settings (emit_event_no_actor's finally), and the evidence table
+            # is FORCE-RLS — without re-asserting, later stores would silently
+            # match zero rows on shared-tenant PostgreSQL.
+            with rls_bypass():
+                rejected_qs = _matching_rejected_evidence(store, req.customer_id, req.customer_email, order_ids)
+                has_rejected_evidence = rejected_qs.exists()
+            if not orders and not has_rejected_evidence:
                 continue
             evidence["companies_matched"] += 1
             evidence["orders_matched"] += len(orders)
@@ -257,6 +467,14 @@ def execute_customer_redact(req: GdprRequest) -> dict:
                         cust.save(update_fields=["name", "email", "phone", "address", "notes"])
                         evidence["records_scrubbed"] += 1
 
+                # A5-PR2b: scrub the shopper's rejected source evidence —
+                # payload fields + defect-message value fragments cleared and
+                # redacted_at stamped; hashes, codes, defect fields, timestamps
+                # and identity stay, and a later re-sighting never restores the
+                # PII. Fresh rls_bypass() wrap: see the matcher note above.
+                with rls_bypass():
+                    evidence["records_scrubbed"] += redact_evidence(rejected_qs)
+
             exempted = _count_exempt_events(store.company, req.customer_email)
             evidence["events_exempted"] += exempted
             _emit_completed(
@@ -266,6 +484,7 @@ def execute_customer_redact(req: GdprRequest) -> dict:
                 records_scrubbed=evidence["records_scrubbed"],
                 events_exempted=exempted,
             )
+            completed_company_ids.add(store.company_id)
 
         # Scrub the shopper's PII from earlier GDPR audit rows for the same
         # customer (the GDPR payload itself carries email + phone). Keep
@@ -278,6 +497,37 @@ def execute_customer_redact(req: GdprRequest) -> dict:
                 if older.customer_email or changed:
                     older.customer_email = ""
                     older.save(update_fields=["customer_email", "payload"])
+
+        # Codex round-12: orphaned evidence (store row hard-deleted) never
+        # enters the per-store loop — scrub it via the shop_domain snapshot,
+        # mirroring shop/redact's orphan sweep. Fresh rls_bypass(): earlier
+        # emits cleared the RLS session and the evidence table is FORCE-RLS.
+        # Codex round-13: an orphan-ONLY company still owes its per-company
+        # completion event; companies the store loop already completed are
+        # skipped (their emit landed; re-emitting would duplicate — the
+        # idempotency key dedups the event but not a second notification).
+        with rls_bypass():
+            orphan_rows = list(
+                _orphan_matching_rejected_evidence(
+                    req.shop_domain, req.customer_id, req.customer_email, order_ids
+                ).select_related("company")
+            )
+            scrubbed_orphans = redact_evidence(
+                _orphan_matching_rejected_evidence(req.shop_domain, req.customer_id, req.customer_email, order_ids)
+            )
+            evidence["records_scrubbed"] += scrubbed_orphans
+        for orphan_company in sorted(
+            {row.company for row in orphan_rows if row.company_id not in completed_company_ids},
+            key=lambda c: c.id,
+        ):
+            evidence["companies_matched"] += 1
+            _emit_completed(
+                req,
+                orphan_company,
+                orders_matched=0,
+                records_scrubbed=sum(1 for row in orphan_rows if row.company_id == orphan_company.id),
+                events_exempted=0,
+            )
 
     _complete(
         req,
@@ -335,6 +585,21 @@ def execute_shop_redact(req: GdprRequest) -> dict:
                         refund.save(update_fields=["raw_payload"])
                         company_scrubbed += 1
 
+                # A5-PR2b: scrub ALL rejected source evidence for this shop —
+                # matched by the shop_domain SNAPSHOT so evidence whose store FK
+                # was SET_NULLed is reached too. Payload fields + defect-message
+                # fragments cleared, hashes/codes/identity kept, redacted_at
+                # stamped. Fresh rls_bypass() wrap: a previous iteration's
+                # _emit_completed cleared the RLS session on this connection and
+                # the evidence table is FORCE-RLS.
+                with rls_bypass():
+                    company_scrubbed += redact_evidence(
+                        ShopifyRejectedEvidence.objects.filter(
+                            company=store.company,
+                            shop_domain=req.shop_domain,
+                        )
+                    )
+
             evidence["records_scrubbed"] += company_scrubbed
             _emit_completed(
                 req,
@@ -347,6 +612,17 @@ def execute_shop_redact(req: GdprRequest) -> dict:
         with command_writes_allowed():
             deleted, _ = PendingShopifyInstall.objects.filter(shop_domain=req.shop_domain).delete()
             evidence["pending_installs_deleted"] = deleted
+
+            # A5-PR2b: rejected evidence survives ShopifyStore deletion by design
+            # (SET_NULL + snapshots), so when the store rows themselves are gone
+            # the per-store loop above never runs — sweep the domain's evidence
+            # directly by its shop_domain snapshot, across companies. Fresh
+            # rls_bypass() wrap (FORCE-RLS table; earlier emits cleared the
+            # session). Idempotent over rows the per-store pass already scrubbed.
+            with rls_bypass():
+                evidence["records_scrubbed"] += redact_evidence(
+                    ShopifyRejectedEvidence.objects.filter(shop_domain=req.shop_domain)
+                )
 
     _complete(
         req,
