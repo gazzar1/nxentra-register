@@ -44,7 +44,7 @@ from .models import (
     ShopifyRejectedEvidence,
     ShopifyStore,
 )
-from .payload_validation import validate_order_paid_payload, validate_refund_payload
+from .payload_validation import refund_aggregate_amount, validate_order_paid_payload, validate_refund_payload
 
 logger = logging.getLogger(__name__)
 
@@ -1550,9 +1550,15 @@ def process_refund(
     committed savepoint inside this transaction) + non-retryable fail, so the
     webhook acks 200. Post-validation semantics are unchanged: the refund-races-
     its-order miss stays explicitly retryable, and unexpected exceptions
-    propagate to the view's 500 (retryable by definition). The negative-amount
-    ERROR row and zero handled-marker remain ShopifyRefund territory — those
-    payloads are structurally VALID; only unconstructable ones become evidence.
+    propagate to the view's 500 (retryable by definition).
+
+    A5-PR2c (founder decision, assessment finding C4): a NEGATIVE aggregate
+    amount is validator territory too — it rejects as MALFORMED_MONEY into the
+    same durable-evidence path, so it pages /_health/alerts, lists on
+    /finance/exceptions, and a corrected redelivery (no ShopifyRefund row
+    exists to trip the dedup) processes canonically and supersedes the open
+    evidence. Post-validation the aggregate is therefore >= 0: the zero
+    handled-marker and positive posting remain ShopifyRefund territory.
     """
     ingress = ingress or rejected_evidence.poller_ingress("poller/refunds")
     verdict = validate_refund_payload(payload)
@@ -1613,55 +1619,13 @@ def process_refund(
     if _skip is not None:
         return CommandResult.ok(_skip)
 
-    # Calculate refund amount from transactions
-    refund_amount = Decimal("0")
-    for txn in payload.get("transactions", []):
-        if txn.get("kind") == "refund" and txn.get("status") == "success":
-            refund_amount += Decimal(str(txn.get("amount", "0")))
-
-    # Fallback: sum refund line items
-    if refund_amount == 0:
-        for line in payload.get("refund_line_items", []):
-            refund_amount += Decimal(str(line.get("subtotal", "0")))
-
-    if refund_amount < 0:
-        # A5 (Codex round-2 P2): a negative refund is invalid provider data. Like
-        # the zero case, this is caught at ingress BEFORE any event, so it can
-        # never reach the projection's invalid-data guard — persist a durable,
-        # operator-visible REJECTED marker HERE (a ShopifyRefund row, status=ERROR,
-        # with the reason) instead of a bare fail the webhook acks (200) and loses.
-        # No accounting event is emitted (nothing valid to post).
-        with command_writes_allowed():
-            ShopifyRefund.objects.create(
-                company=store.company,
-                order=order,
-                shopify_refund_id=shopify_refund_id,
-                amount=refund_amount,
-                currency=order.currency,
-                reason=payload.get("note") or "",
-                shopify_created_at=payload.get("created_at", "") or datetime.now().isoformat(),
-                raw_payload=payload,
-                status=ShopifyRefund.Status.ERROR,
-                error_message=(f"Refund amount is negative ({refund_amount}); invalid provider data — not accounted."),
-            )
-        # A5 (Codex round-4 P2): the ERROR row is durable evidence but is not itself
-        # surfaced in any operator view, so raise an operator-visible alert (the
-        # notifications surface) — the ingress has no projection through which to
-        # emit a /finance/exceptions failure log.
-        from accounts.models import Notification
-
-        Notification.notify_company_admins(
-            company=store.company,
-            title="Shopify refund rejected — invalid amount",
-            message=(
-                f"Refund {shopify_refund_id} on order {order_id} arrived with a negative amount "
-                f"({refund_amount}) and was rejected — no journal was posted. Kept as a "
-                f"ShopifyRefund (status=ERROR) for evidence; correct it with a manual journal if real."
-            ),
-            level=Notification.Level.ERROR,
-            source_module="shopify_connector",
-        )
-        return CommandResult.fail(f"Refund amount is negative ({refund_amount}).")
+    # A5-PR2c: THE canonical aggregate — the shared pure helper the validator
+    # already bounded (magnitude AND non-negativity), never a local recompute
+    # that could drift. Post-validation this is guaranteed >= 0: a negative
+    # aggregate was rejected at the ingress boundary above as durable
+    # MALFORMED_MONEY evidence (no ShopifyRefund row, no event, no journal —
+    # and no refund-id dedup entry to foreclose the corrected redelivery).
+    refund_amount = refund_aggregate_amount(payload)
 
     refund_date_str = payload.get("created_at", "")
     try:
