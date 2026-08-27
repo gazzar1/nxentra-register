@@ -2995,3 +2995,69 @@ def test_every_public_vertical_command_carries_serialized_gate_marker():
             f"Every public {module.__name__} command must carry the SERIALIZED "
             f"admission gate (`_pilot_capability_serialized is True`). Unserialized: {unserialized}"
         )
+
+
+# =============================================================================
+# Rule 16 (A5-PR1a): the /_health/alerts counter registries are PINNED. The
+# alert pool is only as complete as its registrations — if an adapter silently
+# stopped registering (app removed, ready() refactored) the endpoint would
+# report healthy while that family's open evidence sat uncounted, and a
+# silently REPLACED registration would do the same at boot (the runtime guard
+# in ops.health raises on conflicting duplicates; this rule catches the
+# disappeared-registration case CI-side). Pinned by name AND by callback
+# identity (module + qualname) so a same-name substitute cannot slip in.
+# Core stays provider-neutral: this test imports only ops.health — the
+# adapter registrations were made by django app setup.
+# =============================================================================
+
+A5_REJECTED_EVIDENCE_COUNTERS: dict[str, tuple[str, str]] = {
+    "shopify": (
+        "shopify_connector.apps",
+        "ShopifyConnectorConfig.ready.<locals>._open_shopify_rejected_evidence",
+    ),
+}
+
+A5_SOURCE_HEALTH_COUNTERS: dict[str, tuple[str, str]] = {
+    "shopify_reauth_required": (
+        "shopify_connector.apps",
+        "ShopifyConnectorConfig.ready.<locals>._pilot_shopify_reauth_required",
+    ),
+    "shopify_stale_sources": (
+        "shopify_connector.apps",
+        "ShopifyConnectorConfig.ready.<locals>._pilot_shopify_stale_sources",
+    ),
+}
+
+
+def test_alert_counter_registries_are_pinned():
+    from ops import health
+
+    actual_evidence = {
+        name: (fn.__module__, fn.__qualname__) for name, fn in health._REJECTED_EVIDENCE_COUNTERS.items()
+    }
+    assert actual_evidence == A5_REJECTED_EVIDENCE_COUNTERS, (
+        "The registered rejected-evidence counter set changed. A new adapter "
+        "family must be added to A5_REJECTED_EVIDENCE_COUNTERS in review; a "
+        f"DISAPPEARED registration is a silent alert hole. Actual: {actual_evidence}"
+    )
+
+    actual_source_health = {
+        name: (fn.__module__, fn.__qualname__) for name, fn in health._SOURCE_HEALTH_COUNTERS.items()
+    }
+    assert actual_source_health == A5_SOURCE_HEALTH_COUNTERS, (
+        "The registered source-health condition set changed. A new condition "
+        "must be added to A5_SOURCE_HEALTH_COUNTERS in review; a DISAPPEARED "
+        f"registration is a silent alert hole. Actual: {actual_source_health}"
+    )
+
+
+def test_alert_health_module_is_provider_neutral():
+    """ops.health folds adapter counters by registration only — a literal
+    provider import/reference in core would invert the dependency direction."""
+    import inspect
+
+    from ops import health
+
+    source = inspect.getsource(health).lower()
+    for provider in ("shopify", "stripe", "paymob", "bosta"):
+        assert provider not in source, f"ops.health must not reference provider {provider!r} — adapters register in"

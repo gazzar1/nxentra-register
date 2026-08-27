@@ -69,6 +69,59 @@ class ShopifyConnectorConfig(AppConfig):
 
         register_rejected_evidence_counter("shopify", _open_shopify_rejected_evidence)
 
+        # A5-PR1a: adapter-registered SOURCE-HEALTH conditions — the supported
+        # source becoming unable to deliver or recover data must reach the
+        # /_health/alerts pinger (a revoked token or a dead scheduled sync
+        # produces NO events, so lag/failure-log counters read all-clear while
+        # ingestion is halted). Scoped to constrained-pilot companies
+        # (ISOLATED_SHADOW_LEDGER_V1) and ACTIVE stores; aggregate counts only,
+        # no tenant identity. Same dependency inversion as the counters above:
+        # core ops never imports shopify_connector.
+        from ops.health import register_source_health_counter
+
+        def _pilot_shopify_reauth_required() -> int:
+            from accounts.models import Company
+            from shopify_connector.models import ShopifyStore
+
+            return ShopifyStore.objects.filter(
+                status=ShopifyStore.Status.ACTIVE,
+                company__pilot_profile=Company.PilotProfile.ISOLATED_SHADOW_LEDGER_V1,
+                needs_reauth=True,
+            ).count()
+
+        def _pilot_shopify_stale_sources() -> int:
+            # Stale = the scheduled sync has not completed inside the
+            # threshold. SHOPIFY_SOURCE_STALE_SECONDS — Django setting first,
+            # env fallback; default 28800s (8h) = two consecutive missed runs
+            # of the 4h sync cadence plus margin, so one late run never pages.
+            # A never-synced newly connected store gets the same grace period
+            # from created_at instead of being declared stale immediately.
+            import os
+            from datetime import timedelta
+
+            from django.conf import settings
+            from django.db.models import Q
+            from django.utils import timezone
+
+            from accounts.models import Company
+            from shopify_connector.models import ShopifyStore
+
+            threshold = getattr(settings, "SHOPIFY_SOURCE_STALE_SECONDS", None)
+            if threshold is None:
+                threshold = os.getenv("SHOPIFY_SOURCE_STALE_SECONDS", "28800")
+            cutoff = timezone.now() - timedelta(seconds=int(threshold))
+            return (
+                ShopifyStore.objects.filter(
+                    status=ShopifyStore.Status.ACTIVE,
+                    company__pilot_profile=Company.PilotProfile.ISOLATED_SHADOW_LEDGER_V1,
+                )
+                .filter(Q(last_sync_at__lt=cutoff) | Q(last_sync_at__isnull=True, created_at__lt=cutoff))
+                .count()
+            )
+
+        register_source_health_counter("shopify_reauth_required", _pilot_shopify_reauth_required)
+        register_source_health_counter("shopify_stale_sources", _pilot_shopify_stale_sources)
+
         module_registry.register(
             "shopify_connector",
             label="Shopify",

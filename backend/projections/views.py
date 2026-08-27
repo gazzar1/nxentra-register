@@ -525,7 +525,15 @@ class ProjectionStatusView(APIView):
                     "is_paused": bookmark.is_paused if bookmark else False,
                     "error_count": bookmark.error_count if bookmark else 0,
                     "last_error": bookmark.last_error if bookmark else "",
-                    "last_event_sequence": bookmark.last_event_sequence if bookmark else None,
+                    # A5-PR1a: EventBookmark has no last_event_sequence field —
+                    # the old attribute read raised AttributeError (HTTP 500)
+                    # for every bookmark-backed projection, leaving this the
+                    # permanently unusable non-staff lag/paused/error surface.
+                    # The stream position is the last processed event's
+                    # company_sequence (SET_NULL FK: a pruned event reads None).
+                    "last_event_sequence": (
+                        bookmark.last_event.company_sequence if bookmark and bookmark.last_event else None
+                    ),
                     "last_processed_at": (
                         bookmark.last_processed_at.isoformat() if bookmark and bookmark.last_processed_at else None
                     ),

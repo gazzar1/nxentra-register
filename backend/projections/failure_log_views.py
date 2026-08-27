@@ -71,6 +71,11 @@ class ProjectionFailureListView(APIView):
 
     def get(self, request):
         actor = resolve_actor(request)
+        # A5-PR1a: enforce the read gate the module docstring always promised —
+        # failure rows carry event payload evidence (the detail view serves it
+        # verbatim), so the same reports.view gate as the ImportRejectedRow and
+        # ShopifyRejectedEvidence sibling queues applies here.
+        require(actor, "reports.view")
 
         qs = (
             ProjectionFailureLog.objects.filter(company=actor.company)
@@ -99,7 +104,11 @@ class ProjectionFailureListView(APIView):
             qs = qs.filter(event_type=event_type)
 
         try:
-            limit = min(int(request.query_params.get("limit", 100)), 500)
+            # A5-PR1a: clamp BOTH bounds — a negative limit survived the
+            # min-only clamp into the queryset slice and 500ed (Django refuses
+            # negative indexing); the sibling ImportRejectedRow view already
+            # clamps two-sided.
+            limit = min(max(int(request.query_params.get("limit", 100)), 1), 500)
             offset = max(int(request.query_params.get("offset", 0)), 0)
         except (ValueError, TypeError):
             limit, offset = 100, 0
@@ -128,6 +137,11 @@ class ProjectionFailureDetailView(APIView):
 
     def get(self, request, pk):
         actor = resolve_actor(request)
+        # A5-PR1a: this endpoint returns the RAW event payload (event_data) —
+        # for a Shopify order event that includes customer identity fields — so
+        # it must carry the same reports.view gate as the sibling queues that
+        # serve raw evidence (raw_row / raw_body_b64).
+        require(actor, "reports.view")
 
         try:
             log = ProjectionFailureLog.objects.select_related("event", "resolved_by").get(pk=pk, company=actor.company)
@@ -219,6 +233,9 @@ class ProjectionFailureSummaryView(APIView):
         from django.db.models import Count
 
         actor = resolve_actor(request)
+        # A5-PR1a: same read gate as list/detail — the summary is the same
+        # operator report surface (and the docstring's promised model).
+        require(actor, "reports.view")
 
         unresolved = ProjectionFailureLog.objects.filter(company=actor.company, resolved=False)
 
