@@ -101,6 +101,18 @@ function decodeRawBodyPreview(b64: string): string {
   }
 }
 
+// A5-PR1a: per-source load state — the page's core invariant is that missing
+// or failed visibility data is NEVER presented as an all-clear. Every required
+// source tracks loading/loaded/error/forbidden persistently (a transient toast
+// alone is not an error surface), the green all-clear requires EVERY source
+// loaded AND every filter-independent unresolved count zero, and a 403 renders
+// an access-denied state instead of an empty queue.
+type SourceStatus = "loading" | "loaded" | "error" | "forbidden";
+
+function isForbiddenError(err: unknown): boolean {
+  return (err as { response?: { status?: number } })?.response?.status === 403;
+}
+
 function timeAgo(iso: string | null): string {
   if (!iso) return "—";
   const ms = Date.now() - new Date(iso).getTime();
@@ -131,6 +143,12 @@ export default function ExceptionsPage() {
   const [totalCount, setTotalCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+
+  // A5-PR1a: persistent per-source load state (see SourceStatus above). One
+  // source per queue; each covers both of its requests (list + count/summary).
+  const [projSource, setProjSource] = useState<SourceStatus>("loading");
+  const [rejectSource, setRejectSource] = useState<SourceStatus>("loading");
+  const [evidenceSource, setEvidenceSource] = useState<SourceStatus>("loading");
 
   // A5-PR3: durable per-row import rejections (settlement / bank CSV).
   const [importRejects, setImportRejects] = useState<ImportRejectedRow[]>([]);
@@ -200,56 +218,112 @@ export default function ExceptionsPage() {
     const gen = ++fetchGenRef.current;
     resetInFlightRef.current = true;
     setReloading(true);
-    try {
-      const [sum, list, rejects, unresolvedRejects, evidence, openEvidence] = await Promise.all([
-        projectionFailuresService.summary(),
-        projectionFailuresService.list({
-          resolved: resolvedFilter,
-          projection_name: projectionFilter || undefined,
-          category: (categoryFilter || undefined) as FailureCategory | undefined,
-          limit: 100,
-        }),
-        // First keyset page (no cursor) — resets the reject queue to the newest page.
-        importRejectedRowsService.list({ resolved: resolvedFilter, limit: 100 }),
-        // Filter-independent unresolved count for the summary card (see state).
-        importRejectedRowsService.list({ resolved: "false", limit: 1 }),
-        // A5-PR2b: the Shopify evidence queue's acknowledged filter is
-        // tri-state and maps 1:1 onto the page filter ("true" = closed:
-        // acknowledged OR healed/superseded).
-        shopifyRejectedEvidenceService.list({
-          acknowledged: resolvedFilter,
-          limit: 100,
-        }),
-        // Filter-independent OPEN count for the summary fold.
-        shopifyRejectedEvidenceService.list({ acknowledged: "false", limit: 1 }),
-      ]);
-      // A newer fetch (filter change) superseded this one — drop the stale result.
-      if (gen !== fetchGenRef.current) return;
-      setSummary(sum);
-      setItems(list.results);
-      setTotalCount(list.total_count);
-      setImportRejects(rejects.results);
-      setImportRejectsCount(rejects.total_count);
-      setRejectNextCursor(rejects.next_cursor);
-      setUnresolvedRejectsCount(unresolvedRejects.total_count);
-      setShopifyEvidence(evidence.results);
-      setShopifyEvidenceCount(evidence.total_count);
-      setEvidenceNextCursor(evidence.next_cursor);
-      setOpenEvidenceCount(openEvidence.total_count);
-    } catch (err) {
-      if (gen !== fetchGenRef.current) return;
-      toast({
-        title: "Failed to load exceptions",
-        description: (err as Error).message || "Try refreshing.",
-        variant: "destructive",
-      });
-    } finally {
-      // Only the LATEST reset clears the flags — a superseded reset must not
-      // re-enable load-more while a newer reset is still running.
-      if (gen === fetchGenRef.current) {
-        resetInFlightRef.current = false;
-        setReloading(false);
+    setProjSource("loading");
+    setRejectSource("loading");
+    setEvidenceSource("loading");
+    const failedSources: string[] = [];
+
+    // A5-PR1a: each source loads independently and records a PERSISTENT
+    // outcome — one failing endpoint no longer discards the other queues'
+    // results (the old single Promise.all did), and a failed source clears its
+    // data and renders an error state instead of a zero-count all-clear.
+    const loadProjectionFailures = async () => {
+      try {
+        const [sum, list] = await Promise.all([
+          projectionFailuresService.summary(),
+          projectionFailuresService.list({
+            resolved: resolvedFilter,
+            projection_name: projectionFilter || undefined,
+            category: (categoryFilter || undefined) as FailureCategory | undefined,
+            limit: 100,
+          }),
+        ]);
+        if (gen !== fetchGenRef.current) return;
+        setSummary(sum);
+        setItems(list.results);
+        setTotalCount(list.total_count);
+        setProjSource("loaded");
+      } catch (err) {
+        if (gen !== fetchGenRef.current) return;
+        setSummary(null);
+        setItems([]);
+        setTotalCount(0);
+        setProjSource(isForbiddenError(err) ? "forbidden" : "error");
+        failedSources.push("projection failures");
       }
+    };
+
+    const loadImportRejects = async () => {
+      try {
+        const [rejects, unresolvedRejects] = await Promise.all([
+          // First keyset page (no cursor) — resets the reject queue to the newest page.
+          importRejectedRowsService.list({ resolved: resolvedFilter, limit: 100 }),
+          // Filter-independent unresolved count for the summary card (see state).
+          importRejectedRowsService.list({ resolved: "false", limit: 1 }),
+        ]);
+        if (gen !== fetchGenRef.current) return;
+        setImportRejects(rejects.results);
+        setImportRejectsCount(rejects.total_count);
+        setRejectNextCursor(rejects.next_cursor);
+        setUnresolvedRejectsCount(unresolvedRejects.total_count);
+        setRejectSource("loaded");
+      } catch (err) {
+        if (gen !== fetchGenRef.current) return;
+        setImportRejects([]);
+        setImportRejectsCount(0);
+        setRejectNextCursor(null);
+        setUnresolvedRejectsCount(0);
+        setRejectSource(isForbiddenError(err) ? "forbidden" : "error");
+        failedSources.push("import rejections");
+      }
+    };
+
+    const loadShopifyEvidence = async () => {
+      try {
+        const [evidence, openEvidence] = await Promise.all([
+          // A5-PR2b: the Shopify evidence queue's acknowledged filter is
+          // tri-state and maps 1:1 onto the page filter ("true" = closed:
+          // acknowledged OR healed/superseded).
+          shopifyRejectedEvidenceService.list({
+            acknowledged: resolvedFilter,
+            limit: 100,
+          }),
+          // Filter-independent OPEN count for the summary fold.
+          shopifyRejectedEvidenceService.list({ acknowledged: "false", limit: 1 }),
+        ]);
+        if (gen !== fetchGenRef.current) return;
+        setShopifyEvidence(evidence.results);
+        setShopifyEvidenceCount(evidence.total_count);
+        setEvidenceNextCursor(evidence.next_cursor);
+        setOpenEvidenceCount(openEvidence.total_count);
+        setEvidenceSource("loaded");
+      } catch (err) {
+        if (gen !== fetchGenRef.current) return;
+        setShopifyEvidence([]);
+        setShopifyEvidenceCount(0);
+        setEvidenceNextCursor(null);
+        setOpenEvidenceCount(0);
+        setEvidenceSource(isForbiddenError(err) ? "forbidden" : "error");
+        failedSources.push("rejected Shopify payloads");
+      }
+    };
+
+    await Promise.all([loadProjectionFailures(), loadImportRejects(), loadShopifyEvidence()]);
+
+    // Only the LATEST reset clears the flags — a superseded reset must not
+    // re-enable load-more while a newer reset is still running.
+    if (gen === fetchGenRef.current) {
+      if (failedSources.length > 0) {
+        // Secondary signal only — the persistent incomplete-visibility banner
+        // (not this auto-dismissing toast) is the error surface of record.
+        toast({
+          title: "Some exception data failed to load",
+          description: `Failed: ${failedSources.join(", ")}. Totals may be understated until a reload succeeds.`,
+          variant: "destructive",
+        });
+      }
+      resetInFlightRef.current = false;
+      setReloading(false);
     }
   };
 
@@ -447,6 +521,23 @@ export default function ExceptionsPage() {
   // Render
   // =========================================================================
 
+  // A5-PR1a: derived visibility state. The green all-clear and the combined
+  // total require EVERY source loaded; a failed source instead surfaces the
+  // persistent incomplete-visibility banner below (or the access-denied state
+  // when the backend denies reports.view — all three queues share that gate).
+  const allSourcesLoaded =
+    projSource === "loaded" && rejectSource === "loaded" && evidenceSource === "loaded";
+  const failedSourceLabels = [
+    projSource === "error" || projSource === "forbidden" ? "Projection failures" : null,
+    rejectSource === "error" || rejectSource === "forbidden" ? "Import rejections" : null,
+    evidenceSource === "error" || evidenceSource === "forbidden"
+      ? "Rejected Shopify payloads"
+      : null,
+  ].filter((s): s is string => s !== null);
+  const visibilityIncomplete = failedSourceLabels.length > 0;
+  const accessDenied =
+    projSource === "forbidden" && rejectSource === "forbidden" && evidenceSource === "forbidden";
+
   return (
     <AppLayout>
       <div className="space-y-6 p-6">
@@ -468,6 +559,47 @@ export default function ExceptionsPage() {
           }
         />
 
+        {/* A5-PR1a: PERSISTENT visibility state — a failed load must never fall
+            through to an all-clear, and a toast alone (auto-dismissing) is not
+            an error surface. */}
+        {accessDenied ? (
+          <Card className="border-destructive">
+            <CardContent className="flex flex-col items-center gap-3 py-16 text-center">
+              <XCircle className="h-12 w-12 text-destructive" />
+              <h3 className="text-lg font-medium">Access denied</h3>
+              <p className="text-sm text-muted-foreground">
+                Your account does not have the <code>reports.view</code> permission required to
+                view exception evidence. Ask a company owner or admin to grant it. This page
+                cannot confirm an all-clear for you.
+              </p>
+            </CardContent>
+          </Card>
+        ) : visibilityIncomplete ? (
+          <Card className="border-destructive">
+            <CardContent className="flex items-start gap-3 py-4">
+              <XCircle className="mt-0.5 h-5 w-5 shrink-0 text-destructive" />
+              <div className="text-sm">
+                <div className="font-medium">Exception visibility is incomplete</div>
+                <p className="text-muted-foreground">
+                  Failed to load: {failedSourceLabels.join(", ")}. Counts below may be
+                  understated — this page cannot confirm an all-clear until every source loads.
+                </p>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                className="ml-auto shrink-0"
+                onClick={handleRefresh}
+                disabled={refreshing || loading}
+              >
+                Retry
+              </Button>
+            </CardContent>
+          </Card>
+        ) : null}
+
+        {!accessDenied && (
+          <>
         {/* Summary cards */}
         {summary && (
           <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
@@ -483,14 +615,21 @@ export default function ExceptionsPage() {
                     "0 / all clear" while dropped import rows sit unresolved below —
                     and using the filter-independent count keeps the total correct
                     under the Resolved/All queue filters. A5-PR2b: the OPEN Shopify
-                    rejected-evidence count folds in for the same reason. */}
+                    rejected-evidence count folds in for the same reason.
+                    A5-PR1a: the number and the all-clear text render ONLY when every
+                    source loaded — a failed sibling source makes the total unknown,
+                    never zero. */}
                 <div className="text-3xl font-semibold">
-                  {summary.total_unresolved + unresolvedRejectsCount + openEvidenceCount}
+                  {allSourcesLoaded
+                    ? summary.total_unresolved + unresolvedRejectsCount + openEvidenceCount
+                    : "—"}
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  {summary.total_unresolved + unresolvedRejectsCount + openEvidenceCount === 0
-                    ? "All clear — projections healthy."
-                    : "Need operator review."}
+                  {!allSourcesLoaded
+                    ? "Unavailable — some sources failed to load."
+                    : summary.total_unresolved + unresolvedRejectsCount + openEvidenceCount === 0
+                      ? "All clear — projections healthy."
+                      : "Need operator review."}
                 </p>
               </CardContent>
             </Card>
@@ -586,6 +725,20 @@ export default function ExceptionsPage() {
               <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
             </CardContent>
           </Card>
+        ) : projSource !== "loaded" ? (
+          <Card>
+            <CardContent className="flex flex-col items-center gap-3 py-12 text-center">
+              {/* A5-PR1a: a failed projection-failure load renders an ERROR state,
+                  never the empty/all-clear state — its queue state is unknown. */}
+              <XCircle className="h-8 w-8 text-destructive" />
+              <h3 className="text-lg font-medium">Projection failures could not be loaded</h3>
+              <p className="text-sm text-muted-foreground">
+                {projSource === "forbidden"
+                  ? "Access denied — the reports.view permission is required to view projection failures."
+                  : "The projection-failure queue failed to load, so its state is unknown. Use Refresh to retry — this is not an all-clear."}
+              </p>
+            </CardContent>
+          </Card>
         ) : items.length === 0 ? (
           <Card>
             <CardContent className="flex flex-col items-center gap-3 py-16 text-center">
@@ -593,8 +746,11 @@ export default function ExceptionsPage() {
                   genuinely nothing anywhere. If projection failures are empty but
                   import rejects or rejected evidence are listed below, show a
                   projection-scoped note that points to them, so the page never
-                  presents a contradictory "all clear" above an active rejection. */}
-              {importRejectsCount === 0 && shopifyEvidenceCount === 0 ? (
+                  presents a contradictory "all clear" above an active rejection.
+                  A5-PR1a: "genuinely nothing anywhere" additionally requires every
+                  source to have LOADED — a failed sibling's zero count proves
+                  nothing. */}
+              {allSourcesLoaded && importRejectsCount === 0 && shopifyEvidenceCount === 0 ? (
                 <>
                   <CheckCircle2 className="h-12 w-12 text-emerald-500" />
                   <h3 className="text-lg font-medium">No exceptions to show</h3>
@@ -602,6 +758,16 @@ export default function ExceptionsPage() {
                     {resolvedFilter === "false"
                       ? "All projections are running cleanly. When something fails, it'll show up here."
                       : "No failures match the current filters."}
+                  </p>
+                </>
+              ) : !allSourcesLoaded ? (
+                <>
+                  {/* A5-PR1a: sibling sources failed — an empty projection queue
+                      plus unknown siblings is NOT an all-clear. */}
+                  <h3 className="text-lg font-medium">No projection failures</h3>
+                  <p className="text-sm text-muted-foreground">
+                    No projection failures match the current filters — but some sources failed
+                    to load (see the notice above), so this is not an all-clear.
                   </p>
                 </>
               ) : (
@@ -662,13 +828,32 @@ export default function ExceptionsPage() {
             <CardTitle className="flex items-center gap-2 text-sm font-medium">
               <AlertTriangle className="h-4 w-4" />
               Import rejections
-              <Badge variant={importRejectsCount === 0 ? "outline" : "warning"}>
-                {importRejectsCount}
+              {/* A5-PR1a: a not-loaded source shows an unknown badge, never 0. */}
+              <Badge
+                variant={
+                  rejectSource === "error" || rejectSource === "forbidden"
+                    ? "destructive"
+                    : rejectSource !== "loaded" || importRejectsCount === 0
+                      ? "outline"
+                      : "warning"
+                }
+              >
+                {rejectSource === "loaded" ? importRejectsCount : "—"}
               </Badge>
             </CardTitle>
           </CardHeader>
           <CardContent className="p-0">
-            {importRejects.length === 0 ? (
+            {rejectSource !== "loaded" ? (
+              <p
+                className={`px-4 py-6 text-sm ${rejectSource === "loading" ? "text-muted-foreground" : "text-destructive"}`}
+              >
+                {rejectSource === "loading"
+                  ? "Loading import rejections…"
+                  : rejectSource === "forbidden"
+                    ? "Access denied — the reports.view permission is required to view import rejections."
+                    : "Import rejections failed to load, so their state is unknown. Use Refresh to retry — this is not an all-clear."}
+              </p>
+            ) : importRejects.length === 0 ? (
               <p className="px-4 py-6 text-sm text-muted-foreground">
                 No dropped settlement/bank import rows.
               </p>
@@ -813,13 +998,32 @@ export default function ExceptionsPage() {
             <CardTitle className="flex items-center gap-2 text-sm font-medium">
               <XCircle className="h-4 w-4" />
               Rejected Shopify payloads
-              <Badge variant={shopifyEvidenceCount === 0 ? "outline" : "warning"}>
-                {shopifyEvidenceCount}
+              {/* A5-PR1a: a not-loaded source shows an unknown badge, never 0. */}
+              <Badge
+                variant={
+                  evidenceSource === "error" || evidenceSource === "forbidden"
+                    ? "destructive"
+                    : evidenceSource !== "loaded" || shopifyEvidenceCount === 0
+                      ? "outline"
+                      : "warning"
+                }
+              >
+                {evidenceSource === "loaded" ? shopifyEvidenceCount : "—"}
               </Badge>
             </CardTitle>
           </CardHeader>
           <CardContent className="p-0">
-            {shopifyEvidence.length === 0 ? (
+            {evidenceSource !== "loaded" ? (
+              <p
+                className={`px-4 py-6 text-sm ${evidenceSource === "loading" ? "text-muted-foreground" : "text-destructive"}`}
+              >
+                {evidenceSource === "loading"
+                  ? "Loading rejected Shopify payloads…"
+                  : evidenceSource === "forbidden"
+                    ? "Access denied — the reports.view permission is required to view rejected Shopify payloads."
+                    : "Rejected Shopify payloads failed to load, so their state is unknown. Use Refresh to retry — this is not an all-clear."}
+              </p>
+            ) : shopifyEvidence.length === 0 ? (
               <p className="px-4 py-6 text-sm text-muted-foreground">
                 No rejected Shopify order/refund payloads.
               </p>
@@ -986,6 +1190,8 @@ export default function ExceptionsPage() {
             )}
           </CardContent>
         </Card>
+          </>
+        )}
       </div>
     </AppLayout>
   );
