@@ -332,16 +332,26 @@ class BaseProjection(ABC):
                     # the event instead of raising — a plain raise under
                     # stop_on_error would halt the whole stream and re-attempt
                     # this same event forever (head-of-line stall). The outer
-                    # per-event transaction already rolled back, so we mark it
-                    # applied + advance the bookmark in a fresh transaction.
+                    # per-event transaction already rolled back.
+                    #
+                    # A5-PR1b: consuming a quarantined financial event is only
+                    # legitimate TOGETHER WITH its durable operator-visible
+                    # evidence, so the failure log, the applied marker and the
+                    # bookmark advance commit in ONE owning transaction — all
+                    # three or none. This branch therefore bypasses the
+                    # fail-soft on_error wrapper and does not catch the owning
+                    # transaction's failure: even under stop_on_error=False, a
+                    # fault while persisting mandatory terminal evidence is a
+                    # framework integrity failure and must propagate, leaving
+                    # the bookmark unmoved and the event pending for retry.
                     logger.warning(
                         "Projection %s terminally skipped event %s: %s",
                         self.name,
                         event.id,
                         skip,
                     )
-                    self.on_error(event, skip)
                     with transaction.atomic(), projection_writes_allowed():
+                        self._persist_failure_log(event, skip)
                         ProjectionAppliedEvent.objects.get_or_create(
                             company=company,
                             projection_name=self.name,
@@ -388,27 +398,26 @@ class BaseProjection(ABC):
 
             return processed
 
-    def on_error(self, event: BusinessEvent, error: Exception) -> None:
-        """A80 (2026-05-25): write an operator-visible failure log entry.
+    def _persist_failure_log(self, event: BusinessEvent, error: Exception) -> None:
+        """THE canonical ProjectionFailureLog upsert (A5-PR1b).
 
-        Replaces the previous `pass` no-op. Whenever a handler raises (instead
-        of silently `return`ing — see docs/finance_event_first_policy.md §8),
-        the framework records what failed where, so the merchant or operator
-        can see it in /finance/exceptions instead of having to grep Django
-        logs.
+        Both failure doors route here so the dedup/categorization contract
+        cannot drift: `on_error` (generic, non-consumed failures — fail-soft)
+        and the ProjectionTerminalSkip consume branch in `process_pending`
+        (where the log is mandatory evidence).
 
         Dedup contract: (company, projection_name, event) is unique. Repeated
-        failures of the same event before resolution bump occurrence_count
-        instead of duplicating rows.
+        failures of the same event bump occurrence_count instead of
+        duplicating rows, refresh category/message/fix_hint, and reopen a row
+        the operator resolved prematurely (resolution_note is left as-is —
+        the reopen itself is the signal).
 
-        Subclasses MAY override to add custom handling (alerts, dead-letter
-        queue, etc.), but MUST call super().on_error(event, error) to preserve
-        operator visibility — silent overrides would re-introduce the A80
-        anti-pattern.
+        Deliberately contains NO transaction and NO exception handling — the
+        caller owns both. on_error wraps it in a fail-soft atomic block; the
+        TerminalSkip branch runs it inside the one owning consume transaction,
+        where a write failure MUST propagate and roll back the consume.
         """
-        from django.db import transaction
         from django.db.models import F
-        from django.utils import timezone
 
         from projections.exceptions import (
             ProjectionCommandFailedError,
@@ -417,7 +426,6 @@ class BaseProjection(ABC):
             ProjectionTerminalSkip,
         )
         from projections.models import ProjectionFailureLog
-        from projections.write_barrier import projection_writes_allowed
 
         # Categorize the error so the operator UI can group / filter sensibly.
         if isinstance(error, ProjectionStateError | ProjectionTerminalSkip):
@@ -436,37 +444,60 @@ class BaseProjection(ABC):
             category = ProjectionFailureLog.Category.UNEXPECTED
             fix_hint = ""
 
+        obj, created = ProjectionFailureLog.objects.get_or_create(
+            company=event.company,
+            projection_name=self.name,
+            event=event,
+            defaults={
+                "event_type": event.event_type,
+                "category": category,
+                "message": str(error)[:5000],
+                "fix_hint": fix_hint,
+            },
+        )
+        if not created:
+            # Same event failed again before being resolved — bump the
+            # counter, refresh the message (it may have changed since
+            # the prior occurrence), and clear `resolved` in the rare
+            # case the operator marked it resolved prematurely.
+            ProjectionFailureLog.objects.filter(pk=obj.pk).update(
+                occurrence_count=F("occurrence_count") + 1,
+                message=str(error)[:5000],
+                category=category,
+                fix_hint=fix_hint,
+                last_seen_at=timezone.now(),
+                resolved=False,
+                resolved_at=None,
+                resolved_by=None,
+            )
+
+    def on_error(self, event: BusinessEvent, error: Exception) -> None:
+        """A80 (2026-05-25): write an operator-visible failure log entry.
+
+        Replaces the previous `pass` no-op. Whenever a handler raises (instead
+        of silently `return`ing — see docs/finance_event_first_policy.md §8),
+        the framework records what failed where, so the merchant or operator
+        can see it in /finance/exceptions instead of having to grep Django
+        logs.
+
+        This is the BEST-EFFORT door for generic, non-consumed failures: the
+        event stays unprocessed (bookmark error state, retryable), so losing
+        one log write costs visibility, never truth — hence the outer catch.
+        The ProjectionTerminalSkip consume branch must NOT come through here:
+        there the log is mandatory evidence for consuming the event, written
+        via `_persist_failure_log` inside the owning consume transaction.
+
+        Subclasses MAY override to add custom handling (alerts, dead-letter
+        queue, etc.), but MUST call super().on_error(event, error) to preserve
+        operator visibility — silent overrides would re-introduce the A80
+        anti-pattern.
+        """
         # A80: use a separate atomic block so writing the failure log is not
         # rolled back when the outer per-event transaction rolls back (the
         # handler raised, so the outer block is already poisoned).
         try:
             with transaction.atomic(), projection_writes_allowed():
-                obj, created = ProjectionFailureLog.objects.get_or_create(
-                    company=event.company,
-                    projection_name=self.name,
-                    event=event,
-                    defaults={
-                        "event_type": event.event_type,
-                        "category": category,
-                        "message": str(error)[:5000],
-                        "fix_hint": fix_hint,
-                    },
-                )
-                if not created:
-                    # Same event failed again before being resolved — bump the
-                    # counter, refresh the message (it may have changed since
-                    # the prior occurrence), and clear `resolved` in the rare
-                    # case the operator marked it resolved prematurely.
-                    ProjectionFailureLog.objects.filter(pk=obj.pk).update(
-                        occurrence_count=F("occurrence_count") + 1,
-                        message=str(error)[:5000],
-                        category=category,
-                        fix_hint=fix_hint,
-                        last_seen_at=timezone.now(),
-                        resolved=False,
-                        resolved_at=None,
-                        resolved_by=None,
-                    )
+                self._persist_failure_log(event, error)
         except Exception as logging_error:
             # Never let on_error itself crash the projection loop. Worst case
             # we lose visibility on this one failure but the framework keeps
