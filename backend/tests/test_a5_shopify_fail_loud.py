@@ -16,7 +16,10 @@ This locks in:
 - the three branches now raise (fail-loud → durable, operator-visible outcome);
 - K#1: a legitimately zero-value order/refund leaves a durable handled-zero
   marker (source row → PROCESSED, no JE) instead of a silent consume;
-- negative refunds get a durable, operator-visible REJECTED outcome at ingress.
+- negative refunds get a durable, operator-visible REJECTED outcome at ingress
+  (A5-PR2c: as ShopifyRejectedEvidence — health-paged, queue-listed, healable
+  by a corrected redelivery — replacing the invisible ShopifyRefund ERROR row;
+  the full lifecycle battery lives in test_a5_pr2c_negative_refund_evidence).
 
 (The webhook-retryability / malformed-order-payload durable-rejection work is
 deferred to A5-PR2b by founder decision — see NEXT_TASKS.)
@@ -358,18 +361,22 @@ def test_process_refund_zero_amount_persists_handled_zero_marker(company, owner_
 
 
 # =============================================================================
-# Codex round-2 P2 — negative refunds get a durable REJECTED marker at ingress
+# A5-PR2c — negative refunds reroute to durable ShopifyRejectedEvidence
 # =============================================================================
 
 
-def test_process_refund_negative_amount_persists_rejected_marker(company, owner_membership):
-    """Codex round-2 P2: a NEGATIVE refund is invalid provider data caught at
-    ingress before any event, so it can't reach the projection's invalid-data
-    guard. The canonical process_refund must persist a durable, operator-visible
-    REJECTED marker (a ShopifyRefund row status=ERROR with the reason) and emit no
-    accounting event — the invalid external evidence must not vanish."""
+def test_process_refund_negative_amount_persists_rejected_evidence(company, owner_membership):
+    """A5-PR2c (supersedes the Codex round-2/round-4 ERROR-row pins): a NEGATIVE
+    aggregate refund is invalid provider data classified by the up-front
+    validator as MALFORMED_MONEY — durable ShopifyRejectedEvidence through the
+    same boundary as every other malformed payload. NO ShopifyRefund row (the
+    old ERROR row was invisible to /finance/exceptions and /_health/alerts, and
+    its refund-id dedup foreclosed the corrected redelivery), no event, and the
+    evidence writer's own first-sighting notification (no bespoke one)."""
+    from accounts.models import Notification
     from events.models import BusinessEvent
     from shopify_connector import commands as cmd
+    from shopify_connector.models import ShopifyRejectedEvidence
 
     store = _shopify_setup(company)
     _make_order_row(company, store, order_id="9900060", total="100.00")
@@ -385,27 +392,30 @@ def test_process_refund_negative_amount_persists_rejected_marker(company, owner_
         },
     )
     assert not result.success
+    assert result.data.get("rejected") is True
+    assert result.data.get("retryable") is not True  # permanent — webhook acks 200
 
-    refund = ShopifyRefund.objects.get(company=company, shopify_refund_id=9900061)
-    assert refund.status == ShopifyRefund.Status.ERROR
-    assert "negative" in refund.error_message.lower()
-    assert refund.event_id is None
+    evidence = ShopifyRejectedEvidence.objects.get(company=company)
+    assert evidence.resource_kind == ShopifyRejectedEvidence.ResourceKind.REFUND
+    assert evidence.rejection_code == ShopifyRejectedEvidence.RejectionCode.MALFORMED_MONEY
+    assert evidence.external_id == "9900061"
+    assert any(e.get("field") == "refund_amount" for e in evidence.validation_errors)
+
+    assert not ShopifyRefund.objects.filter(company=company, shopify_refund_id=9900061).exists()
     assert not BusinessEvent.objects.filter(company=company, idempotency_key="shopify.refund.created:9900061").exists()
 
-    # Codex round-4 P2: the ERROR row is durable evidence but isn't itself
-    # surfaced anywhere, so a negative refund must also raise an operator-visible
-    # notification.
-    from accounts.models import Notification
-
-    assert Notification.objects.filter(
-        company=company, source_module="shopify_connector", title__icontains="rejected"
-    ).exists(), "a negative refund must raise an operator-visible notification"
+    # The evidence writer's first-sighting notification is the ONE delivery
+    # mechanism — no bespoke negative-refund notification exists any more.
+    notes = Notification.objects.filter(company=company, source_module="shopify_connector")
+    assert notes.count() == 1
+    assert "malformed payload" in notes.get().title
 
 
 def test_error_refund_excluded_from_total_refunded(company, owner_membership):
-    """Codex round-3 P2: an ERROR (rejected) refund is kept as durable evidence
-    but MUST NOT skew the order's total_refunded — a persisted negative payload
-    would otherwise show a wrong (even negative) refunded total."""
+    """Codex round-3 P2, retained as the LEGACY defense: production no longer
+    writes ShopifyRefund(status=ERROR) (A5-PR2c reroutes negatives to rejected
+    evidence), but historical/synthetic ERROR rows are not rewritten — every
+    financial reader must keep excluding them from totals."""
     from shopify_connector.serializers import ShopifyOrderSerializer
 
     store = _shopify_setup(company)

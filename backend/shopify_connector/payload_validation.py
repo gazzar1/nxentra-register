@@ -545,6 +545,30 @@ def validate_order_paid_payload(payload) -> PayloadVerdict:
     return _verdict(errors, external_id, None)
 
 
+def refund_aggregate_amount(payload) -> Decimal:
+    """A5-PR2c: THE canonical refund aggregate — one pure helper shared by the
+    validator's bounds below and by ``process_refund``'s amount, so the two can
+    never drift into subtly different sums. Exact live semantics, unchanged:
+
+    1. sum transaction ``amount`` only where ``kind == "refund"`` and
+       ``status == "success"``;
+    2. when that total is EXACTLY zero, fall back to
+       ``sum(refund_line_items[].subtotal)``;
+    3. no rounding, no alternative component treatment.
+
+    Pure: no network, ORM, lock, settings or provider call. May be called only
+    AFTER the per-element structural/money checks proved every relevant value
+    parseable (``Decimal(str(...))`` on an unvalidated value would raise)."""
+    total = Decimal("0")
+    for txn in payload.get("transactions") or []:
+        if txn.get("kind") == "refund" and txn.get("status") == "success":
+            total += Decimal(str(txn.get("amount", "0")))
+    if total == 0:
+        for line in payload.get("refund_line_items") or []:
+            total += Decimal(str(line.get("subtotal", "0")))
+    return total
+
+
 def validate_refund_payload(payload) -> PayloadVerdict:
     """Validate a refunds/create payload (webhook + poller backfill share it)."""
     if not isinstance(payload, dict):
@@ -639,25 +663,36 @@ def validate_refund_payload(payload) -> PayloadVerdict:
 
     # Aggregate bound (Codex round-1 P2): each amount can individually fit
     # numeric(18,2) while their SUM overflows at the ShopifyRefund.amount write
-    # (the same aggregate rides the negative-ERROR-row and zero-marker branches
-    # too) — a post-validation overflow would loop instead of rejecting. Mirror
-    # the live aggregation exactly (kind/status-filtered transaction sum, then
-    # the refund_line_items subtotal fallback when it nets to zero). Only
-    # computable once the per-element checks passed.
+    # (the same aggregate rides the zero-marker branch too) — a post-validation
+    # overflow would loop instead of rejecting. The aggregate itself is the
+    # shared canonical helper (refund_aggregate_amount — the exact sum
+    # process_refund posts). Only computable once the per-element checks passed.
+    #
+    # A5-PR2c (founder decision, assessment finding C4): a storable aggregate
+    # BELOW ZERO is invalid provider data from which no honest refund can be
+    # constructed — the same PERMANENT class as the other MALFORMED_MONEY
+    # defects. It previously produced a ShopifyRefund(status=ERROR) row that
+    # was invisible to /finance/exceptions and /_health/alerts and whose
+    # refund-id dedup foreclosed the corrected redelivery; as evidence it
+    # pages, lists, re-sights, and is superseded by a corrected delivery.
+    # Individual negative components stay tolerated when the exact aggregate
+    # is non-negative — only the terminal negative TOTAL rejects.
     if not errors:
-        total = Decimal("0")
-        for txn in payload.get("transactions") or []:
-            if txn.get("kind") == "refund" and txn.get("status") == "success":
-                total += Decimal(str(txn.get("amount", "0")))
-        if total == 0:
-            for line in payload.get("refund_line_items") or []:
-                total += Decimal(str(line.get("subtotal", "0")))
+        total = refund_aggregate_amount(payload)
         if total.copy_abs() >= _MONEY_MAX:
             errors.append(
                 _defect(
                     MALFORMED_MONEY,
                     "transactions",
                     f"aggregate refund amount exceeds the storable money magnitude: {total}",
+                )
+            )
+        elif total < 0:
+            errors.append(
+                _defect(
+                    MALFORMED_MONEY,
+                    "refund_amount",
+                    f"aggregate refund amount must be non-negative: {total}",
                 )
             )
 
