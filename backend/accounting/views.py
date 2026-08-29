@@ -843,14 +843,28 @@ class JournalReverseView(APIView):
         # A5-PR4a: the reversal body — a reversal reason (required under an
         # active pilot; validated in the command's sentinel branch) and,
         # only when the original lacks pilot-adjustment provenance, a new
-        # typed source reference for the reversal itself.
-        body = request.data or {}
+        # typed source reference for the reversal itself. Codex round-1 P2:
+        # values must be strings (or absent) — a JSON number/array here must
+        # 400, never AttributeError into a 500.
+        body = request.data if isinstance(request.data, dict) else {}
+        body_values = {}
+        for key in ("reason", "adjustment_source_kind", "adjustment_source_reference"):
+            value = body.get(key)
+            if value is None:
+                body_values[key] = ""
+            elif isinstance(value, str):
+                body_values[key] = value.strip()
+            else:
+                return Response(
+                    {"detail": f"{key} must be a string."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         result = reverse_manual_journal_entry(
             actor,
             pk,
-            reversal_reason=(body.get("reason") or "").strip(),
-            adjustment_source_kind=(body.get("adjustment_source_kind") or "").strip(),
-            adjustment_source_reference=(body.get("adjustment_source_reference") or "").strip(),
+            reversal_reason=body_values["reason"],
+            adjustment_source_kind=body_values["adjustment_source_kind"],
+            adjustment_source_reference=body_values["adjustment_source_reference"],
         )
 
         if not result.success:

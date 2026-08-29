@@ -1509,13 +1509,17 @@ def save_journal_entry_complete(
     # change, or an edit that was reverted) had since reset the aggregate to
     # INCOMPLETE — the emitter returned the OLD event, no new event landed,
     # and the entry could never reach DRAFT again. Discriminating on the
-    # aggregate's current stream length keeps true rapid retries deduped
-    # (no interleaved event -> same key) while any later re-complete after
-    # new events gets a fresh key.
+    # count of UPDATED events (Codex PR #134 round-1 P2: NOT the whole
+    # stream — counting the SAVED_COMPLETE itself gave an identical
+    # post-commit retry a fresh key and broke true-retry dedup) keeps every
+    # retry with no interleaved edit on the SAME key, while any re-complete
+    # after a new edit gets a fresh one.
     from events.models import BusinessEvent as _BusinessEvent
 
-    aggregate_event_count = _BusinessEvent.objects.filter(
-        company=actor.company, aggregate_id=str(entry.public_id)
+    updated_event_count = _BusinessEvent.objects.filter(
+        company=actor.company,
+        aggregate_id=str(entry.public_id),
+        event_type=EventTypes.JOURNAL_ENTRY_UPDATED,
     ).count()
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
     event = emit_event(
@@ -1523,7 +1527,7 @@ def save_journal_entry_complete(
         event_type=EventTypes.JOURNAL_ENTRY_SAVED_COMPLETE,
         aggregate_type="JournalEntry",
         aggregate_id=str(entry.public_id),
-        idempotency_key=f"journal_entry.saved_complete:{entry.public_id}:{aggregate_event_count}:{digest}",
+        idempotency_key=f"journal_entry.saved_complete:{entry.public_id}:{updated_event_count}:{digest}",
         data=JournalEntrySavedCompleteData(
             entry_public_id=str(entry.public_id),
             date=payload["date"],

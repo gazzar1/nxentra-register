@@ -880,6 +880,74 @@ def test_internal_reversal_of_system_stamped_je_stays_blank(actor_context, compa
     assert reversed_.data["reversal"].source_document == ""
 
 
+def test_reversal_with_max_length_reason_stays_preflight_clean(actor_context, company, cash_account, revenue_account):
+    """Codex PR #134 round-1 P2: the reversal memo is the reason PLUS the
+    ' — Reverses JE-######' suffix, so a reason near the 180 cap composes a
+    memo over 180. The preflight reason predicate must accept the composed
+    REVERSAL memo (column-bounded), not re-impose the forward cap."""
+    _pilot(company)
+    source = _settlement_source(company)
+    entry = _draft(actor_context, company, cash_account, revenue_account, **source)
+    assert post_manual_journal_entry(actor_context, entry.id).success
+
+    long_reason = "r" * 180
+    reversed_ = reverse_manual_journal_entry(actor_context, entry.id, reversal_reason=long_reason)
+    assert reversed_.success, reversed_.error
+    assert len(reversed_.data["reversal"].memo) > 180  # the composed memo exceeds the forward cap
+
+    codes = _preflight_codes(company)
+    assert "untraceable_manual_posted_journal" not in codes
+    assert "invalid_pilot_adjustment_reference" not in codes
+
+
+def test_sequential_identical_save_complete_retry_dedupes(actor_context, company, cash_account, revenue_account):
+    """Codex PR #134 round-1 P2: an identical save-complete retried AFTER the
+    first one committed (no interleaved edit) must land on the SAME
+    idempotency key — one SAVED_COMPLETE event, not one per retry. Only an
+    interleaved UPDATED event mints a fresh key."""
+    _pilot(company)
+    entry = _draft(actor_context, company, cash_account, revenue_account, **_settlement_source(company))
+
+    def _saved_complete_count():
+        return BusinessEvent.objects.filter(
+            company=company,
+            aggregate_id=str(entry.public_id),
+            event_type="journal_entry.saved_complete",
+        ).count()
+
+    first_count = _saved_complete_count()
+    assert save_manual_journal_entry_complete(actor_context, entry.id).success  # sequential identical retry
+    assert _saved_complete_count() == first_count  # deduped — no duplicate event
+
+    # An interleaved edit mints a fresh key: the re-complete lands a NEW
+    # event and the entry reaches DRAFT again (the original PR4a fix).
+    assert update_manual_journal_entry(actor_context, entry.id, **_settlement_source(company)).success
+    assert save_manual_journal_entry_complete(actor_context, entry.id).success
+    assert _saved_complete_count() == first_count + 1
+    entry.refresh_from_db()
+    assert entry.status == JournalEntry.Status.DRAFT
+
+
+def test_reverse_endpoint_refuses_non_string_body_values(
+    api_client, user, owner_membership, company, cash_account, revenue_account, actor_context
+):
+    """Codex PR #134 round-1 P2: a JSON number/array in the reversal body
+    must 400 with a clear message, never AttributeError into a 500."""
+    entry = _draft(actor_context, company, cash_account, revenue_account, memo="none body", currency=None)
+    posted = post_manual_journal_entry(actor_context, entry.id)
+    assert posted.success, posted.error
+
+    api_client.force_authenticate(user=user)
+    for bad_body in (
+        {"reason": 1},
+        {"adjustment_source_kind": ["settlement_event"]},
+        {"adjustment_source_reference": 7},
+    ):
+        resp = api_client.post(f"/api/accounting/journal-entries/{entry.id}/reverse/", bad_body, format="json")
+        assert resp.status_code == 400, resp.status_code
+        assert "must be a string" in str(resp.data)
+
+
 # --------------------------------------------------------------------------- #
 # (24)(25) rebuild reproduces the trace; backup keeps the fields
 # --------------------------------------------------------------------------- #

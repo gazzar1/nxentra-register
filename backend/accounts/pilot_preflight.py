@@ -1330,8 +1330,16 @@ def _pilot_adjustment_violations(company) -> list[Violation]:
             continue
         kind, body = parsed
 
+        # Codex PR #134 round-1 P2: a manual pilot REVERSAL's memo is the
+        # write-gated 10-180-char reason PLUS the " — Reverses JE-######"
+        # suffix the reversal command appends, so the composed memo can
+        # legitimately exceed 180. The payload carries `kind`; REVERSAL
+        # payloads get the column bound (255) while forward adjustments keep
+        # the write contract's 180. The >=10 floor is the load-bearing
+        # anti-blank check either way.
         memo = str(data.get("memo") or "").strip()
-        if not (10 <= len(memo) <= 180):
+        memo_cap = 255 if str(data.get("kind") or "") == "REVERSAL" else 180
+        if not (10 <= len(memo) <= memo_cap):
             untraceable.append(data.get("entry_number") or label)
             continue
 
