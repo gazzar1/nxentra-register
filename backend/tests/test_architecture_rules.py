@@ -3061,3 +3061,196 @@ def test_alert_health_module_is_provider_neutral():
     source = inspect.getsource(health).lower()
     for provider in ("shopify", "stripe", "paymob", "bosta"):
         assert provider not in source, f"ops.health must not reference provider {provider!r} — adapters register in"
+
+
+# =============================================================================
+# Rule 17 (A5-PR1b): terminal-skip evidence/consume atomicity is structural.
+# Finding C2: the previous composition ran the fail-soft on_error hook (which
+# swallows its own ProjectionFailureLog write failure) and THEN consumed the
+# event — applied marker + bookmark advance — in a separate transaction. A
+# transient DB fault on the evidence write left a quarantined financial event
+# permanently consumed with zero durable trace. The corrected shape: the
+# TerminalSkip branch owns ONE transaction containing, in source order, the
+# canonical failure-log upsert -> the applied-marker get_or_create -> the
+# bookmark advance, with no on_error call and no catch — a fault propagates,
+# nothing survives, the event stays pending. These rules pin that shape and
+# its premises (one canonical upsert used by both failure doors; a helper
+# that owns no transaction and swallows nothing; no subclass override; no
+# second consume door anywhere in production code).
+# =============================================================================
+
+
+def _projection_base_source() -> str:
+    return (BACKEND_ROOT / "projections" / "base.py").read_text(encoding="utf-8")
+
+
+def _terminal_skip_handlers(source: str) -> list[ast.ExceptHandler]:
+    """Every `except` handler in projections/base.py whose exception type
+    names ProjectionTerminalSkip (or a subclass by name)."""
+    handlers: list[ast.ExceptHandler] = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ExceptHandler) and node.type is not None:
+            names = {n.id for n in ast.walk(node.type) if isinstance(n, ast.Name)}
+            names |= {n.attr for n in ast.walk(node.type) if isinstance(n, ast.Attribute)}
+            if names & {"ProjectionTerminalSkip", "PostedJournalApplyInvalid"}:
+                handlers.append(node)
+    return handlers
+
+
+def test_terminal_skip_branch_owns_one_transaction_in_evidence_first_order():
+    """The consume branch must be: one atomic block; failure-log upsert BEFORE
+    the applied marker BEFORE the bookmark advance; `processed` counted only
+    after the block; no fail-soft on_error call; no try/except inside the
+    branch that could downgrade a fault on the mandatory evidence writes."""
+    source = _projection_base_source()
+    handlers = _terminal_skip_handlers(source)
+    assert len(handlers) == 1, (
+        "projections/base.py must contain exactly ONE `except ProjectionTerminalSkip` "
+        f"handler (the process_pending consume branch); found {len(handlers)}"
+    )
+    handler = handlers[0]
+    segment = ast.get_source_segment(source, handler) or ""
+
+    markers = [
+        "transaction.atomic()",
+        "self._persist_failure_log(event, skip)",
+        "ProjectionAppliedEvent.objects.get_or_create",
+        "bookmark.mark_processed(event)",
+        "processed += 1",
+    ]
+    positions = []
+    for marker in markers:
+        assert marker in segment, (
+            f"The TerminalSkip consume branch lost its `{marker}` step — the "
+            "quarantine consume must be one owning transaction writing the failure "
+            "log, then the applied marker, then the bookmark advance, and only "
+            "count the event as processed after the block."
+        )
+        positions.append(segment.index(marker))
+    assert positions == sorted(positions), (
+        "The TerminalSkip consume steps are out of order. Binding order: atomic "
+        "block -> canonical failure-log upsert -> applied-marker get_or_create -> "
+        f"bookmark advance -> processed count. Got positions {positions} for {markers}."
+    )
+
+    assert "self.on_error(" not in segment, (
+        "The TerminalSkip branch must NOT route through the fail-soft on_error "
+        "wrapper — there the failure log is best-effort visibility; here it is "
+        "mandatory evidence for consuming the event."
+    )
+    assert not any(isinstance(n, ast.Try) for n in ast.walk(handler)), (
+        "The TerminalSkip branch must not catch/downgrade a failure from its "
+        "owning transaction — inability to persist mandatory terminal evidence "
+        "is a framework integrity failure and must propagate."
+    )
+
+
+def test_failure_log_upsert_has_one_canonical_writer():
+    """One upsert implementation (_persist_failure_log), called by BOTH failure
+    doors (on_error and the TerminalSkip branch); no duplicated upsert in
+    base.py; no other production code creates failure rows."""
+    source = _projection_base_source()
+    assert source.count("ProjectionFailureLog.objects.get_or_create") == 1, (
+        "projections/base.py must contain exactly one ProjectionFailureLog upsert "
+        "(inside _persist_failure_log) — a second copy is categorization/dedup drift "
+        "waiting to happen."
+    )
+    assert source.count("self._persist_failure_log(") == 2, (
+        "_persist_failure_log must be called from exactly two places: the fail-soft "
+        "on_error wrapper (generic, non-consumed failures) and the TerminalSkip "
+        "consume branch (mandatory evidence)."
+    )
+
+    offenders: list[str] = []
+    for path in _python_files_under(
+        BACKEND_ROOT,
+        exclude=("migrations/", "tests/", "venv", ".venv", "__pycache__"),
+    ):
+        rel = path.relative_to(BACKEND_ROOT).as_posix()
+        if rel == "projections/base.py" or path.name.startswith("test_"):
+            continue
+        text = path.read_text(encoding="utf-8")
+        if "ProjectionFailureLog.objects.get_or_create" in text or "ProjectionFailureLog.objects.create" in text:
+            offenders.append(rel)
+    assert not offenders, (
+        "Only projections/base.py may CREATE ProjectionFailureLog rows (operator "
+        "views only update resolution fields). A second creator forks the dedup/"
+        f"categorization contract. Violations: {offenders}"
+    )
+
+
+def test_persist_failure_log_owns_no_transaction_and_swallows_nothing():
+    """The canonical upsert helper must leave transaction ownership and error
+    policy to its caller: on_error wraps it fail-soft; the TerminalSkip branch
+    runs it inside the owning consume transaction where a failure MUST
+    propagate. A catch or an atomic block inside the helper would silently
+    change one of those doors."""
+    import inspect
+    import textwrap
+
+    from projections.base import BaseProjection
+
+    src = inspect.getsource(BaseProjection._persist_failure_log)
+    fn = ast.parse(textwrap.dedent(src)).body[0]
+    assert not any(isinstance(n, ast.Try) for n in ast.walk(fn)), (
+        "_persist_failure_log must contain no exception handling — its caller owns the error policy."
+    )
+    assert "transaction.atomic" not in src, (
+        "_persist_failure_log must not open its own transaction — its caller owns the transaction."
+    )
+    # The A80 upsert contract stays in the one canonical body.
+    for marker in ("get_or_create", 'F("occurrence_count") + 1', "resolved=False", "fix_hint"):
+        assert marker in src, f"_persist_failure_log lost its `{marker}` upsert behavior (A80 contract)."
+
+
+def test_no_projection_subclass_overrides_the_failure_log_writer():
+    """Registration imports every projection module, so walking BaseProjection's
+    subclass tree covers them all (process_pending/rebuild overrides are already
+    pinned by Rule 6b). An overridden writer could drop the categorization or
+    the reopen semantics out from under BOTH failure doors."""
+    from projections.base import BaseProjection, projection_registry
+
+    assert projection_registry.all(), "registry must be populated at app-ready"
+
+    offenders: list[str] = []
+
+    def _walk(cls) -> None:
+        for sub in cls.__subclasses__():
+            if "_persist_failure_log" in sub.__dict__:
+                offenders.append(f"{sub.__module__}.{sub.__qualname__}")
+            _walk(sub)
+
+    _walk(BaseProjection)
+    assert not offenders, (
+        "No projection may override _persist_failure_log (the canonical failure-log "
+        f"upsert used by both failure doors). Violations: {offenders}"
+    )
+
+
+def test_terminal_skip_has_a_single_consume_door_repo_wide():
+    """Exactly one place in production code may catch ProjectionTerminalSkip
+    (or its PostedJournalApplyInvalid subclass): the process_pending consume
+    branch. A second catcher would be a second consume door with its own —
+    unpinned — evidence semantics."""
+    catching: list[str] = []
+    for path in _python_files_under(
+        BACKEND_ROOT,
+        exclude=("migrations/", "tests/", "venv", ".venv", "__pycache__"),
+    ):
+        if path.name.startswith("test_"):
+            continue
+        text = path.read_text(encoding="utf-8")
+        if "TerminalSkip" not in text and "PostedJournalApplyInvalid" not in text:
+            continue
+        for node in ast.walk(ast.parse(text)):
+            if isinstance(node, ast.ExceptHandler) and node.type is not None:
+                names = {n.id for n in ast.walk(node.type) if isinstance(n, ast.Name)}
+                names |= {n.attr for n in ast.walk(node.type) if isinstance(n, ast.Attribute)}
+                if names & {"ProjectionTerminalSkip", "PostedJournalApplyInvalid"}:
+                    catching.append(path.relative_to(BACKEND_ROOT).as_posix())
+                    break
+    assert catching == ["projections/base.py"], (
+        "ProjectionTerminalSkip may be CAUGHT only by BaseProjection.process_pending "
+        "(the one consume door whose evidence atomicity Rule 17 pins). "
+        f"Catchers found: {catching}"
+    )
