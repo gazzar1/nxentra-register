@@ -80,6 +80,25 @@ def commit_scratchpad_groups(
     """
     require(actor, "journal.create")
 
+    # A5-PR4a: under an active constrained pilot every manual journal must be
+    # a traced pilot adjustment through the manual-journal boundary; the
+    # scratchpad's free-authoring commit would bypass that contract (it holds
+    # no admission lock and passes no manual sentinel), so it refuses
+    # outright BEFORE any event/sequence/journal/projection mutation. This is
+    # a point-in-time check by design (no new capability, no A4 reopen); the
+    # untraceable_manual_posted_journal preflight drift scan backstops the
+    # activation race. Profile NONE is byte-identical to before.
+    from accounts.pilot_policy import PilotScopeBlocked, is_pilot, profile_of
+
+    if actor.company is not None and is_pilot(actor.company):
+        raise PilotScopeBlocked(
+            "scratchpad_commit",
+            profile_of(actor.company),
+            "Scratchpad commit is not available under the constrained pilot: manual "
+            "journals must be posted as traced pilot adjustments through the journal "
+            "entry screen (reason + source item reference).",
+        )
+
     batch_id = uuid.uuid4()
     committed_at = timezone.now()
     created_entries = []

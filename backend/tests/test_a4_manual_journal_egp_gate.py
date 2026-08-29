@@ -59,7 +59,32 @@ def _make_pilot(company, *, currency="EGP"):
     company.functional_currency = currency
     company.fiscal_year_start_month = 1
     company.save()
+    # A5-PR4a: the durable activation row is the traceability cutoff; tests
+    # flipping the profile directly stand in for activate_pilot_profile,
+    # which writes this row transactionally.
+    from accounts.models import PilotProfileActivation
+
+    PilotProfileActivation.objects.create(company=company, profile=str(ISO))
     return company
+
+
+def _traced(company):
+    """A5-PR4a: a valid pilot-adjustment source stamp (settlement_event kind)
+    for posting a manual journal under the active pilot. Seeds the canonical
+    payment-settlement-received event the reference resolves against."""
+    counter, _ = CompanyEventCounter.objects.get_or_create(company=company)
+    counter.last_sequence += 1
+    counter.save()
+    ev = BusinessEvent.objects.create(
+        company=company,
+        event_type="payment.settlement_received",
+        aggregate_type="PaymentSettlement",
+        aggregate_id=str(uuid4()),
+        company_sequence=counter.last_sequence,
+        idempotency_key=f"test.pr4a.settlement:{uuid4()}",
+        data={},
+    )
+    return {"source_module": "pilot_adjustment", "source_document": f"settlement_event:{ev.id}"}
 
 
 def _make_none_egp(company):
@@ -140,6 +165,8 @@ class TestSupportedEgpLifecycle:
             memo="egp manual",
             currency="EGP",
             lines=_lines(cash_account, revenue_account),
+            # A5-PR4a: posting under the active pilot requires a traced source.
+            **_traced(company),
         )
         assert created.success, created.error
         assert created.data.kind == JournalEntry.Kind.NORMAL
@@ -161,7 +188,9 @@ class TestSupportedEgpLifecycle:
         assert posted.data.currency == "EGP"
         assert Decimal(posted.data.exchange_rate) == Decimal("1.0")
 
-        reversed_ = reverse_manual_journal_entry(actor_context, created.data.id)
+        reversed_ = reverse_manual_journal_entry(
+            actor_context, created.data.id, reversal_reason="reversing egp manual entry"
+        )
         assert reversed_.success, reversed_.error
         assert reversed_.data["original"].status == JournalEntry.Status.REVERSED
         assert reversed_.data["reversal"].kind == JournalEntry.Kind.REVERSAL
@@ -195,13 +224,19 @@ class TestSupportedEgpLifecycle:
         """Field-level parity proof: the same EGP fixture produces the same
         event sequence and the same posted-entry facts under NONE and pilot."""
 
+        # A5-PR4a: the SAME traced fixture in both runs (the source stamp is
+        # validated same-company under the sentinel regardless of profile;
+        # only the post-time REQUIREMENT is pilot-scoped), so parity holds.
+        traced = _traced(company)
+
         def run():
             r = create_manual_journal_entry(
                 actor_context,
                 date=date(2026, 2, 10),
-                memo="parity",
+                memo="parity lifecycle",
                 currency="EGP",
                 lines=_lines(cash_account, revenue_account),
+                **traced,
             )
             assert r.success, r.error
             assert save_manual_journal_entry_complete(actor_context, r.data.id).success
@@ -308,6 +343,9 @@ class TestForeignRejection:
             memo="pre-pilot usd line",
             currency="EGP",
             lines=_lines(cash_account, revenue_account, currency="USD", exchange_rate=Decimal("48")),
+            # A5-PR4a: a valid trace so the post reaches the EGP gate — this
+            # test pins the CURRENCY rejection, not the traceability one.
+            **_traced(company),
         )
         assert seeded.success, seeded.error
         from accounting.commands import save_journal_entry_complete
@@ -487,7 +525,12 @@ class TestJournalCurrencyPreflight:
         in both ordinary and activation preflight modes."""
         _make_pilot(company)
         r = create_manual_journal_entry(
-            actor_context, date=date.today(), memo="clean", currency="EGP", lines=_lines(cash_account, revenue_account)
+            actor_context,
+            date=date.today(),
+            memo="clean pilot books",
+            currency="EGP",
+            lines=_lines(cash_account, revenue_account),
+            **_traced(company),
         )
         assert r.success, r.error
         assert save_manual_journal_entry_complete(actor_context, r.data.id).success
@@ -547,6 +590,7 @@ class TestNonCanonicalEgpCanonicalized:
             memo="lower lifecycle",
             currency="egp",
             lines=_lines(cash_account, revenue_account, currency="egp"),
+            **_traced(company),
         )
         assert r.success, r.error
         assert save_manual_journal_entry_complete(actor_context, r.data.id).success

@@ -3254,3 +3254,187 @@ def test_terminal_skip_has_a_single_consume_door_repo_wide():
         "(the one consume door whose evidence atomicity Rule 17 pins). "
         f"Catchers found: {catching}"
     )
+
+
+# =============================================================================
+# Rule 18 (A5-PR4a): the pilot-adjustment traceability contract is structural.
+# Under ISOLATED_SHADOW_LEDGER_V1 every manual journal POSTED after activation
+# must carry the server-stamped source_module="pilot_adjustment", one typed
+# same-company-validated source reference, and a 10-180-char reason (memo).
+# These rules pin the contract's premises: a CLOSED source-kind registry with
+# adapter-registered provider resolvers (core never imports Shopify), the raw
+# source fields never request-writable, the stamp writable only by the server
+# mapping, the post/reversal gates inside the manual sentinel branch BEFORE
+# the sequence mint (raise = zero residue), the scratchpad pilot refusal, and
+# the A3 modules untouched by any of it.
+# =============================================================================
+
+# Two-sided pinned resolver registry: kind -> (module, qualname). A new kind
+# or a replaced resolver is a reviewed act; a DISAPPEARED registration is a
+# silent validation hole.
+A5_PILOT_ADJUSTMENT_SOURCE_RESOLVERS: dict[str, tuple[str, str]] = {
+    "projection_failure": ("accounting.pilot_adjustments", "_resolve_projection_failure"),
+    "import_reject": ("accounting.pilot_adjustments", "_resolve_import_reject"),
+    "settlement_event": ("accounting.pilot_adjustments", "_resolve_settlement_event"),
+    "bank_line": ("accounting.pilot_adjustments", "_resolve_bank_line"),
+    "shopify_order": ("shopify_connector.pilot_adjustment_sources", "resolve_shopify_order"),
+    "shopify_refund": ("shopify_connector.pilot_adjustment_sources", "resolve_shopify_refund"),
+    "shopify_reject": ("shopify_connector.pilot_adjustment_sources", "resolve_shopify_reject"),
+}
+
+
+def test_pilot_adjustment_source_registry_is_pinned():
+    from accounting.pilot_adjustments import registered_adjustment_source_resolvers
+
+    actual = {kind: (fn.__module__, fn.__qualname__) for kind, fn in registered_adjustment_source_resolvers().items()}
+    assert actual == A5_PILOT_ADJUSTMENT_SOURCE_RESOLVERS, (
+        "The pilot-adjustment source-kind registry changed. A new kind or resolver "
+        "must be added to A5_PILOT_ADJUSTMENT_SOURCE_RESOLVERS in review; a "
+        f"disappeared registration is a silent validation hole. Actual: {actual}"
+    )
+
+
+def test_pilot_adjustments_module_is_provider_neutral_and_a3_free():
+    """Core accounting owns the registry; provider resolvers register in from
+    the adapter (dependency direction, non-negotiable #2). And the contract
+    must never lean on — or leak into — the A3 journal invariant modules."""
+    # IMPORT scan (not substring — the source-kind NAMES legitimately contain
+    # "shopify"): no provider app and no A3 module may be imported, at module
+    # level or lazily inside functions.
+    source = (BACKEND_ROOT / "accounting" / "pilot_adjustments.py").read_text(encoding="utf-8")
+    imported: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module)
+    forbidden_prefixes = (
+        "shopify_connector",
+        "stripe_connector",
+        "platform_connectors",
+        "bank_connector",
+        "accounting.journal_invariant",
+        "accounting.posted_journal_apply",
+        "accounting.posted_journal_boundary",
+        "projections.apply_validation",
+    )
+    offenders = sorted(m for m in imported if m.startswith(forbidden_prefixes))
+    assert not offenders, (
+        "accounting/pilot_adjustments.py must import neither provider adapters "
+        f"(adapters register IN) nor the frozen A3 modules. Imports found: {offenders}"
+    )
+    for a3_file in (
+        BACKEND_ROOT / "accounting" / "journal_invariant.py",
+        BACKEND_ROOT / "accounting" / "posted_journal_apply.py",
+        BACKEND_ROOT / "accounting" / "posted_journal_boundary.py",
+        BACKEND_ROOT / "projections" / "apply_validation.py",
+    ):
+        a3_source = a3_file.read_text(encoding="utf-8")
+        assert "pilot_adjustment" not in a3_source, (
+            f"{a3_file.name} must not know about pilot adjustments — the A3 boundary is frozen"
+        )
+
+
+def test_post_gate_sits_inside_manual_sentinel_before_the_mint():
+    """The traceability gate must run in post_journal_entry_or_raise, inside
+    the _MANUAL_JOURNAL_PROCESS branch, BEFORE the JE-number mint — so a
+    refusal (a raise) provably leaves zero residue and provider/internal
+    callers (no sentinel) are untouched."""
+    source = (BACKEND_ROOT / "accounting" / "commands.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    segment = ""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "post_journal_entry_or_raise":
+            segment = ast.get_source_segment(source, node) or ""
+            break
+    assert segment, "post_journal_entry_or_raise not found"
+    gate = segment.index("require_pilot_adjustment_traceability(")
+    mint = segment.index('_next_company_sequence(entry.company, "journal_entry_number")')
+    sentinel = segment.index("_process_token is _MANUAL_JOURNAL_PROCESS")
+    assert sentinel < gate < mint, (
+        "post_journal_entry_or_raise must run require_pilot_adjustment_traceability "
+        "inside the manual sentinel branch and BEFORE the entry-number mint "
+        f"(sentinel@{sentinel}, gate@{gate}, mint@{mint})."
+    )
+
+
+def test_reversal_core_inherits_provenance_and_gates_manual_reversals():
+    source = (BACKEND_ROOT / "accounting" / "commands.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    segment = ""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_reverse_posted_journal_entry":
+            segment = ast.get_source_segment(source, node) or ""
+            break
+    assert segment, "_reverse_posted_journal_entry not found"
+    gate = segment.index("require_pilot_reversal_traceability(")
+    mint = segment.index("_next_company_sequence(original.company")
+    assert gate < mint, "the manual-reversal gate must run before the reversal's sequence mint"
+    assert "source_module=rev_source_module" in segment and "source_document=rev_source_document" in segment, (
+        "the reversal posted payload must carry the (inherited or newly validated) "
+        "source provenance — dropping it recreates the pre-PR4a trace loss"
+    )
+
+
+def test_raw_source_fields_are_never_request_writable():
+    """The ONLY write surface for adjustment provenance is the typed input
+    pair; the raw fields stay out of every writable serializer (system values
+    like 'payment_settlement' are load-bearing recon joins a client must not
+    forge), and the save-complete door deliberately drops the typed pair."""
+    from accounting.serializers import (
+        JournalEntryAutoSaveSerializer,
+        JournalEntrySaveCompleteSerializer,
+        JournalEntrySerializer,
+    )
+
+    autosave_fields = set(JournalEntryAutoSaveSerializer().fields)
+    assert "source_module" not in autosave_fields and "source_document" not in autosave_fields
+    assert {"adjustment_source_kind", "adjustment_source_reference"} <= autosave_fields
+
+    complete_fields = set(JournalEntrySaveCompleteSerializer().fields)
+    assert "adjustment_source_kind" not in complete_fields
+    assert "adjustment_source_reference" not in complete_fields
+
+    read_only = set(JournalEntrySerializer.Meta.read_only_fields)
+    assert {"source_module", "source_document"} <= read_only
+
+
+def test_pilot_adjustment_stamp_literal_is_server_side_only():
+    """The 'pilot_adjustment' stamp may appear only where the server maps the
+    typed inputs (views) and where the contract lives (pilot_adjustments).
+    Anywhere else is a second writer of the discriminator."""
+    allowed = {"accounting/pilot_adjustments.py", "accounting/views.py"}
+    found: set[str] = set()
+    for path in _python_files_under(
+        BACKEND_ROOT,
+        exclude=("migrations/", "tests/", "venv", ".venv", "__pycache__"),
+    ):
+        if path.name.startswith("test_"):
+            continue
+        if '"pilot_adjustment"' in path.read_text(encoding="utf-8"):
+            found.add(path.relative_to(BACKEND_ROOT).as_posix())
+    assert found == allowed, (
+        'The literal "pilot_adjustment" stamp moved. Allowed writers/definition sites: '
+        f"{sorted(allowed)}; found: {sorted(found)}. Everything else must import "
+        "PILOT_ADJUSTMENT_SOURCE_MODULE from accounting.pilot_adjustments."
+    )
+
+
+def test_scratchpad_commit_carries_the_pilot_refusal():
+    """The scratchpad is the one non-wrapper free-authoring door into the
+    shared journal commands; under the active pilot it must refuse before any
+    mutation (the drift scan backstops the unlocked activation race)."""
+    source = (BACKEND_ROOT / "scratchpad" / "commands.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    segment = ""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "commit_scratchpad_groups":
+            segment = ast.get_source_segment(source, node) or ""
+            break
+    assert segment, "commit_scratchpad_groups not found"
+    refusal = segment.index("is_pilot(actor.company)")
+    raise_pos = segment.index("raise PilotScopeBlocked(")
+    first_write = segment.index("batch_id = ")
+    assert refusal < first_write and raise_pos < first_write, (
+        "scratchpad commit must refuse on an active pilot BEFORE any batch work begins"
+    )

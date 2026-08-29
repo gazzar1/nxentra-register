@@ -65,18 +65,33 @@ No global deadlock-freedom is claimed.
 - provider clearing accounts (posting-profile routed);
 - expected bank deposit (EBD) lifecycle;
 - founder-reviewed supported bank matching (manual match/confirm);
-- supervised general manual journals — **EGP-only at header AND line level**.
-  The manual HTTP surface routes exclusively through the manual-journal
-  process boundary (`accounting.commands.*_manual_journal_entry`): each
-  wrapper owns `serialized_company_admission` (held through the shared
-  command's whole commit, one serializable ordering with
-  `activate_pilot_profile`) and the shared command runs the canonical
-  `require_pilot_journal_currency` validator at its currency-resolution
-  points — header, every line, `amount_currency` foreign legs, and any
-  non-1 exchange rate all reject BEFORE any event/sequence/row (blank keeps
-  its book-at-home-currency meaning). Ordinary EGP debit/credit, dimensions,
-  counterparties, descriptions and the existing kind surface are unchanged;
-  DRAFT/INCOMPLETE delete stays available as cleanup. Manual sales invoices,
+- supervised manual journals as **traced pilot adjustments** — **EGP-only at
+  header AND line level**, and (A5-PR4a) source-traced at post. The manual
+  HTTP surface routes exclusively through the manual-journal process
+  boundary (`accounting.commands.*_manual_journal_entry`): each wrapper owns
+  `serialized_company_admission` (held through the shared command's whole
+  commit, one serializable ordering with `activate_pilot_profile`) and the
+  shared command runs the canonical `require_pilot_journal_currency`
+  validator at its currency-resolution points — header, every line,
+  `amount_currency` foreign legs, and any non-1 exchange rate all reject
+  BEFORE any event/sequence/row (blank keeps its book-at-home-currency
+  meaning). **Before activation, EGP setup/opening journals may be posted.
+  After activation, manual journals are supported only as supervised pilot
+  adjustments: every post requires a server-validated same-company source
+  reference and a nonblank reason. Source provenance is server-stamped
+  (`source_module="pilot_adjustment"` + one typed
+  `source_document="<kind>:<id>"` from the closed resolver registry in
+  `accounting.pilot_adjustments`; the raw fields are never
+  request-writable); supported automated Shopify, Paymob/Bosta settlement
+  and reconciliation processes are unaffected (no sentinel, no gate). Draft
+  cleanup remains available**, drafts stay freely editable before posting,
+  and a manual reversal requires its own reason while inheriting the
+  original's source reference. The scratchpad commit — the one non-wrapper
+  free-authoring door — refuses under the active pilot. The
+  `PilotProfileActivation` row is the durable pre/post-activation cutoff,
+  enforced as drift by `pilot_activation_audit_missing` /
+  `untraceable_manual_posted_journal` / `invalid_pilot_adjustment_reference`
+  / `pilot_adjustment_source_company_mismatch`. Manual sales invoices,
   credit notes, customer receipts, EDIM financial commit and FX revaluation
   remain UNSUPPORTED and are not addressed by this boundary;
 - shadow-ledger reports and exception review.

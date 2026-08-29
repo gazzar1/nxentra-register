@@ -393,6 +393,33 @@ class JournalEntryListCreateView(APIView):
         lines = data.pop("lines", [])
         override_reason = (data.pop("override_reason", "") or "").strip()
 
+        # A5-PR4a: map the typed adjustment inputs to the server-stamped
+        # provenance pair. The view does NO validation beyond shape — the
+        # command's manual sentinel branch runs the one canonical
+        # validate_manual_source_stamp under the admission lock.
+        adj_kind = (data.pop("adjustment_source_kind", "") or "").strip()
+        adj_reference = (data.pop("adjustment_source_reference", "") or "").strip()
+        if bool(adj_kind) != bool(adj_reference):
+            return Response(
+                {"detail": "adjustment_source_kind and adjustment_source_reference must be supplied together."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        source_kwargs = {}
+        if adj_kind:
+            source_kwargs = {
+                "source_module": "pilot_adjustment",
+                "source_document": f"{adj_kind}:{adj_reference}",
+            }
+
+        # A5-PR4a: wire the dormant A177 request identity through the manual
+        # HTTP door. With the header, an exact retry returns the ORIGINAL
+        # entry and a same-key different-payload replay is a loud conflict
+        # (the content hash already covers memo, source provenance, period,
+        # lines and counterparties). Namespaced so a client value can never
+        # collide with internal writers' structured request ids.
+        idem_header = (request.headers.get("Idempotency-Key") or "").strip()
+        request_id = f"manual_je:{idem_header}" if idem_header else None
+
         # Convert lines to command format (already has account_id)
         command_lines = []
         for line in lines:
@@ -478,6 +505,8 @@ class JournalEntryListCreateView(APIView):
             exchange_rate=data.get("exchange_rate"),
             lines=command_lines,
             period=requested_period,
+            request_id=request_id,
+            **source_kwargs,
         )
 
         if not result.success:
@@ -599,6 +628,24 @@ class JournalEntryDetailView(APIView):
             kwargs["currency"] = data["currency"]
         if "exchange_rate" in data:
             kwargs["exchange_rate"] = data["exchange_rate"]
+
+        # A5-PR4a: draft-time source change. Both typed inputs together set
+        # the stamp; both explicitly blank clear it; one without the other is
+        # a shape error. Validation happens in the command's sentinel branch.
+        if "adjustment_source_kind" in data or "adjustment_source_reference" in data:
+            adj_kind = (data.get("adjustment_source_kind", "") or "").strip()
+            adj_reference = (data.get("adjustment_source_reference", "") or "").strip()
+            if bool(adj_kind) != bool(adj_reference):
+                return Response(
+                    {"detail": "adjustment_source_kind and adjustment_source_reference must be supplied together."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if adj_kind:
+                kwargs["source_module"] = "pilot_adjustment"
+                kwargs["source_document"] = f"{adj_kind}:{adj_reference}"
+            else:
+                kwargs["source_module"] = ""
+                kwargs["source_document"] = ""
 
         if "lines" in data:
             lines = data["lines"]
@@ -793,7 +840,18 @@ class JournalReverseView(APIView):
         actor = resolve_actor(request)
         # Permission check happens in command
 
-        result = reverse_manual_journal_entry(actor, pk)
+        # A5-PR4a: the reversal body — a reversal reason (required under an
+        # active pilot; validated in the command's sentinel branch) and,
+        # only when the original lacks pilot-adjustment provenance, a new
+        # typed source reference for the reversal itself.
+        body = request.data or {}
+        result = reverse_manual_journal_entry(
+            actor,
+            pk,
+            reversal_reason=(body.get("reason") or "").strip(),
+            adjustment_source_kind=(body.get("adjustment_source_kind") or "").strip(),
+            adjustment_source_reference=(body.get("adjustment_source_reference") or "").strip(),
+        )
 
         if not result.success:
             return Response(

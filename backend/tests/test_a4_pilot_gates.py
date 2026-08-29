@@ -32,6 +32,12 @@ def _make_pilot(company, *, currency="EGP", with_periods=True):
     company.functional_currency = currency
     company.fiscal_year_start_month = 1
     company.save()
+    # A5-PR4a: the durable activation row is the traceability cutoff; tests
+    # flipping the profile directly stand in for activate_pilot_profile,
+    # which writes this row transactionally.
+    from accounts.models import PilotProfileActivation
+
+    PilotProfileActivation.objects.get_or_create(company=company, defaults={"profile": str(ISO)})
     if with_periods:
         from projections.models import FiscalPeriodConfig
 

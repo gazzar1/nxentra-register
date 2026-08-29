@@ -410,6 +410,12 @@ class JournalEntrySerializer(serializers.ModelSerializer):
             "entry_number",
             "status",
             "kind",
+            # A5-PR4a belt-and-braces: display-only provenance. This
+            # serializer is never bound to request data, but raw source
+            # fields must stay formally non-writable everywhere — the manual
+            # surface writes them only via the typed adjustment inputs.
+            "source_module",
+            "source_document",
             "posted_at",
             "posted_by",
             "reversed_at",
@@ -466,6 +472,25 @@ class JournalEntryAutoSaveSerializer(serializers.ModelSerializer):
     # NOT NULL constraint on `period` is satisfied by `create_journal_entry`
     # which always writes a concrete value into the event payload.
     period = serializers.IntegerField(required=False, allow_null=True)
+    # A5-PR4a: the ONLY write surface for adjustment provenance — typed
+    # inputs the view maps to the server-stamped pilot-adjustment
+    # source_module plus the canonical "<kind>:<reference>" source_document.
+    # The raw source fields themselves are never request-writable (they are
+    # not in this serializer, and system values like "payment_settlement"
+    # are load-bearing recon joins a client must not be able to forge).
+    # Supplied together, or both blank to clear a draft's source.
+    adjustment_source_kind = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=50,
+        write_only=True,
+    )
+    adjustment_source_reference = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=100,
+        write_only=True,
+    )
 
     class Meta:
         model = JournalEntry
@@ -483,6 +508,8 @@ class JournalEntryAutoSaveSerializer(serializers.ModelSerializer):
             "posted_by",
             "lines",
             "override_reason",
+            "adjustment_source_kind",
+            "adjustment_source_reference",
         ]
         read_only_fields = ["id", "company", "posted_at", "posted_by", "status"]
 
@@ -611,7 +638,23 @@ class JournalEntrySaveCompleteSerializer(JournalEntryAutoSaveSerializer):
     - Enforces balanced entry
     - Requires at least 2 effective lines
     - Sets status to DRAFT
+
+    A5-PR4a: the adjustment source inputs are NOT accepted here — the source
+    is supplied at create or changed via PATCH; save-complete preserves the
+    draft's stored stamp untouched (the SAVED_COMPLETE projection handler
+    never writes source fields).
     """
+
+    # Undeclare the parent's typed adjustment inputs on this door.
+    adjustment_source_kind = None
+    adjustment_source_reference = None
+
+    class Meta(JournalEntryAutoSaveSerializer.Meta):
+        fields = [
+            f
+            for f in JournalEntryAutoSaveSerializer.Meta.fields
+            if f not in ("adjustment_source_kind", "adjustment_source_reference")
+        ]
 
     def validate(self, attrs):
         attrs = super().validate(attrs)

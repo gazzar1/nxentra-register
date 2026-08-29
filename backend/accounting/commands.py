@@ -1047,6 +1047,15 @@ def create_journal_entry(
         for _ld in line_data:
             _ld["currency"] = canonical_journal_currency(actor.company, _ld["currency"])
 
+        # A5-PR4a: the manual door may stamp ONLY the pilot-adjustment
+        # discriminator, and a supplied source reference must resolve
+        # same-company — validated HERE (the one canonical implementation),
+        # before any event emission. Raises; a draft without a source stays
+        # allowed (the post-time gate owns the requirement).
+        from accounting.pilot_adjustments import validate_manual_source_stamp
+
+        validate_manual_source_stamp(actor.company, source_module, source_document)
+
     event_data = JournalEntryCreatedData(
         entry_public_id=str(entry_public_id),
         date=date.isoformat() if hasattr(date, "isoformat") else str(date),
@@ -1139,6 +1148,8 @@ def update_journal_entry(
     exchange_rate: str = None,
     lines: list = None,
     period: int = None,
+    source_module: str = None,
+    source_document: str = None,
     _process_token=None,
 ) -> CommandResult:
     """
@@ -1151,6 +1162,11 @@ def update_journal_entry(
         memo: New memo (optional)
         memo_ar: New Arabic memo (optional)
         lines: New lines (optional, replaces all existing lines)
+        source_module/source_document: A5-PR4a — the pilot-adjustment source
+            stamp, changeable (or clearable to "") only while the entry is a
+            draft. Supplied together; the manual boundary validates via
+            ``validate_manual_source_stamp``. The generic UPDATED-changes
+            projection application materializes them onto the row.
 
     Returns:
         CommandResult with updated JournalEntry or error
@@ -1183,6 +1199,15 @@ def update_journal_entry(
     if _process_token is _MANUAL_JOURNAL_PROCESS and currency is not None:
         currency = canonical_journal_currency(actor.company, currency)
 
+    # A5-PR4a: validate a supplied source stamp BEFORE change tracking and any
+    # event emission — the manual door may only carry the pilot-adjustment
+    # discriminator with a same-company-resolvable reference (or clear both
+    # to ""). Raises; no event, entry untouched.
+    if _process_token is _MANUAL_JOURNAL_PROCESS and source_module is not None:
+        from accounting.pilot_adjustments import validate_manual_source_stamp
+
+        validate_manual_source_stamp(actor.company, source_module, source_document or "")
+
     # Track changes
     changes = {}
     current_date = aggregate.date or (entry.date.isoformat() if entry.date else None)
@@ -1206,6 +1231,15 @@ def update_journal_entry(
 
     if period is not None and entry.period != period:
         changes["period"] = {"old": entry.period, "new": period}
+
+    # A5-PR4a: source stamp changes ride the generic changes dict (nested
+    # keys are schema-free; the UPDATED projection handler applies them via
+    # setattr). The row is the "old" side — the aggregate does not track
+    # source fields; the CREATED/UPDATED payloads do, so rebuild converges.
+    if source_module is not None and (entry.source_module or "") != source_module:
+        changes["source_module"] = {"old": entry.source_module or "", "new": source_module}
+    if source_document is not None and (entry.source_document or "") != source_document:
+        changes["source_document"] = {"old": entry.source_document or "", "new": source_document}
 
     # Update lines if provided
     line_data = None
@@ -1470,13 +1504,26 @@ def save_journal_entry_complete(
             context="Manual journal save-complete",
         )
 
+    # A5-PR4a: the digest alone deduped a re-complete whose CONTENT matched an
+    # earlier SAVED_COMPLETE even when UPDATED events (e.g. a source-stamp
+    # change, or an edit that was reverted) had since reset the aggregate to
+    # INCOMPLETE — the emitter returned the OLD event, no new event landed,
+    # and the entry could never reach DRAFT again. Discriminating on the
+    # aggregate's current stream length keeps true rapid retries deduped
+    # (no interleaved event -> same key) while any later re-complete after
+    # new events gets a fresh key.
+    from events.models import BusinessEvent as _BusinessEvent
+
+    aggregate_event_count = _BusinessEvent.objects.filter(
+        company=actor.company, aggregate_id=str(entry.public_id)
+    ).count()
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
     event = emit_event(
         actor=actor,
         event_type=EventTypes.JOURNAL_ENTRY_SAVED_COMPLETE,
         aggregate_type="JournalEntry",
         aggregate_id=str(entry.public_id),
-        idempotency_key=f"journal_entry.saved_complete:{entry.public_id}:{digest}",
+        idempotency_key=f"journal_entry.saved_complete:{entry.public_id}:{aggregate_event_count}:{digest}",
         data=JournalEntrySavedCompleteData(
             entry_public_id=str(entry.public_id),
             date=payload["date"],
@@ -1553,6 +1600,24 @@ def post_journal_entry_or_raise(actor: ActorContext, entry_id: int, *, _process_
     allowed, reason = can_post_to_period(actor, aggregate.date or entry.date, period=entry.period)
     if not allowed:
         return CommandResult.fail(reason)
+
+    # A5-PR4a: pilot-adjustment traceability — only for the manual process,
+    # under the wrapper's Company admission lock, and BEFORE the entry-number
+    # mint / event emission / counter consumption below (spec: a refusal
+    # leaves zero residue; the raise also unwinds everything, EGP-gate
+    # style). Validates the row's server-stamped provenance (what the posted
+    # payload will echo) plus the aggregate memo as the reason, re-resolving
+    # the source reference at post time. No-op for profile NONE; provider/
+    # internal callers never pass the sentinel and are unaffected.
+    if _process_token is _MANUAL_JOURNAL_PROCESS:
+        from accounting.pilot_adjustments import require_pilot_adjustment_traceability
+
+        require_pilot_adjustment_traceability(
+            actor.company,
+            source_module=entry.source_module or "",
+            source_document=entry.source_document or "",
+            memo=aggregate.memo or "",
+        )
 
     posted_at = timezone.now()
 
@@ -1812,7 +1877,15 @@ def post_journal_entry(actor: ActorContext, entry_id: int, *, _process_token=Non
 
 
 @transaction.atomic
-def reverse_journal_entry_or_raise(actor: ActorContext, entry_id: int, *, _process_token=None) -> CommandResult:
+def reverse_journal_entry_or_raise(
+    actor: ActorContext,
+    entry_id: int,
+    *,
+    reversal_reason: str = "",
+    adjustment_source_kind: str = "",
+    adjustment_source_reference: str = "",
+    _process_token=None,
+) -> CommandResult:
     """
     Reverse a posted journal entry.
 
@@ -1836,15 +1909,37 @@ def reverse_journal_entry_or_raise(actor: ActorContext, entry_id: int, *, _proce
         CommandResult with {"original": entry, "reversal": reversal_entry} or error
     """
     require(actor, "journal.reverse")
-    return _reverse_posted_journal_entry(actor, entry_id, _process_token=_process_token)
+    return _reverse_posted_journal_entry(
+        actor,
+        entry_id,
+        reversal_reason=reversal_reason,
+        adjustment_source_kind=adjustment_source_kind,
+        adjustment_source_reference=adjustment_source_reference,
+        _process_token=_process_token,
+    )
 
 
 @translate_posted_journal_invalid
-def reverse_journal_entry(actor: ActorContext, entry_id: int, *, _process_token=None) -> CommandResult:
+def reverse_journal_entry(
+    actor: ActorContext,
+    entry_id: int,
+    *,
+    reversal_reason: str = "",
+    adjustment_source_kind: str = "",
+    adjustment_source_reference: str = "",
+    _process_token=None,
+) -> CommandResult:
     """Public boundary over :func:`reverse_journal_entry_or_raise` — the
     invariant rejection has already rolled back the entire reversal attempt
     when it is translated here into the standard ``CommandResult`` failure."""
-    return reverse_journal_entry_or_raise(actor, entry_id, _process_token=_process_token)
+    return reverse_journal_entry_or_raise(
+        actor,
+        entry_id,
+        reversal_reason=reversal_reason,
+        adjustment_source_kind=adjustment_source_kind,
+        adjustment_source_reference=adjustment_source_reference,
+        _process_token=_process_token,
+    )
 
 
 class VoidReversalError(Exception):
@@ -1860,6 +1955,9 @@ def _reverse_posted_journal_entry(
     entry_id: int,
     *,
     memo_context: str = "",
+    reversal_reason: str = "",
+    adjustment_source_kind: str = "",
+    adjustment_source_reference: str = "",
     _process_token=None,
 ) -> CommandResult:
     """
@@ -1988,12 +2086,50 @@ def _reverse_posted_journal_entry(
             context="Manual journal reverse",
         )
 
+    # A5-PR4a: a reversal of a PILOT ADJUSTMENT preserves the adjustment's
+    # source provenance on its posted payload (previously dropped to "" — a
+    # reversed adjustment lost its trace). Reversals of SYSTEM-stamped JEs
+    # deliberately stay blank, exactly as before: reconciliation readers key
+    # on (source_module, source_document, status=POSTED) to find the LIVE
+    # clearance/settlement JE — echoing the stamp onto a POSTED reversal
+    # would impersonate it (e.g. the cleared-batch idempotency guard would
+    # read an unmatched batch as still cleared and block re-matching).
+    # Under an active pilot the MANUAL reversal additionally requires its own
+    # reason and — when the original predates activation or lacks
+    # pilot-adjustment provenance — a new validated source reference. The
+    # raise (before the sequence mint below) leaves zero residue.
+    from accounting.pilot_adjustments import PILOT_ADJUSTMENT_SOURCE_MODULE
+
+    rev_source_module = ""
+    rev_source_document = ""
+    if (original.source_module or "") == PILOT_ADJUSTMENT_SOURCE_MODULE:
+        rev_source_module = original.source_module
+        rev_source_document = original.source_document or ""
+    if _process_token is _MANUAL_JOURNAL_PROCESS:
+        from accounting.pilot_adjustments import require_pilot_reversal_traceability
+
+        rev_source_module, rev_source_document = require_pilot_reversal_traceability(
+            actor.company,
+            original_source_module=rev_source_module,
+            original_source_document=rev_source_document,
+            reversal_reason=reversal_reason,
+            new_source_kind=adjustment_source_kind,
+            new_source_reference=adjustment_source_reference,
+        )
+
     # A155: allocate the entry number only after every fallible check above,
     # so a failed reversal cannot burn a sequence number.
     sequence_value = _next_company_sequence(original.company, "journal_entry_number")
     reversal_entry_number = f"JE-{sequence_value:06d}"
 
-    reversal_memo = f"Reversal of {original.entry_number or f'JE#{original.id}'}: {aggregate.memo}"
+    if reversal_reason:
+        # A5-PR4a: bounded reversal memo — the reason IS the narrative; the
+        # original memo is reachable through reverses_entry. Never
+        # concatenates the full original memo (a near-255-char original plus
+        # the old prefix overflowed the CharField at materialization).
+        reversal_memo = f"{reversal_reason.strip()} — Reverses {original.entry_number or f'JE#{original.id}'}"
+    else:
+        reversal_memo = f"Reversal of {original.entry_number or f'JE#{original.id}'}: {aggregate.memo}"
     if memo_context:
         reversal_memo = f"{memo_context} — {reversal_memo}"
 
@@ -2015,6 +2151,11 @@ def _reverse_posted_journal_entry(
         total_debit=str(aggregate.total_credit),
         total_credit=str(aggregate.total_debit),
         lines=reversal_line_data,
+        # A5-PR4a: preserve provenance on the reversal (payload-carried so it
+        # survives rebuild/restore — the A116 pattern; fields already exist
+        # on JournalEntryPostedData, no schema change).
+        source_module=rev_source_module,
+        source_document=rev_source_document,
     ).to_dict()
     # A3-PR2: a reversal is a NEW event and must be exactly canonical (D3 —
     # no historical tolerance carries forward). An original entry whose
