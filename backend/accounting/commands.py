@@ -1522,12 +1522,22 @@ def save_journal_entry_complete(
         event_type=EventTypes.JOURNAL_ENTRY_UPDATED,
     ).count()
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
+    # Codex PR #134 round-2 P2: zero interleaved updates keeps the LEGACY key
+    # shape, so an identical retry of a PRE-deployment save-complete (whose
+    # stored key has the old `{pid}:{digest}` form) still dedupes instead of
+    # emitting a duplicate and consuming another company sequence. The
+    # discriminator only matters when an edit was interleaved (count > 0) —
+    # exactly when a fresh key is wanted anyway.
+    if updated_event_count:
+        idem_key = f"journal_entry.saved_complete:{entry.public_id}:{updated_event_count}:{digest}"
+    else:
+        idem_key = f"journal_entry.saved_complete:{entry.public_id}:{digest}"
     event = emit_event(
         actor=actor,
         event_type=EventTypes.JOURNAL_ENTRY_SAVED_COMPLETE,
         aggregate_type="JournalEntry",
         aggregate_id=str(entry.public_id),
-        idempotency_key=f"journal_entry.saved_complete:{entry.public_id}:{updated_event_count}:{digest}",
+        idempotency_key=idem_key,
         data=JournalEntrySavedCompleteData(
             entry_public_id=str(entry.public_id),
             date=payload["date"],

@@ -532,18 +532,26 @@ class JournalEntryListCreateView(APIView):
                     except (TypeError, ValueError):
                         audit_date = None
                 if audit_date is not None:
-                    PeriodOverrideAudit.objects.create(
+                    # Codex PR #134 round-2 P2: with an Idempotency-Key, a
+                    # retried create returns the ORIGINAL entry — the audit
+                    # must not append another row per retry (nor record a
+                    # contradictory reason from a changed-override retry).
+                    # One audit row per (company, journal_entry, MANUAL_JE):
+                    # the first write wins; true creates are unaffected.
+                    PeriodOverrideAudit.objects.get_or_create(
                         company=actor.company,
-                        user=request.user,
-                        source=PeriodOverrideAudit.Source.MANUAL_JE,
-                        source_document_ref=result.data.entry_number or f"JE-{result.data.id}",
                         journal_entry=result.data,
-                        original_date=audit_date,
-                        original_period=int(date_derived_period or audit_date.month),
-                        original_fiscal_year=audit_date.year,
-                        override_period=int(requested_period),
-                        override_fiscal_year=audit_date.year,
-                        reason=override_reason,
+                        source=PeriodOverrideAudit.Source.MANUAL_JE,
+                        defaults={
+                            "user": request.user,
+                            "source_document_ref": result.data.entry_number or f"JE-{result.data.id}",
+                            "original_date": audit_date,
+                            "original_period": int(date_derived_period or audit_date.month),
+                            "original_fiscal_year": audit_date.year,
+                            "override_period": int(requested_period),
+                            "override_fiscal_year": audit_date.year,
+                            "reason": override_reason,
+                        },
                     )
             except Exception:
                 logger.exception(

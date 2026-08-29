@@ -948,6 +948,100 @@ def test_reverse_endpoint_refuses_non_string_body_values(
         assert "must be a string" in str(resp.data)
 
 
+def test_zero_update_save_complete_uses_legacy_key_shape(actor_context, company, cash_account, revenue_account):
+    """Codex PR #134 round-2 P2: with no interleaved UPDATED event the
+    save-complete idempotency key must keep the pre-existing legacy shape,
+    so identical retries of PRE-deployment save-completes still dedupe
+    against their stored events instead of emitting duplicates."""
+    r = create_manual_journal_entry(
+        actor_context, date=date.today(), memo="legacy key", currency=None, lines=_lines(cash_account, revenue_account)
+    )
+    assert r.success, r.error
+    assert save_manual_journal_entry_complete(actor_context, r.data.id).success
+
+    saved = BusinessEvent.objects.get(
+        company=company, aggregate_id=str(r.data.public_id), event_type="journal_entry.saved_complete"
+    )
+    # Legacy two-part suffix: journal_entry.saved_complete:{pid}:{digest}
+    assert saved.idempotency_key.startswith(f"journal_entry.saved_complete:{r.data.public_id}:")
+    suffix = saved.idempotency_key.split(f"journal_entry.saved_complete:{r.data.public_id}:", 1)[1]
+    assert ":" not in suffix, saved.idempotency_key  # no count discriminator when count == 0
+
+
+def test_period_override_audit_is_idempotent_under_retry(
+    api_client, user, owner_membership, company, cash_account, revenue_account
+):
+    """Codex PR #134 round-2 P2: a retried create-with-period-override under
+    the same Idempotency-Key returns the original entry and must NOT append
+    another PeriodOverrideAudit row — and a changed override_reason under the
+    same key must not record a contradictory audit."""
+    from datetime import datetime as _dt
+
+    from accounting.models import PeriodOverrideAudit
+    from accounts.models import CompanyMembershipPermission, NxPermission
+    from projections.models import FiscalPeriod
+
+    perm, _ = NxPermission.objects.get_or_create(
+        code="accounting.je.override_period",
+        defaults={"name": "Override JE period", "module": "accounting"},
+    )
+    CompanyMembershipPermission.objects.get_or_create(membership=owner_membership, company=company, permission=perm)
+
+    entry_date = date.today()
+    derived = entry_date.month
+    override_period = derived - 1 if derived > 1 else derived + 1
+    for period in (derived, override_period):
+        first = _dt(entry_date.year, period, 1).date()
+        FiscalPeriod.objects.get_or_create(
+            company=company,
+            fiscal_year=entry_date.year,
+            period=period,
+            defaults={
+                "start_date": first,
+                "end_date": date(entry_date.year, period, 28),
+                "status": FiscalPeriod.Status.OPEN,
+            },
+        )
+
+    api_client.force_authenticate(user=user)
+    body = {
+        "date": str(entry_date),
+        "memo": GOOD_MEMO,
+        "period": override_period,
+        "override_reason": "posting into the prior open period",
+        "lines": [
+            {"account_id": cash_account.id, "debit": "100.00", "credit": "0"},
+            {"account_id": revenue_account.id, "debit": "0", "credit": "100.00"},
+        ],
+    }
+    first_resp = api_client.post(
+        "/api/accounting/journal-entries/", body, format="json", HTTP_IDEMPOTENCY_KEY="pr4a-audit-key"
+    )
+    assert first_resp.status_code == 201, first_resp.data
+    assert PeriodOverrideAudit.objects.filter(company=company).count() == 1
+
+    retry = api_client.post(
+        "/api/accounting/journal-entries/", body, format="json", HTTP_IDEMPOTENCY_KEY="pr4a-audit-key"
+    )
+    assert retry.status_code == 201, retry.data
+    assert retry.data["id"] == first_resp.data["id"]
+    assert PeriodOverrideAudit.objects.filter(company=company).count() == 1
+
+    # Changed reason under the same key: override_reason is outside the A177
+    # content hash, so the command returns the original — the audit keeps the
+    # FIRST reason, no contradictory second row.
+    changed = api_client.post(
+        "/api/accounting/journal-entries/",
+        {**body, "override_reason": "a totally different story"},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="pr4a-audit-key",
+    )
+    assert changed.status_code == 201, changed.data
+    audits = list(PeriodOverrideAudit.objects.filter(company=company))
+    assert len(audits) == 1
+    assert audits[0].reason == "posting into the prior open period"
+
+
 # --------------------------------------------------------------------------- #
 # (24)(25) rebuild reproduces the trace; backup keeps the fields
 # --------------------------------------------------------------------------- #
