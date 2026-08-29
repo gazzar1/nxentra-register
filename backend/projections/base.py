@@ -252,146 +252,158 @@ class BaseProjection(ABC):
             # ProjectionAppliedEvent unique constraint.
             earliest_deferred: BusinessEvent | None = None
 
-            for event in events:
-                try:
-                    with transaction.atomic(), projection_writes_allowed():
-                        _applied, created = ProjectionAppliedEvent.objects.get_or_create(
-                            company=company,
-                            projection_name=self.name,
-                            event=event,
-                        )
+            try:
+                for event in events:
+                    try:
+                        with transaction.atomic(), projection_writes_allowed():
+                            _applied, created = ProjectionAppliedEvent.objects.get_or_create(
+                                company=company,
+                                projection_name=self.name,
+                                event=event,
+                            )
 
-                        if not created:
+                            if not created:
+                                bookmark.mark_processed(event)
+                                processed += 1
+                                continue
+
+                            # A3-PR3: THE apply-validation choke point. Runs for
+                            # every event, inside the per-event transaction,
+                            # before any handler — so every trigger path (live
+                            # drain, Celery, CLI, rebuild, tenant replay) and
+                            # every consuming projection gets one shared verdict.
+                            # A registered validator quarantines by raising
+                            # ProjectionTerminalSkip (handled below); event types
+                            # without a validator pass through untouched.
+                            validate_event_for_apply(event)
+                            self.handle(event)
                             bookmark.mark_processed(event)
                             processed += 1
-                            continue
 
-                        # A3-PR3: THE apply-validation choke point. Runs for
-                        # every event, inside the per-event transaction,
-                        # before any handler — so every trigger path (live
-                        # drain, Celery, CLI, rebuild, tenant replay) and
-                        # every consuming projection gets one shared verdict.
-                        # A registered validator quarantines by raising
-                        # ProjectionTerminalSkip (handled below); event types
-                        # without a validator pass through untouched.
-                        validate_event_for_apply(event)
-                        self.handle(event)
-                        bookmark.mark_processed(event)
+                            # A105: self-heal. The failure-log model docstring
+                            # has always promised that a successful retry
+                            # auto-resolves the entry — but nothing did it, so
+                            # /finance/exceptions (and now /_health/alerts,
+                            # A163) showed already-healed failures forever.
+                            # Cheap conditional UPDATE: (company,
+                            # projection_name, event) is the table's unique key.
+                            # A3-PR3 (Codex round-14 P1): stamp ALL failure rows
+                            # for this key — including manually-resolved ones —
+                            # as SELF-HEALED (resolved_by NULL is the persisted
+                            # mark of a genuine successful re-apply, and the
+                            # event-fold acceptance filter keys on it). A manual
+                            # queue resolution is an operator claim; an actual
+                            # successful apply is the stronger truth.
+                            from projections.models import SELF_HEALED_RESOLUTION_NOTE, ProjectionFailureLog
+
+                            ProjectionFailureLog.objects.filter(
+                                company=company,
+                                projection_name=self.name,
+                                event=event,
+                            ).exclude(resolved=True, resolution_note=SELF_HEALED_RESOLUTION_NOTE).update(
+                                resolved=True,
+                                resolved_at=timezone.now(),
+                                resolved_by=None,
+                                resolution_note=SELF_HEALED_RESOLUTION_NOTE,
+                            )
+
+                    except DeferEvent as defer:
+                        # A41: precondition not met yet (e.g. refund handler
+                        # waiting on order_paid). Transaction rolled back, so
+                        # ProjectionAppliedEvent for THIS event was not
+                        # created — the event remains unprocessed. We keep
+                        # going through the rest of the batch; subsequent
+                        # successful events will also advance the bookmark,
+                        # so we'll rewind below to ensure the deferred event
+                        # is revisited.
+                        logger.info(
+                            "Projection %s deferred event %s: %s",
+                            self.name,
+                            event.id,
+                            defer or "no reason given",
+                        )
+                        if earliest_deferred is None or event.company_sequence < earliest_deferred.company_sequence:
+                            earliest_deferred = event
+                        continue
+
+                    except ProjectionTerminalSkip as skip:
+                        # Terminal: retrying won't help until the operator acts
+                        # (e.g. the event's date is in a CLOSED fiscal period).
+                        # Record an operator-visible failure (A80) but ADVANCE past
+                        # the event instead of raising — a plain raise under
+                        # stop_on_error would halt the whole stream and re-attempt
+                        # this same event forever (head-of-line stall). The outer
+                        # per-event transaction already rolled back.
+                        #
+                        # A5-PR1b: consuming a quarantined financial event is only
+                        # legitimate TOGETHER WITH its durable operator-visible
+                        # evidence, so the failure log, the applied marker and the
+                        # bookmark advance commit in ONE owning transaction — all
+                        # three or none. This branch therefore bypasses the
+                        # fail-soft on_error wrapper and does not catch the owning
+                        # transaction's failure: even under stop_on_error=False, a
+                        # fault while persisting mandatory terminal evidence is a
+                        # framework integrity failure and must propagate, leaving
+                        # the bookmark unmoved and the event pending for retry.
+                        logger.warning(
+                            "Projection %s terminally skipped event %s: %s",
+                            self.name,
+                            event.id,
+                            skip,
+                        )
+                        with transaction.atomic(), projection_writes_allowed():
+                            self._persist_failure_log(event, skip)
+                            ProjectionAppliedEvent.objects.get_or_create(
+                                company=company,
+                                projection_name=self.name,
+                                event=event,
+                            )
+                            bookmark.mark_processed(event)
                         processed += 1
+                        continue
 
-                        # A105: self-heal. The failure-log model docstring
-                        # has always promised that a successful retry
-                        # auto-resolves the entry — but nothing did it, so
-                        # /finance/exceptions (and now /_health/alerts,
-                        # A163) showed already-healed failures forever.
-                        # Cheap conditional UPDATE: (company,
-                        # projection_name, event) is the table's unique key.
-                        # A3-PR3 (Codex round-14 P1): stamp ALL failure rows
-                        # for this key — including manually-resolved ones —
-                        # as SELF-HEALED (resolved_by NULL is the persisted
-                        # mark of a genuine successful re-apply, and the
-                        # event-fold acceptance filter keys on it). A manual
-                        # queue resolution is an operator claim; an actual
-                        # successful apply is the stronger truth.
-                        from projections.models import SELF_HEALED_RESOLUTION_NOTE, ProjectionFailureLog
+                    except Exception as e:
+                        logger.exception(f"Error processing event {event.id} in {self.name}: {e}")
+                        bookmark.mark_error(str(e))
+                        self.on_error(event, e)
 
-                        ProjectionFailureLog.objects.filter(
+                        if stop_on_error:
+                            break
+
+            finally:
+                # A41: if any event was deferred, rewind the bookmark to the
+                # event immediately preceding the earliest deferred one. This
+                # guarantees the next process_pending pass reprocesses it.
+                # Successfully-processed events in this pass stay idempotent
+                # via the ProjectionAppliedEvent unique constraint — they'll
+                # short-circuit on the get_or_create check on the second pass.
+                #
+                # A5-PR1b (PR #133 Codex P1): the rewind sits in a `finally`
+                # because a propagating exception from an except-branch's own
+                # writes (the terminal-consume evidence transaction; a
+                # mark_error fault) would otherwise exit before it ran — a
+                # bookmark already advanced by a later success in the same
+                # pass would then permanently exclude the deferred event.
+                # This does not catch or downgrade the propagating failure;
+                # it only restores the stream position first (a rewind
+                # failure chains onto the original exception).
+                if earliest_deferred is not None:
+                    predecessor = (
+                        BusinessEvent.objects.filter(
                             company=company,
-                            projection_name=self.name,
-                            event=event,
-                        ).exclude(resolved=True, resolution_note=SELF_HEALED_RESOLUTION_NOTE).update(
-                            resolved=True,
-                            resolved_at=timezone.now(),
-                            resolved_by=None,
-                            resolution_note=SELF_HEALED_RESOLUTION_NOTE,
+                            company_sequence__lt=earliest_deferred.company_sequence,
                         )
-
-                except DeferEvent as defer:
-                    # A41: precondition not met yet (e.g. refund handler
-                    # waiting on order_paid). Transaction rolled back, so
-                    # ProjectionAppliedEvent for THIS event was not
-                    # created — the event remains unprocessed. We keep
-                    # going through the rest of the batch; subsequent
-                    # successful events will also advance the bookmark,
-                    # so we'll rewind below to ensure the deferred event
-                    # is revisited.
-                    logger.info(
-                        "Projection %s deferred event %s: %s",
-                        self.name,
-                        event.id,
-                        defer or "no reason given",
+                        .order_by("-company_sequence")
+                        .first()
                     )
-                    if earliest_deferred is None or event.company_sequence < earliest_deferred.company_sequence:
-                        earliest_deferred = event
-                    continue
-
-                except ProjectionTerminalSkip as skip:
-                    # Terminal: retrying won't help until the operator acts
-                    # (e.g. the event's date is in a CLOSED fiscal period).
-                    # Record an operator-visible failure (A80) but ADVANCE past
-                    # the event instead of raising — a plain raise under
-                    # stop_on_error would halt the whole stream and re-attempt
-                    # this same event forever (head-of-line stall). The outer
-                    # per-event transaction already rolled back.
-                    #
-                    # A5-PR1b: consuming a quarantined financial event is only
-                    # legitimate TOGETHER WITH its durable operator-visible
-                    # evidence, so the failure log, the applied marker and the
-                    # bookmark advance commit in ONE owning transaction — all
-                    # three or none. This branch therefore bypasses the
-                    # fail-soft on_error wrapper and does not catch the owning
-                    # transaction's failure: even under stop_on_error=False, a
-                    # fault while persisting mandatory terminal evidence is a
-                    # framework integrity failure and must propagate, leaving
-                    # the bookmark unmoved and the event pending for retry.
-                    logger.warning(
-                        "Projection %s terminally skipped event %s: %s",
-                        self.name,
-                        event.id,
-                        skip,
-                    )
-                    with transaction.atomic(), projection_writes_allowed():
-                        self._persist_failure_log(event, skip)
-                        ProjectionAppliedEvent.objects.get_or_create(
-                            company=company,
-                            projection_name=self.name,
-                            event=event,
-                        )
-                        bookmark.mark_processed(event)
-                    processed += 1
-                    continue
-
-                except Exception as e:
-                    logger.exception(f"Error processing event {event.id} in {self.name}: {e}")
-                    bookmark.mark_error(str(e))
-                    self.on_error(event, e)
-
-                    if stop_on_error:
-                        break
-
-            # A41: if any event was deferred, rewind the bookmark to the
-            # event immediately preceding the earliest deferred one. This
-            # guarantees the next process_pending pass reprocesses it.
-            # Successfully-processed events in this pass stay idempotent
-            # via the ProjectionAppliedEvent unique constraint — they'll
-            # short-circuit on the get_or_create check on the second pass.
-            if earliest_deferred is not None:
-                predecessor = (
-                    BusinessEvent.objects.filter(
-                        company=company,
-                        company_sequence__lt=earliest_deferred.company_sequence,
-                    )
-                    .order_by("-company_sequence")
-                    .first()
-                )
-                # Refresh bookmark from DB — recursive _process_projections
-                # calls may have advanced it. We need the current row to
-                # update_fields against, otherwise our save() races against
-                # the inner advancements.
-                bookmark.refresh_from_db()
-                bookmark.last_event = predecessor
-                bookmark.last_processed_at = timezone.now()
-                bookmark.save(update_fields=["last_event", "last_processed_at", "updated_at"])
+                    # Refresh bookmark from DB — recursive _process_projections
+                    # calls may have advanced it. We need the current row to
+                    # update_fields against, otherwise our save() races against
+                    # the inner advancements.
+                    bookmark.refresh_from_db()
+                    bookmark.last_event = predecessor
+                    bookmark.last_processed_at = timezone.now()
+                    bookmark.save(update_fields=["last_event", "last_processed_at", "updated_at"])
 
             if processed > 0:
                 logger.info(f"Projection {self.name} processed {processed} events for {company.name}")

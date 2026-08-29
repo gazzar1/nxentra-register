@@ -275,6 +275,54 @@ def test_stop_on_error_false_still_propagates_evidence_failure(company, monkeypa
 
 
 # --------------------------------------------------------------------------- #
+# PR #133 Codex P1: a propagating evidence fault must not abandon a deferred
+# event whose bookmark position a later success already advanced past
+# --------------------------------------------------------------------------- #
+
+
+def test_evidence_fault_still_rewinds_for_deferred_events(company, monkeypatch):
+    """Defer A, succeed B (bookmark at B), terminal C whose evidence write
+    faults: the exception must still exit process_pending, but the A41 rewind
+    must run first — otherwise the bookmark stays at B and deferred event A is
+    permanently excluded from get_unprocessed_events (silent abandonment)."""
+    proj = _AtomicityProbe()
+    a = _make_event(company, mode="defer")
+    b = _make_event(company, mode="ok")
+    c = _make_event(company, mode="skip")
+
+    def boom(*args, **kwargs):
+        raise OperationalError("boom (test-injected failure-log write failure)")
+
+    monkeypatch.setattr(ProjectionFailureLog.objects, "get_or_create", boom)
+
+    with pytest.raises(OperationalError, match="test-injected failure-log"):
+        proj.process_pending(company)
+
+    # B committed (handled + marker); the fault on C still propagated; the
+    # rewind ran: bookmark sits before A (A's predecessor is None), so BOTH
+    # A and C remain visible as pending. Nothing about C survived.
+    assert proj.handled == [str(b.id)]
+    assert ProjectionAppliedEvent.objects.filter(company=company, event=b).exists()
+    assert not ProjectionFailureLog.objects.filter(company=company, event=c).exists()
+    assert not ProjectionAppliedEvent.objects.filter(company=company, event=c).exists()
+    bookmark = _bookmark(proj, company)
+    assert bookmark.last_event_id is None
+    pending = list(bookmark.get_unprocessed_events(event_types=proj.consumes, limit=10))
+    assert a in pending
+    assert c in pending
+
+    # Fault clears: B short-circuits idempotently, C consumes with full
+    # evidence, A (still deferring) keeps the bookmark rewound before it.
+    monkeypatch.undo()
+    assert proj.process_pending(company) == 2  # B short-circuit + C consume
+    assert ProjectionFailureLog.objects.filter(company=company, event=c, resolved=False).count() == 1
+    assert ProjectionAppliedEvent.objects.filter(company=company, event=c).exists()
+    bookmark = _bookmark(proj, company)
+    assert bookmark.last_event_id is None  # A deferred again -> rewound again
+    assert a in list(bookmark.get_unprocessed_events(event_types=proj.consumes, limit=10))
+
+
+# --------------------------------------------------------------------------- #
 # (6) Seeded rows: occurrence bump and reopen semantics are exact
 # --------------------------------------------------------------------------- #
 
