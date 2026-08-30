@@ -23,13 +23,23 @@ import { accountsService } from "@/services/accounts.service";
 import { exchangeRatesService } from "@/services/exchange-rates.service";
 import { useAuth } from "@/contexts/AuthContext";
 import { useBilingualText } from "@/components/common/BilingualText";
-import type { JournalEntryCreatePayload, AnalysisTagInput } from "@/types/journal";
+import type {
+  JournalEntryCreatePayload,
+  AnalysisTagInput,
+  PilotAdjustmentSourceKind,
+} from "@/types/journal";
 import type { AccountAnalysisDefault, AnalysisDimension } from "@/types/account";
 import { periodsService, FiscalPeriod } from "@/services/periods.service";
 import { currencyOptions } from "@/lib/constants";
 import { formatAmount as fmtAmount } from "@/lib/currency";
 import { cn } from "@/lib/cn";
 import { useFormKeyboardShortcuts } from "@/lib/useFormKeyboardShortcuts";
+import { isConstrainedPilot } from "@/lib/constrained-pilot";
+import {
+  PILOT_ADJUSTMENT_SOURCE_KINDS,
+  pilotAdjustmentKindLabel,
+  pilotAdjustmentReferenceHint,
+} from "@/lib/pilot-adjustments";
 
 const analysisTagSchema = z.object({
   dimension_id: z.number(),
@@ -48,23 +58,54 @@ const journalLineSchema = z.object({
   { message: "Cannot have both debit and credit on same line" }
 );
 
-const journalEntrySchema = z.object({
-  date: z.string().min(1, "Date is required"),
-  period: z.number().optional(),
-  memo: z.string().optional(),
-  memo_ar: z.string().optional(),
-  currency: z.string().optional(),
-  exchange_rate: z.number().optional(),
-  lines: z.array(journalLineSchema).min(2, "At least 2 lines required"),
-});
+const journalEntrySchema = z
+  .object({
+    date: z.string().min(1, "Date is required"),
+    period: z.number().optional(),
+    memo: z.string().optional(),
+    memo_ar: z.string().optional(),
+    currency: z.string().optional(),
+    exchange_rate: z.number().optional(),
+    // A5-PR4b: pilot-adjustment source. Both-or-neither (below); the fields are
+    // only rendered/sent under the active constrained pilot — see handleSubmit.
+    adjustment_source_kind: z.string().optional(),
+    adjustment_source_reference: z.string().optional(),
+    lines: z.array(journalLineSchema).min(2, "At least 2 lines required"),
+  })
+  .refine(
+    (d) =>
+      Boolean((d.adjustment_source_kind || "").trim()) ===
+      Boolean((d.adjustment_source_reference || "").trim()),
+    {
+      message: "Provide both a source type and a reference, or leave both blank.",
+      path: ["adjustment_source_reference"],
+    }
+  );
 
 type JournalEntryFormData = z.infer<typeof journalEntrySchema>;
 
+// What the form hands back for the pilot-adjustment source. '' means "no source /
+// cleared"; a known kind means "set to this source". The caller (create/edit page)
+// decides whether to send it, so it can suppress an unchanged or system-owned source.
+export interface PilotAdjustmentSourceSelection {
+  kind: PilotAdjustmentSourceKind | "";
+  reference: string;
+}
+
 interface JournalEntryFormProps {
   initialData?: Partial<JournalEntryFormData>;
-  onSubmit: (data: JournalEntryCreatePayload, saveAsDraft: boolean) => Promise<void>;
+  onSubmit: (
+    data: JournalEntryCreatePayload,
+    saveAsDraft: boolean,
+    source?: PilotAdjustmentSourceSelection
+  ) => Promise<void>;
   isSubmitting?: boolean;
   onCancel?: () => void;
+  // A5-PR4b: when editing a draft whose CURRENT stamp is system-owned (a nonblank
+  // source_module other than pilot_adjustment), the manual form shows it read-only
+  // and never emits adjustment fields — trying to edit/clear a system stamp is
+  // refused server-side.
+  systemOwnedSource?: { module: string; document: string } | null;
 }
 
 export function JournalEntryForm({
@@ -72,9 +113,15 @@ export function JournalEntryForm({
   onSubmit,
   isSubmitting,
   onCancel,
+  systemOwnedSource = null,
 }: JournalEntryFormProps) {
   const { t } = useTranslation(["common", "accounting"]);
   const { company } = useAuth();
+  // A5-PR4b: under the active constrained pilot, every manual post is a supervised
+  // pilot adjustment. The editable evidence section shows only when the entry is
+  // not already system-owned.
+  const pilotActive = isConstrainedPilot(company?.pilot_profile);
+  const showAdjustmentSource = pilotActive && !systemOwnedSource;
   const getText = useBilingualText();
   const { data: accounts } = useAccounts({ status: "ACTIVE" });
   const { data: dimensions } = useDimensions();
@@ -102,6 +149,8 @@ export function JournalEntryForm({
       memo_ar: initialData?.memo_ar || "",
       currency: initialData?.currency || company?.default_currency || "USD",
       exchange_rate: initialData?.exchange_rate,
+      adjustment_source_kind: initialData?.adjustment_source_kind || "",
+      adjustment_source_reference: initialData?.adjustment_source_reference || "",
       lines: initialData?.lines || [
         { account_id: 0, debit: 0, credit: 0, description: "", description_ar: "", analysis_tags: [] },
         { account_id: 0, debit: 0, credit: 0, description: "", description_ar: "", analysis_tags: [] },
@@ -121,6 +170,10 @@ export function JournalEntryForm({
         memo_ar: initialData.memo_ar || "",
         currency: initialData.currency || company?.default_currency || "USD",
         exchange_rate: initialData.exchange_rate,
+        // A5-PR4b: hydrate source fields via reset (not the Select's onValueChange),
+        // so a valid prefilled/initial reference is preserved during hydration.
+        adjustment_source_kind: initialData.adjustment_source_kind || "",
+        adjustment_source_reference: initialData.adjustment_source_reference || "",
         lines: initialData.lines || [
           { account_id: 0, debit: 0, credit: 0, description: "", description_ar: "", analysis_tags: [] },
           { account_id: 0, debit: 0, credit: 0, description: "", description_ar: "", analysis_tags: [] },
@@ -313,6 +366,17 @@ export function JournalEntryForm({
       (line) => line.account_id > 0 && (line.debit > 0 || line.credit > 0)
     );
 
+    // A5-PR4b: the pilot-adjustment source is passed separately (not in the
+    // payload) so the page can decide whether to send it. Both-or-neither is
+    // already enforced by the schema refine before we get here.
+    let source: PilotAdjustmentSourceSelection | undefined;
+    if (showAdjustmentSource) {
+      source = {
+        kind: (data.adjustment_source_kind || "").trim() as PilotAdjustmentSourceKind | "",
+        reference: (data.adjustment_source_reference || "").trim(),
+      };
+    }
+
     await onSubmit(
       {
         date: data.date,
@@ -333,7 +397,8 @@ export function JournalEntryForm({
           ),
         })),
       },
-      saveAsDraft
+      saveAsDraft,
+      source
     );
   };
 
@@ -437,14 +502,101 @@ export function JournalEntryForm({
         )}
       </div>
 
+      {/* A5-PR4b: pilot adjustment evidence (active pilot, non system-owned) */}
+      {showAdjustmentSource && (
+        <div className="space-y-4 rounded-lg border border-primary/30 bg-primary/5 p-4">
+          <div>
+            <h3 className="text-sm font-semibold text-primary">Pilot adjustment evidence</h3>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Required before posting. Saving an incomplete or draft entry does not
+              resolve the source item.
+            </p>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label>Source type</Label>
+              <Select
+                value={form.watch("adjustment_source_kind") || ""}
+                onValueChange={(value) => {
+                  const prev = form.getValues("adjustment_source_kind");
+                  form.setValue("adjustment_source_kind", value, { shouldValidate: true });
+                  // Clear an incompatible manually-entered reference on a real change
+                  // (hydration goes through form.reset, not this handler).
+                  if (value !== prev) {
+                    form.setValue("adjustment_source_reference", "", { shouldValidate: true });
+                  }
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a source type" />
+                </SelectTrigger>
+                <SelectContent>
+                  {PILOT_ADJUSTMENT_SOURCE_KINDS.map((k) => (
+                    <SelectItem key={k} value={k}>
+                      {pilotAdjustmentKindLabel(k)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="adjustment_source_reference">Source reference</Label>
+              <Input
+                id="adjustment_source_reference"
+                {...form.register("adjustment_source_reference")}
+                placeholder="Source reference"
+              />
+              {form.watch("adjustment_source_kind") && (
+                <p className="text-xs text-muted-foreground">
+                  {pilotAdjustmentReferenceHint(form.watch("adjustment_source_kind") || "")}
+                </p>
+              )}
+              {form.formState.errors.adjustment_source_reference && (
+                <p className="text-sm text-destructive">
+                  {form.formState.errors.adjustment_source_reference.message}
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* A5-PR4b: system-owned provenance is read-only under the active pilot */}
+      {pilotActive && systemOwnedSource && (
+        <div className="space-y-2 rounded-lg border bg-muted/40 p-4">
+          <h3 className="text-sm font-semibold">System provenance</h3>
+          <p className="text-xs text-muted-foreground">
+            This entry belongs to an automated process. Its source provenance is
+            system-owned and cannot be relabelled through the manual form.
+          </p>
+          <dl className="grid gap-1 text-sm">
+            <div className="flex gap-2">
+              <dt className="text-muted-foreground">Module:</dt>
+              <dd className="font-mono break-all">{systemOwnedSource.module}</dd>
+            </div>
+            <div className="flex gap-2">
+              <dt className="text-muted-foreground">Document:</dt>
+              <dd className="font-mono break-all">{systemOwnedSource.document || "—"}</dd>
+            </div>
+          </dl>
+        </div>
+      )}
+
       <div className={showArabic ? "grid gap-4 sm:grid-cols-2" : "grid gap-4"}>
         <div className="space-y-2">
-          <Label htmlFor="memo">{t("accounting:journalEntry.memo")}</Label>
+          <Label htmlFor="memo">
+            {pilotActive ? "Adjustment reason" : t("accounting:journalEntry.memo")}
+          </Label>
           <Input
             id="memo"
             {...form.register("memo")}
-            placeholder="Description..."
+            placeholder={pilotActive ? "Why this adjustment is needed..." : "Description..."}
           />
+          {pilotActive && (
+            <p className="text-xs text-muted-foreground">
+              Required before posting · 10–180 characters
+            </p>
+          )}
         </div>
         <ArabicField>
           <div className="space-y-2">

@@ -15,6 +15,8 @@ import {
   ScrollText,
   ClipboardCheck,
   CalendarRange,
+  CheckCircle2,
+  X,
 } from "lucide-react";
 
 import { AppLayout } from "@/components/layout";
@@ -238,6 +240,15 @@ export default function ReconciliationPage() {
   const [pendingResolveByLine, setPendingResolveByLine] = useState<
     Record<number, { reason: DifferenceReason | ""; notes: string; submitting: boolean }>
   >({});
+
+  // A5-PR4b: durable session-level result of the LAST successful resolveDifference.
+  // A toast alone auto-dismisses; this card persists until dismissed or replaced by
+  // the next successful resolution, keeping the created adjustment JE reachable.
+  const [lastResolvedAdjustment, setLastResolvedAdjustment] = useState<{
+    entryId: number;
+    entryPublicId: string;
+    batchLabel: string;
+  } | null>(null);
 
   // PR-D3: Stage-2 expandable per-line detail (absorbs the old standalone
   // Payout Verification page). Keyed `${provider}:${batch_id}` — the same
@@ -496,9 +507,19 @@ export default function ReconciliationPage() {
     }
     updateResolve(item.bank_line_id, { submitting: true });
     try {
-      await reconciliationService.resolveDifference(item.bank_line_id, {
-        reason: draft.reason,
-        notes: draft.notes || undefined,
+      // A5-PR4b: capture the response — resolve_difference creates the canonical
+      // adjustment JE, and the durable success card links to it.
+      const { data: resolved } = await reconciliationService.resolveDifference(
+        item.bank_line_id,
+        {
+          reason: draft.reason,
+          notes: draft.notes || undefined,
+        }
+      );
+      setLastResolvedAdjustment({
+        entryId: resolved.adjustment_entry_id,
+        entryPublicId: resolved.adjustment_entry_public_id,
+        batchLabel: String(item.batch_id || item.bank_line_id),
       });
       toast({ title: `Difference resolved for batch ${item.batch_id || item.bank_line_id}.` });
       // Refresh the summary so the row leaves the queue and Stage 3 totals update.
@@ -629,6 +650,36 @@ export default function ReconciliationPage() {
             {/* U1: Money Bridge — the "where is my money?" story as a picture */}
             {summary.money_flow && Number(summary.money_flow.total_sold) > 0 && (
               <MoneyBridge flow={summary.money_flow} />
+            )}
+
+            {/* A5-PR4b: persistent link to the adjustment JE the last successful
+               resolveDifference created — survives until dismissed or replaced. */}
+            {lastResolvedAdjustment && (
+              <Card className="border-green-500/40 bg-green-500/5">
+                <CardContent className="flex items-center justify-between gap-3 py-3">
+                  <div className="flex items-center gap-2 text-sm">
+                    <CheckCircle2 className="h-4 w-4 shrink-0 text-green-600" />
+                    <span>
+                      Difference adjustment posted for batch{" "}
+                      <span className="font-mono">{lastResolvedAdjustment.batchLabel}</span>.{" "}
+                      <Link
+                        href={`/accounting/journal-entries/${lastResolvedAdjustment.entryId}`}
+                        className="font-medium text-primary hover:underline"
+                      >
+                        View journal {lastResolvedAdjustment.entryPublicId}
+                      </Link>
+                    </span>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setLastResolvedAdjustment(null)}
+                    aria-label="Dismiss"
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </CardContent>
+              </Card>
             )}
 
             {/* A16: Needs Review queue — bank deposits matched within tolerance

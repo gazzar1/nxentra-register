@@ -8,7 +8,10 @@ import { AppLayout } from "@/components/layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { PageHeader, LoadingSpinner } from "@/components/common";
-import { JournalEntryForm } from "@/components/forms/JournalEntryForm";
+import {
+  JournalEntryForm,
+  type PilotAdjustmentSourceSelection,
+} from "@/components/forms/JournalEntryForm";
 import {
   useJournalEntry,
   useUpdateJournalEntry,
@@ -17,7 +20,11 @@ import {
 import { useToast } from "@/components/ui/toaster";
 import { getErrorMessage } from "@/lib/api-client";
 import { canEditJournalEntry } from "@/types/journal";
-import type { JournalEntryCreatePayload } from "@/types/journal";
+import type { JournalEntryCreatePayload, JournalEntryUpdatePayload } from "@/types/journal";
+import {
+  parseSourceDocument,
+  PILOT_ADJUSTMENT_SOURCE_MODULE,
+} from "@/lib/pilot-adjustments";
 
 export default function EditJournalEntryPage() {
   const { t } = useTranslation(["common", "accounting"]);
@@ -29,21 +36,45 @@ export default function EditJournalEntryPage() {
   const updateEntry = useUpdateJournalEntry();
   const saveComplete = useSaveCompleteJournalEntry();
 
-  const handleSubmit = async (data: JournalEntryCreatePayload, saveAsDraft: boolean) => {
+  // A5-PR4b: classify the entry's CURRENT stamp.
+  const isPilotAdjustment = entry?.source_module === PILOT_ADJUSTMENT_SOURCE_MODULE;
+  const parsedSource = isPilotAdjustment ? parseSourceDocument(entry?.source_document) : null;
+  const systemOwnedSource =
+    entry && entry.source_module && entry.source_module !== PILOT_ADJUSTMENT_SOURCE_MODULE
+      ? { module: entry.source_module, document: entry.source_document }
+      : null;
+
+  const handleSubmit = async (
+    data: JournalEntryCreatePayload,
+    saveAsDraft: boolean,
+    source?: PilotAdjustmentSourceSelection
+  ) => {
     try {
-      await updateEntry.mutateAsync({
-        id,
-        data: {
-          date: data.date,
-          period: data.period,
-          memo: data.memo,
-          memo_ar: data.memo_ar,
-          lines: data.lines,
-        },
-      });
+      const updatePayload: JournalEntryUpdatePayload = {
+        date: data.date,
+        period: data.period,
+        memo: data.memo,
+        memo_ar: data.memo_ar,
+        lines: data.lines,
+      };
+
+      // A5-PR4b: send the source through PATCH only when it actually changed
+      // (set / changed / cleared). Never send adjustment fields for a
+      // system-owned draft — that would try to clear or relabel a system stamp
+      // and be refused server-side.
+      if (source && !systemOwnedSource) {
+        const initialKind = parsedSource?.kind ?? "";
+        const initialRef = parsedSource?.body ?? "";
+        if (source.kind !== initialKind || source.reference !== initialRef) {
+          updatePayload.adjustment_source_kind = source.kind;
+          updatePayload.adjustment_source_reference = source.reference;
+        }
+      }
+
+      await updateEntry.mutateAsync({ id, data: updatePayload });
 
       if (saveAsDraft) {
-        // Mark as complete (DRAFT status)
+        // Mark as complete (DRAFT status). Save-complete carries no source.
         await saveComplete.mutateAsync({
           id,
           data: {
@@ -122,6 +153,13 @@ export default function EditJournalEntryPage() {
     period: entry.period ?? undefined,
     memo: entry.memo,
     memo_ar: entry.memo_ar,
+    // A5-PR4b: prefill the typed source when the entry is a pilot adjustment.
+    ...(parsedSource
+      ? {
+          adjustment_source_kind: parsedSource.kind,
+          adjustment_source_reference: parsedSource.body,
+        }
+      : {}),
     lines: entry.lines.map((line) => ({
       account_id: line.account,
       description: line.description || "",
@@ -151,6 +189,7 @@ export default function EditJournalEntryPage() {
             <JournalEntryForm
               initialData={initialData}
               onSubmit={handleSubmit}
+              systemOwnedSource={systemOwnedSource}
               isSubmitting={updateEntry.isPending || saveComplete.isPending}
               onCancel={() => router.back()}
             />

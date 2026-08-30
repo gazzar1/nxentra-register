@@ -6,6 +6,7 @@ import type {
   JournalEntryCreatePayload,
   JournalEntryUpdatePayload,
   JournalEntrySaveCompletePayload,
+  JournalEntryReversePayload,
   JournalEntryFilters,
 } from '@/types/journal';
 import type { PaginationParams } from '@/types/common';
@@ -57,7 +58,14 @@ export function useCreateJournalEntry() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (payload: JournalEntryCreatePayload) => journalService.create(payload),
+    // A5-PR4b: accept an optional stable Idempotency-Key alongside the payload.
+    mutationFn: ({
+      data,
+      idempotencyKey,
+    }: {
+      data: JournalEntryCreatePayload;
+      idempotencyKey?: string;
+    }) => journalService.create(data, idempotencyKey),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: journalKeys.lists() });
     },
@@ -108,9 +116,13 @@ export function useReverseJournalEntry() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (id: number) => journalService.reverse(id),
-    onSuccess: () => {
+    // A5-PR4b: under the active pilot a reverse carries a body (reason + source);
+    // off-pilot the payload is omitted and no body is sent.
+    mutationFn: ({ id, payload }: { id: number; payload?: JournalEntryReversePayload }) =>
+      journalService.reverse(id, payload),
+    onSuccess: (_, { id }) => {
       queryClient.invalidateQueries({ queryKey: journalKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: journalKeys.detail(id) });
       // Invalidate reports since balances change
       queryClient.invalidateQueries({ queryKey: reportKeys.all });
     },

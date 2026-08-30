@@ -4,6 +4,19 @@ export type JournalEntryKind = 'NORMAL' | 'REVERSAL' | 'OPENING' | 'CLOSING' | '
 
 export type JournalEntryStatus = 'INCOMPLETE' | 'DRAFT' | 'POSTED' | 'REVERSED';
 
+// A5-PR4b: the seven supported pilot-adjustment source kinds. The backend
+// registry (accounting/pilot_adjustments.py) is authoritative; this mirrors it
+// for typed form/service inputs. Raw source_module/source_document stay
+// non-request-writable — these typed inputs are the only write surface.
+export type PilotAdjustmentSourceKind =
+  | 'projection_failure'
+  | 'import_reject'
+  | 'shopify_reject'
+  | 'shopify_order'
+  | 'shopify_refund'
+  | 'settlement_event'
+  | 'bank_line';
+
 export interface JournalLine {
   id?: number;
   public_id?: string;
@@ -98,6 +111,11 @@ export interface JournalEntryCreatePayload {
   exchange_rate?: number | string;
   kind?: JournalEntryKind;
   lines: JournalLineInput[];
+  // A5-PR4b pilot adjustment: server-validated typed source (both-or-neither).
+  // The backend maps these to source_module="pilot_adjustment" +
+  // source_document="<kind>:<reference>"; it owns existence/company validation.
+  adjustment_source_kind?: PilotAdjustmentSourceKind;
+  adjustment_source_reference?: string;
 }
 
 export interface JournalEntryUpdatePayload {
@@ -108,14 +126,30 @@ export interface JournalEntryUpdatePayload {
   currency?: string;
   exchange_rate?: number | string;
   lines?: JournalLineInput[];
+  // A5-PR4b: set both to change the pilot-adjustment source, or both to '' to
+  // clear it (a system-owned stamp is refused server-side either way).
+  adjustment_source_kind?: PilotAdjustmentSourceKind | '';
+  adjustment_source_reference?: string;
 }
 
+// NOTE (A5-PR4b): save-complete deliberately does NOT carry the adjustment
+// source — the created/updated row already owns it. Backend arch rule
+// test_raw_source_fields_are_never_request_writable pins this.
 export interface JournalEntrySaveCompletePayload {
   date: string;
   period?: number;
   memo?: string;
   memo_ar?: string;
   lines: JournalLineInput[];
+}
+
+// A5-PR4b reverse body. Under the active pilot a reversal always requires its
+// own reason; the source is inherited when the original is a pilot adjustment,
+// otherwise a new typed source is required. Off-pilot, send no body.
+export interface JournalEntryReversePayload {
+  reason: string;
+  adjustment_source_kind?: PilotAdjustmentSourceKind;
+  adjustment_source_reference?: string;
 }
 
 // Filters for journal entry list

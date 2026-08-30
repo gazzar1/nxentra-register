@@ -4,11 +4,40 @@ import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
 import { useRouter } from "next/router";
 import { useState } from "react";
-import { ArrowLeft, Send, Undo2, Trash2, Pencil, Printer, CheckCircle2 } from "lucide-react";
+import {
+  ArrowLeft,
+  Send,
+  Undo2,
+  Trash2,
+  Pencil,
+  Printer,
+  CheckCircle2,
+  Copy,
+  AlertTriangle,
+} from "lucide-react";
 import Link from "next/link";
 import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   Table,
   TableBody,
@@ -33,6 +62,16 @@ import {
   canEditJournalEntry,
   canDeleteJournalEntry,
 } from "@/types/journal";
+import type { PilotAdjustmentSourceKind, JournalEntryReversePayload } from "@/types/journal";
+import { isConstrainedPilot } from "@/lib/constrained-pilot";
+import {
+  parseSourceDocument,
+  pilotAdjustmentKindLabel,
+  pilotAdjustmentReferenceHint,
+  relatedAreaFor,
+  PILOT_ADJUSTMENT_SOURCE_MODULE,
+  PILOT_ADJUSTMENT_SOURCE_KINDS,
+} from "@/lib/pilot-adjustments";
 
 export default function JournalEntryDetailPage() {
   const { t } = useTranslation(["common", "accounting"]);
@@ -51,8 +90,46 @@ export default function JournalEntryDetailPage() {
   const [showReverseConfirm, setShowReverseConfirm] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
+  // A5-PR4b: active-pilot reversal input state.
+  const [showReverseDialog, setShowReverseDialog] = useState(false);
+  const [reverseReason, setReverseReason] = useState("");
+  const [reverseSourceKind, setReverseSourceKind] = useState<PilotAdjustmentSourceKind | "">("");
+  const [reverseSourceRef, setReverseSourceRef] = useState("");
+  const [reverseError, setReverseError] = useState<string | null>(null);
+
   const functionalCurrency = company?.functional_currency || company?.default_currency || "USD";
   const isForeignCurrency = entry?.currency && entry.currency !== functionalCurrency;
+
+  // A5-PR4b: pilot-adjustment traceability + post-readiness (identify ONLY by
+  // source_module — never by JournalEntry.kind or memo text).
+  const pilotActive = isConstrainedPilot(company?.pilot_profile);
+  const isPilotAdjustment = entry?.source_module === PILOT_ADJUSTMENT_SOURCE_MODULE;
+  const parsedSource = isPilotAdjustment ? parseSourceDocument(entry?.source_document) : null;
+  const systemProvenance =
+    entry && entry.source_module && !isPilotAdjustment
+      ? { module: entry.source_module, document: entry.source_document }
+      : null;
+  const memoLen = (entry?.memo || "").trim().length;
+  const localTraceReady =
+    isPilotAdjustment && parsedSource !== null && memoLen >= 10 && memoLen <= 180;
+  // The reversal inherits provenance only when the original already carries a
+  // pilot-adjustment stamp; otherwise a fresh typed source is required.
+  const reversalInheritsSource =
+    entry?.source_module === PILOT_ADJUSTMENT_SOURCE_MODULE && Boolean(entry?.source_document);
+
+  const copyReference = (text: string) => {
+    navigator.clipboard?.writeText(text).then(
+      () => toast({ title: "Reference copied", variant: "success" }),
+      () => toast({ title: "Could not copy reference", variant: "destructive" })
+    );
+  };
+
+  const resetReverseFields = () => {
+    setReverseReason("");
+    setReverseSourceKind("");
+    setReverseSourceRef("");
+    setReverseError(null);
+  };
 
   const handlePost = async () => {
     try {
@@ -72,9 +149,10 @@ export default function JournalEntryDetailPage() {
     }
   };
 
+  // Profile NONE: unchanged behaviour — a simple confirmation, empty-body reverse.
   const handleReverse = async () => {
     try {
-      await reverseEntry.mutateAsync(id);
+      await reverseEntry.mutateAsync({ id });
       toast({
         title: t("messages.success"),
         description: t("accounting:messages.reverseSuccess"),
@@ -87,6 +165,41 @@ export default function JournalEntryDetailPage() {
         description: getErrorMessage(error),
         variant: "destructive",
       });
+    }
+  };
+
+  // Active pilot: reversal requires its own reason (10–180); a fresh source is
+  // required only when the original lacks pilot-adjustment provenance. The dialog
+  // stays open on failure and clears its fields on success/cancel.
+  const handleReversePilot = async () => {
+    const reason = reverseReason.trim();
+    if (reason.length < 10 || reason.length > 180) {
+      setReverseError("The reversal reason must be 10–180 characters.");
+      return;
+    }
+    const payload: JournalEntryReversePayload = { reason };
+    if (!reversalInheritsSource) {
+      const ref = reverseSourceRef.trim();
+      if (!reverseSourceKind || !ref) {
+        setReverseError("Choose a source type and reference for the reversal.");
+        return;
+      }
+      payload.adjustment_source_kind = reverseSourceKind;
+      payload.adjustment_source_reference = ref;
+    }
+    setReverseError(null);
+    try {
+      await reverseEntry.mutateAsync({ id, payload });
+      toast({
+        title: t("messages.success"),
+        description: t("accounting:messages.reverseSuccess"),
+        variant: "success",
+      });
+      setShowReverseDialog(false);
+      resetReverseFields();
+    } catch (error) {
+      // Keep the dialog open with the operator's input intact.
+      setReverseError(getErrorMessage(error));
     }
   };
 
@@ -158,14 +271,22 @@ export default function JournalEntryDetailPage() {
                   {t("actions.edit")}
                 </Button>
               )}
-              {canPostJournalEntry(entry) && (
-                <Button onClick={() => setShowPostConfirm(true)}>
-                  <Send className="me-2 h-4 w-4" />
-                  {t("accounting:journalEntries.postEntry")}
-                </Button>
-              )}
+              {/* A5-PR4b: under the active pilot, only offer Post when the local
+                  trace is ready — never a normal-looking Post guaranteed to fail. */}
+              {canPostJournalEntry(entry) &&
+                (!pilotActive || (isPilotAdjustment && localTraceReady)) && (
+                  <Button onClick={() => setShowPostConfirm(true)}>
+                    <Send className="me-2 h-4 w-4" />
+                    {t("accounting:journalEntries.postEntry")}
+                  </Button>
+                )}
               {canReverseJournalEntry(entry) && (
-                <Button variant="outline" onClick={() => setShowReverseConfirm(true)}>
+                <Button
+                  variant="outline"
+                  onClick={() =>
+                    pilotActive ? setShowReverseDialog(true) : setShowReverseConfirm(true)
+                  }
+                >
                   <Undo2 className="me-2 h-4 w-4" />
                   {t("accounting:journalEntries.reverseEntry")}
                 </Button>
@@ -210,6 +331,140 @@ export default function JournalEntryDetailPage() {
               .
             </span>
           </div>
+        )}
+
+        {/* A5-PR4b: active-pilot draft that is not yet trace-ready */}
+        {pilotActive &&
+          entry.status === "DRAFT" &&
+          !(isPilotAdjustment && localTraceReady) &&
+          (systemProvenance ? (
+            <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+              <span>
+                This draft belongs to an automated process (system-owned provenance).
+                It is not a manual pilot adjustment and cannot be relabelled or posted
+                through the manual form.
+              </span>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                <span>
+                  Not ready to post. Under the pilot, this entry must carry a source
+                  reference and a 10–180 character reason before it can be posted. The
+                  server makes the final decision — a locally complete entry may still be
+                  refused if the source is missing or belongs to another company.
+                </span>
+              </div>
+              <div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => router.push(`/accounting/journal-entries/${id}/edit`)}
+                >
+                  <Pencil className="me-2 h-4 w-4" />
+                  Edit adjustment evidence
+                </Button>
+              </div>
+            </div>
+          ))}
+
+        {/* A5-PR4b: durable pilot-adjustment traceability card */}
+        {isPilotAdjustment && (
+          <Card className="border-primary/30 bg-primary/5">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Badge variant="info">Pilot adjustment</Badge>
+                Adjustment traceability
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm">
+              <div>
+                <dt className="text-xs text-muted-foreground">
+                  {entry.reverses_entry ? "Reversal narrative" : "Adjustment reason"}
+                </dt>
+                <dd className="font-medium">{entry.memo || "—"}</dd>
+              </div>
+              {parsedSource ? (
+                <>
+                  <div>
+                    <dt className="text-xs text-muted-foreground">Source</dt>
+                    <dd className="font-medium">{pilotAdjustmentKindLabel(parsedSource.kind)}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs text-muted-foreground">Source reference</dt>
+                    <dd className="flex items-center gap-2">
+                      <code className="font-mono text-xs break-all">{entry.source_document}</code>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => copyReference(entry.source_document)}
+                        title="Copy reference"
+                      >
+                        <Copy className="h-4 w-4" />
+                        <span className="sr-only">Copy reference</span>
+                      </Button>
+                    </dd>
+                  </div>
+                  {relatedAreaFor(parsedSource.kind) && (
+                    <div>
+                      <Link
+                        href={relatedAreaFor(parsedSource.kind)!.href}
+                        className="text-sm text-primary hover:underline"
+                      >
+                        {relatedAreaFor(parsedSource.kind)!.label} →
+                      </Link>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div>
+                  <dt className="text-xs text-muted-foreground">Source reference (raw)</dt>
+                  <dd className="flex items-center gap-2">
+                    <code className="font-mono text-xs break-all">
+                      {entry.source_document || "—"}
+                    </code>
+                    {entry.source_document && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => copyReference(entry.source_document)}
+                        title="Copy reference"
+                      >
+                        <Copy className="h-4 w-4" />
+                        <span className="sr-only">Copy reference</span>
+                      </Button>
+                    )}
+                  </dd>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* A5-PR4b: system provenance (read-only) — surfaced under the active pilot
+            so operators can tell an automated entry from a manual pilot adjustment. */}
+        {pilotActive && systemProvenance && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">System provenance</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2 text-sm">
+              <p className="text-xs text-muted-foreground">
+                This entry was produced by an automated process. It is not a manual
+                pilot adjustment.
+              </p>
+              <div>
+                <dt className="text-xs text-muted-foreground">Module</dt>
+                <dd className="font-mono break-all">{systemProvenance.module}</dd>
+              </div>
+              <div>
+                <dt className="text-xs text-muted-foreground">Document</dt>
+                <dd className="font-mono break-all">{systemProvenance.document || "—"}</dd>
+              </div>
+            </CardContent>
+          </Card>
         )}
 
         {/* Entry Info */}
@@ -378,6 +633,7 @@ export default function JournalEntryDetailPage() {
         onConfirm={handlePost}
         isLoading={postEntry.isPending}
       />
+      {/* Profile NONE: simple confirmation (empty-body reverse) */}
       <ConfirmDialog
         open={showReverseConfirm}
         onOpenChange={setShowReverseConfirm}
@@ -386,6 +642,110 @@ export default function JournalEntryDetailPage() {
         onConfirm={handleReverse}
         isLoading={reverseEntry.isPending}
       />
+
+      {/* A5-PR4b: active-pilot reversal input dialog */}
+      <Dialog
+        open={showReverseDialog}
+        onOpenChange={(open) => {
+          setShowReverseDialog(open);
+          if (!open) resetReverseFields();
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t("accounting:journalEntries.reverseEntry")}</DialogTitle>
+            <DialogDescription>
+              This posts a reversing entry. It does not resolve or repair the
+              referenced source item.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="reverse-reason">Reversal reason</Label>
+              <Textarea
+                id="reverse-reason"
+                value={reverseReason}
+                onChange={(e) => setReverseReason(e.target.value)}
+                placeholder="Why is this adjustment being reversed?"
+              />
+              <p className="text-xs text-muted-foreground">Required · 10–180 characters</p>
+            </div>
+
+            {reversalInheritsSource ? (
+              <div className="space-y-1 rounded-md border bg-muted/40 p-3">
+                <p className="text-xs text-muted-foreground">
+                  Inherited source (read-only) — the reversal keeps the original
+                  adjustment&apos;s provenance.
+                </p>
+                <code className="font-mono text-xs break-all">{entry.source_document}</code>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <p className="text-xs text-muted-foreground">
+                  This entry has no pilot-adjustment provenance, so the reversal becomes
+                  a new supervised pilot adjustment. Provide its source.
+                </p>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>Source type</Label>
+                    <Select
+                      value={reverseSourceKind}
+                      onValueChange={(v) => {
+                        setReverseSourceKind(v as PilotAdjustmentSourceKind);
+                        setReverseSourceRef("");
+                      }}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select a source type" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {PILOT_ADJUSTMENT_SOURCE_KINDS.map((k) => (
+                          <SelectItem key={k} value={k}>
+                            {pilotAdjustmentKindLabel(k)}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="reverse-source-ref">Source reference</Label>
+                    <Input
+                      id="reverse-source-ref"
+                      value={reverseSourceRef}
+                      onChange={(e) => setReverseSourceRef(e.target.value)}
+                      placeholder="Source reference"
+                    />
+                    {reverseSourceKind && (
+                      <p className="text-xs text-muted-foreground">
+                        {pilotAdjustmentReferenceHint(reverseSourceKind)}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {reverseError && <p className="text-sm text-destructive">{reverseError}</p>}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowReverseDialog(false);
+                resetReverseFields();
+              }}
+              disabled={reverseEntry.isPending}
+            >
+              {t("actions.cancel")}
+            </Button>
+            <Button onClick={handleReversePilot} disabled={reverseEntry.isPending}>
+              {reverseEntry.isPending
+                ? t("actions.loading")
+                : t("accounting:journalEntries.reverseEntry")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <ConfirmDialog
         open={showDeleteConfirm}
         onOpenChange={setShowDeleteConfirm}
