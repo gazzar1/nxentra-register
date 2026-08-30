@@ -80,8 +80,15 @@ nothing at all.
   resolve, drill-proven).
 - Known violations (tracked): **A184** dormant-vertical logger+return
   branches; **A187** FIFO issues below zero cost the remainder at 0 —
-  a guess, not a refusal; **A179** weak ingress schemas let malformed
-  financial events become immutable truth that only fails at projection time.
+  a guess, not a refusal; **A179** weak *generic-ingress* schemas can still
+  admit malformed financial events as immutable truth — but the failure mode
+  is no longer silent: since A3-PR3 (PR #125) every event is validated at the
+  apply choke point and a malformed one quarantines to a visible
+  `ProjectionFailureLog` row, external `account.*` mutation is prohibited
+  outright, and Shopify order/refund payloads are durably rejected pre-event
+  (`ShopifyRejectedEvidence`, A5 PR #130). The generic-ingress schema
+  hardening itself remains open (External-Ingest-Surface-Hardening, tracked
+  in the pilot-status open decisions).
 
 ### Rule 3 — Every number can explain itself to a nonaccountant
 
@@ -111,8 +118,14 @@ only what it can explain.
 These are places where today the *only* barrier is authentication — not
 construction, not refusal, and not even meaningful gating:
 
-- **A173** — EDIM generic import (~4.4k LOC, AUTO_POST-capable) reachable by
-  any authenticated user. The single worst offender.
+- **A173** — EDIM generic import (~4.4k LOC, AUTO_POST-capable). The original
+  "reachable by any authenticated user" claim is stale (live-code check in the
+  2026-08-30 A5 closure review): every mutating command now carries
+  `require()` (commit needs `edim.commit_batches`, OWNER/ADMIN-defaulted) and
+  the pilot ledger door is capability-blocked
+  (`Capability.EDIM_FINANCIAL_COMMIT`). Remaining scope — module
+  registration and per-view visibility hardening — stays open under its
+  original owner; this bullet is narrowed, not closed.
 - **A174** — settlement CSV import/preview and Stripe disconnect require only
   `IsAuthenticated`; any member can post settlement JEs or sever a live
   integration.

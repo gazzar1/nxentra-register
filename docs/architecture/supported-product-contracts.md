@@ -7,7 +7,9 @@ currently implemented**. There is one constrained contract today.
 
 `Company.pilot_profile = NONE` means no constrained profile is selected — the
 company runs the standard shared-product behavior. It does **not** certify the
-company as production-ready; standard readiness is gated by A3/A5/G1/G2.
+company as production-ready; readiness is still gated by the pilot chain (A3
+and A5 code-complete but not deployed; G1/G2 open — see
+[the live tracker](../status/constrained_pilot_status.md)).
 
 ---
 
@@ -17,7 +19,9 @@ A supervised money-movement proof for one Egyptian Shopify merchant: Shopify
 orders/refunds → Paymob/Bosta settlement CSVs → canonical bank CSV → shadow
 ledger, operated by the founder. Not statutory books.
 
-Implemented by A4 (PR #107, merged 2026-07-27 at `1e12250`). Enforcement is
+Implemented by A4 (PR #107, merged 2026-07-27 at `1e12250`; reopened
+2026-08-10 and RE-CLOSED through PRs #118–#123 — see the tracker's A4 row).
+Enforcement is
 **runtime gates at the deepest shared boundaries**
 ([backend/accounts/pilot_policy.py](../../backend/accounts/pilot_policy.py)) —
 interactive paths raise `PilotScopeBlocked` (HTTP 403); scheduled/webhook paths
@@ -104,7 +108,7 @@ No global deadlock-freedom is claimed.
 | Shopify Payments payout accounting | `Capability.SHOPIFY_PAYOUT_ACCOUNTING` — scheduled sync skips; interactive views 403 |
 | Disputes / chargebacks | `Capability.SHOPIFY_DISPUTES` — `process_dispute` skips (no row, no event) |
 | Inventory / COGS / FIFO | `Capability.INVENTORY` (Option B) — items forced NON_STOCK; no inventory/COGS module mappings; no cost fetch, no FX cost conversion |
-| Purchasing / accounts payable | `Capability.PURCHASING_ACCOUNTING` — purchase documents (bills, orders, goods receipts, credit notes), purchase-originated journals, and the vendor-payment / AP-allocation workflow. Three enforcement layers: module admission (`ModuleEnabled` raises before the enablement lookup, and both enable doors — `CompanyModulesView.put` + onboarding Step 4 — refuse enabling with locked full-payload validation before any write), the `purchases` command boundary (a **serialized** `requires_capability` gate on every command — the Company admission row is locked, the profile re-read fresh, and the lock held through the mutation's commit, so admission and `activate_pilot_profile` share one serializable ordering), and `record_vendor_payment` (same serialized gate; stable 403 `pilot_scope_blocked` at its route). Preflight drift detection runs on durable canonical evidence — surviving documents, immutable purchase/AP events, vendor payment allocations — not only document rows. Manual journals — including vendor-tagged lines — remain governed by the ordinary manual-journal rules |
+| Purchasing / accounts payable | `Capability.PURCHASING_ACCOUNTING` — purchase documents (bills, orders, goods receipts, credit notes), purchase-originated journals, and the vendor-payment / AP-allocation workflow. Three enforcement layers: module admission (`ModuleEnabled` raises before the enablement lookup, and both enable doors — `CompanyModulesView.put` + onboarding Step 4 — refuse enabling with locked full-payload validation before any write), the `purchases` command boundary (a **serialized** `requires_capability` gate on every command — the Company admission row is locked, the profile re-read fresh, and the lock held through the mutation's commit, so admission and `activate_pilot_profile` share one serializable ordering), and `record_vendor_payment` (same serialized gate; stable 403 `pilot_scope_blocked` at its route). Preflight drift detection runs on durable canonical evidence — surviving documents, immutable purchase/AP events, vendor payment allocations — not only document rows. Manual journals — including vendor-tagged lines — remain governed by the manual-journal rules in "Included capabilities" above (EGP-only at header and line; after activation, post-able only as traced pilot adjustments per A5-PR4a) |
 | Foreign currency | `require_pilot_currency` at settlement/bank/Shopify ingestion; `require_pilot_journal_currency` (header + every line + `amount_currency` legs + non-1 rates) at the serialized manual-journal process boundary; EGP-only proven at go-live and by the `non_egp_journal_line_data` / `fx_line_residue` / `fx_header_rate_residue` drift codes |
 | Multiple users | `Capability.ADD_MEMBER` on every membership path |
 | Legacy banking module | `Capability.LEGACY_BANKING` |
@@ -136,7 +140,12 @@ No global deadlock-freedom is claimed.
   per condition, each with a seeded acceptance test).
 - **A1 and A4 still require live G1 operational proof** (fresh-company E2E in
   the real Shopify iframe with control totals + failure injection).
-- **A3, A5, G1 and G2 remain open.**
+- **A3 is COMPLETE** (A3-PR3, PR #125) and **A5 is COMPLETE** for this
+  contract (PRs #127–#135, closed by the
+  [2026-08-30 final closure review](../audits/2026-08-30-a5-final-closure-review.md));
+  neither is deployed. **G1 and G2 remain open** — merchant data remains
+  blocked until both close (see the
+  [live tracker](../status/constrained_pilot_status.md)).
 
 ### Acceptance tests
 
