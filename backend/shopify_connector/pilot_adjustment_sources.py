@@ -33,9 +33,16 @@ def _parse_shopify_id(body: str):
     if not body or not body.isascii() or not body.isdigit():
         return None
     try:
-        return int(body)
+        value = int(body)
     except ValueError:
         return None
+    # Codex PR #134 round-5 P2: BigIntegerField is a signed 64-bit column —
+    # an arbitrary-precision Python int (100-digit reference) fails at query
+    # BIND time (SQLite OverflowError / PostgreSQL bigint range) as a 500.
+    # Out-of-range ids are malformed references, refused here.
+    if not (0 < value <= 9223372036854775807):
+        return None
+    return value
 
 
 def resolve_shopify_order(company, body: str) -> bool:

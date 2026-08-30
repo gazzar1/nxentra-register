@@ -1335,12 +1335,35 @@ def update_journal_entry(
     # Only emit event if there were changes
     event = None
     if changes:
+        # Codex PR #134 round-5 P2: the changes-hash alone made an
+        # edit-cycle (A→B, B→A, A→B) reproduce the FIRST update's key — the
+        # emitter returned the consumed event, no new event landed, and the
+        # entry silently stayed on the intermediate state while the command
+        # reported success (a subsequent post then recorded the wrong
+        # source). Same recipe as save-complete: a true retry of the LATEST
+        # update (identical changes digest) reuses that event's own key
+        # (legacy shape included); anything else gets a fresh key carrying
+        # the monotonic count of prior UPDATED events, which can never
+        # re-collide with an earlier update's key.
+        from events.models import BusinessEvent as _BusinessEvent
+
+        changes_digest = _changes_hash(changes)
+        prior_updates = _BusinessEvent.objects.filter(
+            company=actor.company,
+            aggregate_id=str(entry.public_id),
+            event_type=EventTypes.JOURNAL_ENTRY_UPDATED,
+        )
+        latest_update = prior_updates.order_by("-company_sequence").first()
+        if latest_update is not None and latest_update.idempotency_key.endswith(f":{changes_digest}"):
+            update_idem_key = latest_update.idempotency_key
+        else:
+            update_idem_key = f"journal_entry.updated:{entry.public_id}:{prior_updates.count()}:{changes_digest}"
         event = emit_event(
             actor=actor,
             event_type=EventTypes.JOURNAL_ENTRY_UPDATED,
             aggregate_type="JournalEntry",
             aggregate_id=str(entry.public_id),
-            idempotency_key=f"journal_entry.updated:{entry.public_id}:{_changes_hash(changes)}",
+            idempotency_key=update_idem_key,
             data=JournalEntryUpdatedData(
                 entry_public_id=str(entry.public_id),
                 changes=changes,

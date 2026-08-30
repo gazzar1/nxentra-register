@@ -1252,6 +1252,68 @@ def test_period_override_audit_is_creator_only(
     assert PeriodOverrideAudit.objects.filter(company=company).count() == 0
 
 
+def test_out_of_range_shopify_reference_refuses_cleanly(company, actor_context, cash_account, revenue_account):
+    """Codex PR #134 round-5 P2: a 100-digit ASCII reference builds an
+    arbitrary-precision int that fails at query BIND time (SQLite
+    OverflowError / PG bigint range) — must refuse with the controlled
+    invalid-source 400, and drift must flag it without aborting."""
+    _pilot(company)
+    huge = "9" * 100
+    with pytest.raises(PilotAdjustmentInvalid) as exc:
+        create_manual_journal_entry(
+            actor_context,
+            date=date.today(),
+            memo=GOOD_MEMO,
+            currency="EGP",
+            lines=_lines(cash_account, revenue_account),
+            source_module="pilot_adjustment",
+            source_document=f"shopify_order:{huge}",
+        )
+    assert exc.value.code == "pilot_adjustment_invalid_source"
+
+    _seed_event(
+        company,
+        "journal_entry.posted",
+        data={
+            "entry_public_id": str(uuid4()),
+            "entry_number": "JE-999601",
+            "source_module": "pilot_adjustment",
+            "source_document": f"shopify_order:{huge}",
+            "memo": GOOD_MEMO,
+        },
+    )
+    assert "invalid_pilot_adjustment_reference" in _preflight_codes(company)  # and no abort
+
+
+def test_source_edit_cycle_lands_the_final_state(actor_context, company, cash_account, revenue_account):
+    """Codex PR #134 round-5 P2: an A→B, B→A, A→B edit cycle produced the
+    FIRST update's idempotency key on the last edit — the event deduped away
+    and the draft silently stayed on A while the command reported success,
+    so the post recorded the WRONG source. The stream-position discriminator
+    must land every edit; the post stamps the final state."""
+    _pilot(company)
+    source_a = _settlement_source(company)
+    source_b = _settlement_source(company)
+    entry = _draft(actor_context, company, cash_account, revenue_account, **source_a)
+
+    assert update_manual_journal_entry(actor_context, entry.id, **source_b).success  # A -> B
+    assert update_manual_journal_entry(actor_context, entry.id, **source_a).success  # B -> A
+    assert update_manual_journal_entry(actor_context, entry.id, **source_b).success  # A -> B again
+
+    entry.refresh_from_db()
+    assert entry.source_document == source_b["source_document"]
+
+    assert save_manual_journal_entry_complete(actor_context, entry.id).success
+    posted = post_manual_journal_entry(actor_context, entry.id)
+    assert posted.success, posted.error
+    assert posted.data.source_document == source_b["source_document"]
+
+    event = BusinessEvent.objects.get(
+        company=company, event_type="journal_entry.posted", aggregate_id=str(posted.data.public_id)
+    )
+    assert event.get_data()["source_document"] == source_b["source_document"]
+
+
 # --------------------------------------------------------------------------- #
 # (24)(25) rebuild reproduces the trace; backup keeps the fields
 # --------------------------------------------------------------------------- #
