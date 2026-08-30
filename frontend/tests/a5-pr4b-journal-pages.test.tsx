@@ -14,8 +14,9 @@ import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 
-const { routerState, submitArgs, mockCreate, mockSaveComplete, mockUpdate, entryState } =
+const { routerState, submitArgs, mockCreate, mockSaveComplete, mockUpdate, entryState, mockToast } =
   vi.hoisted(() => ({
+    mockToast: vi.fn(),
     routerState: {
       isReady: true,
       query: {} as Record<string, string | string[]>,
@@ -55,7 +56,7 @@ vi.mock('next/link', () => ({
 vi.mock('@/components/layout', () => ({
   AppLayout: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
-vi.mock('@/components/ui/toaster', () => ({ useToast: () => ({ toast: vi.fn() }) }));
+vi.mock('@/components/ui/toaster', () => ({ useToast: () => ({ toast: mockToast }) }));
 vi.mock('@/lib/api-client', () => ({
   default: {},
   getErrorMessage: (e: unknown) => String(e),
@@ -215,6 +216,30 @@ describe('A5-PR4b new journal page', () => {
     const createArg = mockCreate.mock.calls[0][0];
     expect('adjustment_source_kind' in createArg.data).toBe(false);
     expect('adjustment_source_reference' in createArg.data).toBe(false);
+  });
+
+  it('create-succeeded/save-complete-failed still navigates to the created entry', async () => {
+    // Staying on the mounted form after a successful create would replay the
+    // consumed Idempotency-Key against an edited payload — a guaranteed 400
+    // conflict loop with a stranded INCOMPLETE entry. The page must leave.
+    mockSaveComplete.mockRejectedValueOnce(new Error('period closed meanwhile'));
+    submitArgs.current = [
+      { date: '2026-08-30', memo: 'x', memo_ar: '', lines: [] },
+      true, // saveAsDraft → the two-step path
+      undefined,
+    ];
+    render(<NewJournalEntryPage />);
+    fireEvent.click(screen.getByTestId('stub-submit'));
+
+    await waitFor(() =>
+      expect(routerState.push).toHaveBeenCalledWith('/accounting/journal-entries/42')
+    );
+    expect(mockToast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        variant: 'destructive',
+        description: expect.stringContaining('saved as incomplete'),
+      })
+    );
   });
 
   it('M-11: one stable Idempotency-Key is reused across create retries', async () => {

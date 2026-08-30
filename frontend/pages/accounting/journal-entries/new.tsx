@@ -73,16 +73,32 @@ export default function NewJournalEntryPage() {
 
       if (saveAsDraft && result.data) {
         // Save-complete carries no source — the created row already owns it.
-        await saveComplete.mutateAsync({
-          id: result.data.id,
-          data: {
-            date: data.date,
-            period: data.period,
-            memo: data.memo,
-            memo_ar: data.memo_ar,
-            lines: data.lines,
-          },
-        });
+        // Its failure must NOT keep the operator on this form: the entry now
+        // exists, and resubmitting the mounted form would replay the consumed
+        // Idempotency-Key against an edited payload — a guaranteed conflict.
+        // Navigate to the created entry either way; it can be completed there.
+        try {
+          await saveComplete.mutateAsync({
+            id: result.data.id,
+            data: {
+              date: data.date,
+              period: data.period,
+              memo: data.memo,
+              memo_ar: data.memo_ar,
+              lines: data.lines,
+            },
+          });
+        } catch (completeError) {
+          toast({
+            title: t("messages.error"),
+            description: `The entry was created but could not be marked complete: ${getErrorMessage(
+              completeError
+            )}. It was saved as incomplete — finish it from the entry page.`,
+            variant: "destructive",
+          });
+          router.push(`/accounting/journal-entries/${result.data.id}`);
+          return;
+        }
       }
 
       toast({

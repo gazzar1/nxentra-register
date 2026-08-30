@@ -15,7 +15,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 
 const { permState, failuresSvc, rejectsSvc, evidenceSvc } = vi.hoisted(() => ({
-  permState: { canCreateJournal: true },
+  permState: { canCreateJournal: true, pilotProfile: "ISOLATED_SHADOW_LEDGER_V1" as string },
   failuresSvc: { summary: vi.fn(), list: vi.fn(), detail: vi.fn(), resolve: vi.fn() },
   rejectsSvc: { list: vi.fn(), resolve: vi.fn() },
   evidenceSvc: { list: vi.fn(), acknowledge: vi.fn() },
@@ -37,6 +37,7 @@ vi.mock("@/contexts/AuthContext", () => ({
   useAuth: () => ({
     user: { id: 1, name: "Owner", email: "o@test.com", is_staff: false, is_superuser: false },
     membership: { role: "OWNER" },
+    company: { id: 1, name: "Pilot Co", pilot_profile: permState.pilotProfile },
     hasPermission: (code: string) => code === "journal.create" && permState.canCreateJournal,
   }),
 }));
@@ -164,6 +165,7 @@ const adjustmentLinks = () =>
 beforeEach(() => {
   vi.clearAllMocks();
   permState.canCreateJournal = true;
+  permState.pilotProfile = "ISOLATED_SHADOW_LEDGER_V1";
 });
 
 describe("A5-PR4b exceptions-page adjustment shortcuts", () => {
@@ -217,6 +219,19 @@ describe("A5-PR4b exceptions-page adjustment shortcuts", () => {
 
   it("M-27: without journal.create no shortcut renders", async () => {
     permState.canCreateJournal = false;
+    mockLoaded();
+    render(<ExceptionsPage />);
+
+    await waitFor(() => expect(screen.getByText(/COGS account is not configured/)).toBeTruthy());
+    expect(screen.queryByText("Create adjustment")).toBeNull();
+    expect(screen.queryByText(/does not resolve or repair the source item/)).toBeNull();
+  });
+
+  it("under profile NONE no shortcut renders — the page is unchanged pre-activation", async () => {
+    // The prefill is a pilot-adjustment linkage; under NONE the form deliberately
+    // carries no source fields, so offering the link would silently drop the
+    // evidence connection the operator thinks they are creating.
+    permState.pilotProfile = "NONE";
     mockLoaded();
     render(<ExceptionsPage />);
 

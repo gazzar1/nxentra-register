@@ -179,6 +179,32 @@ describe('A5-PR4b JournalEntryForm', () => {
     expect(source).toEqual({ kind: 'settlement_event', reference: '0f0e-abc' });
   });
 
+  it('Clear source returns the pair to blank and re-enables an untraced save', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    render(
+      <JournalEntryForm
+        onSubmit={onSubmit}
+        initialData={{
+          lines: validLines,
+          adjustment_source_kind: 'settlement_event',
+          adjustment_source_reference: '0f0e-abc',
+        }}
+      />
+    );
+
+    await waitFor(() =>
+      expect((screen.getByLabelText('Source reference') as HTMLInputElement).value).toBe('0f0e-abc')
+    );
+    fireEvent.click(screen.getByText('Clear source'));
+    expect((screen.getByLabelText('Source reference') as HTMLInputElement).value).toBe('');
+
+    fireEvent.click(screen.getByText(/\(Incomplete\)/));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const [, , source] = onSubmit.mock.calls[0];
+    // The explicit both-blank pair — the PATCH clear path is reachable.
+    expect(source).toEqual({ kind: '', reference: '' });
+  });
+
   it('M-7: a system-owned draft shows read-only provenance and emits no source', async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     render(
@@ -198,6 +224,10 @@ describe('A5-PR4b JournalEntryForm', () => {
     // The editable evidence section is suppressed.
     expect(screen.queryByText('Pilot adjustment evidence')).toBeNull();
     expect(screen.queryByLabelText('Source reference')).toBeNull();
+    // The memo keeps its plain meaning — a system-owned draft is not invited to
+    // author an "adjustment reason" it can never post through the manual form.
+    expect(screen.queryByText('Adjustment reason')).toBeNull();
+    expect(screen.getByText('memo')).toBeInTheDocument();
 
     fireEvent.click(screen.getByText(/\(Incomplete\)/));
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));

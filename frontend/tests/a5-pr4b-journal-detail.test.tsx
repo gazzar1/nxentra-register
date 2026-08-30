@@ -136,6 +136,19 @@ describe('A5-PR4b detail page — post readiness', () => {
     expect(screen.getByText('postEntry')).toBeInTheDocument();
   });
 
+  it('readiness counts Unicode code points like the backend, not UTF-16 units', () => {
+    // 179 BMP chars + one emoji = 180 code points (server-valid) but 181 UTF-16
+    // units — .length-based counting would wrongly hide the Post action.
+    entryState.current = entry({
+      source_module: 'pilot_adjustment',
+      source_document: 'settlement_event:0f0e-abc',
+      memo: 'x'.repeat(179) + '😀',
+    });
+    render(<JournalEntryDetailPage />);
+    expect(screen.queryByText(/Not ready to post/)).toBeNull();
+    expect(screen.getByText('postEntry')).toBeInTheDocument();
+  });
+
   it('a traced DRAFT with an out-of-bounds reason is still not ready', () => {
     entryState.current = entry({
       source_module: 'pilot_adjustment',
@@ -292,6 +305,27 @@ describe('A5-PR4b detail page — reversal', () => {
       id: 5,
       payload: { reason: 'Posted against the wrong batch' },
     });
+  });
+
+  it('reversal reason bounds count code points (astral chars are one char)', async () => {
+    entryState.current = entry({
+      status: 'POSTED',
+      posted_at: '2026-08-02T00:00:00Z',
+      source_module: 'pilot_adjustment',
+      source_document: 'settlement_event:0f0e-abc',
+    });
+    render(<JournalEntryDetailPage />);
+
+    fireEvent.click(screen.getAllByText('reverseEntry')[0]);
+    const dialog = screen.getByRole('dialog');
+    // 9 BMP chars + one emoji = 10 code points — server-valid; UTF-16 counting
+    // (11 units) would also pass here, but 181-unit/180-point strings must too.
+    fireEvent.change(within(dialog).getByLabelText('Reversal reason'), {
+      target: { value: 'y'.repeat(179) + '😀' },
+    });
+    fireEvent.click(within(dialog).getAllByText('reverseEntry').pop()!);
+    await waitFor(() => expect(mockReverse).toHaveBeenCalledTimes(1));
+    expect(mockReverse.mock.calls[0][0].payload.reason).toBe('y'.repeat(179) + '😀');
   });
 
   it('M-21: a blank-provenance reversal requires a new source in addition to the reason', async () => {

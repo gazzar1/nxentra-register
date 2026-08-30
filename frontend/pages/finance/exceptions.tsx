@@ -39,6 +39,7 @@ import { PageHeader } from "@/components/common";
 import { useToast } from "@/components/ui/toaster";
 import { useAuth } from "@/contexts/AuthContext";
 import { buildNewAdjustmentHref } from "@/lib/pilot-adjustments";
+import { isConstrainedPilot } from "@/lib/constrained-pilot";
 
 // A5-PR4b: a manual adjustment records a correction — it is never proof the
 // underlying source problem was repaired, and it does not resolve/acknowledge
@@ -140,16 +141,20 @@ function timeAgo(iso: string | null): string {
 
 export default function ExceptionsPage() {
   const { toast } = useToast();
-  const { user, membership, hasPermission } = useAuth();
+  const { user, membership, company, hasPermission } = useAuth();
   // F22: company OWNER/ADMIN can resolve their own exceptions (matches the
   // backend gate) — previously is_staff-only, so merchants saw "Admin only".
   const isAdmin = Boolean(
     user?.is_staff || user?.is_superuser || membership?.role === "OWNER" || membership?.role === "ADMIN"
   );
-  // A5-PR4b: the "Create adjustment" convenience is shown only when the operator
-  // can create journals. It is navigation-only — a guided prefill, never an
-  // authorization boundary and never a resolve/acknowledge of the source.
-  const canCreateJournal = hasPermission("journal.create");
+  // A5-PR4b: the "Create adjustment" convenience is shown only under the ACTIVE
+  // constrained pilot AND with journal.create. It is a pilot-adjustment prefill:
+  // under profile NONE the form deliberately carries no source fields (D.10), so
+  // offering the link there would silently drop the evidence linkage. It is
+  // navigation-only — a guided prefill, never an authorization boundary and
+  // never a resolve/acknowledge of the source.
+  const canCreateJournal =
+    isConstrainedPilot(company?.pilot_profile) && hasPermission("journal.create");
 
   const [summary, setSummary] = useState<ProjectionFailureSummary | null>(null);
   const [items, setItems] = useState<ProjectionFailure[]>([]);

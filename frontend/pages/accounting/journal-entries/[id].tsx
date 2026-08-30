@@ -109,7 +109,9 @@ export default function JournalEntryDetailPage() {
     entry && entry.source_module && !isPilotAdjustment
       ? { module: entry.source_module, document: entry.source_document }
       : null;
-  const memoLen = (entry?.memo || "").trim().length;
+  // Count Unicode code points (Array.from), matching the backend's Python len()
+  // — plain .length counts UTF-16 units and diverges on astral chars (emoji).
+  const memoLen = Array.from((entry?.memo || "").trim()).length;
   const localTraceReady =
     isPilotAdjustment && parsedSource !== null && memoLen >= 10 && memoLen <= 180;
   // The reversal inherits provenance only when the original already carries a
@@ -173,7 +175,9 @@ export default function JournalEntryDetailPage() {
   // stays open on failure and clears its fields on success/cancel.
   const handleReversePilot = async () => {
     const reason = reverseReason.trim();
-    if (reason.length < 10 || reason.length > 180) {
+    // Code points, matching the backend's Python len() (not UTF-16 units).
+    const reasonLen = Array.from(reason).length;
+    if (reasonLen < 10 || reasonLen > 180) {
       setReverseError("The reversal reason must be 10–180 characters.");
       return;
     }

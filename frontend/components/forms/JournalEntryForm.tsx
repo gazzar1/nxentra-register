@@ -538,6 +538,23 @@ export function JournalEntryForm({
                   ))}
                 </SelectContent>
               </Select>
+              {/* Radix Select has no deselect — without this, an accidental kind
+                  selection would block both Save buttons (both-or-neither), and
+                  the PATCH clear-to-blank path would be unreachable. */}
+              {(form.watch("adjustment_source_kind") ||
+                form.watch("adjustment_source_reference")) && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    form.setValue("adjustment_source_kind", "", { shouldValidate: true });
+                    form.setValue("adjustment_source_reference", "", { shouldValidate: true });
+                  }}
+                >
+                  Clear source
+                </Button>
+              )}
             </div>
             <div className="space-y-2">
               <Label htmlFor="adjustment_source_reference">Source reference</Label>
@@ -585,14 +602,17 @@ export function JournalEntryForm({
       <div className={showArabic ? "grid gap-4 sm:grid-cols-2" : "grid gap-4"}>
         <div className="space-y-2">
           <Label htmlFor="memo">
-            {pilotActive ? "Adjustment reason" : t("accounting:journalEntry.memo")}
+            {/* System-owned drafts are not manual pilot adjustments — their memo
+                keeps its plain meaning (the detail page says such an entry cannot
+                be relabelled or posted through the manual form). */}
+            {showAdjustmentSource ? "Adjustment reason" : t("accounting:journalEntry.memo")}
           </Label>
           <Input
             id="memo"
             {...form.register("memo")}
-            placeholder={pilotActive ? "Why this adjustment is needed..." : "Description..."}
+            placeholder={showAdjustmentSource ? "Why this adjustment is needed..." : "Description..."}
           />
-          {pilotActive && (
+          {showAdjustmentSource && (
             <p className="text-xs text-muted-foreground">
               Required before posting · 10–180 characters
             </p>
