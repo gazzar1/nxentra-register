@@ -38,6 +38,7 @@ everything in this module so existing test imports keep working.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import uuid as _uuid
 from datetime import date
@@ -55,7 +56,12 @@ from accounting.models import (
     JournalLine,
 )
 from accounts.authz import ActorContext, require
-from accounts.pilot_policy import Capability, requires_capability
+from accounts.pilot_policy import (
+    Capability,
+    lock_company_for_admission,
+    require_supported,
+    requires_capability,
+)
 from events.emitter import emit_event_no_actor
 from events.types import EventTypes
 from projections.write_barrier import command_writes_allowed, statement_delete_allowed
@@ -1955,20 +1961,63 @@ def exclude_line(
     (When called on a never-matched line, the unmatched event still
     emits with previously_matched_journal_line_public_id empty so the
     audit trail records the EXCLUDED transition.)
+
+    A4 (matched-line exclusion gate): excluding a line that can dismantle an
+    existing match runs the SAME reversal machinery as unmatch_line, so it is
+    the same unsafe bank action — under the constrained pilot it is blocked by
+    ``Capability.UNSAFE_BANK_MATCH``, decided on the admission-locked Company
+    row (one serializable ordering with ``activate_pilot_profile``, lock held
+    through this command's outermost commit/rollback). Excluding a
+    never-matched nuisance row stays a supported pilot action and is NOT
+    gated. The classification is made from the ``select_for_update``-locked
+    BankStatementLine so a concurrent manual_match cannot flip an apparently
+    UNMATCHED line into a matched one after the capability decision. Lock
+    order: Company admission -> reconciliation drain -> BankStatementLine row
+    -> conditional capability decision -> reversal/event/projection work.
     """
     require(actor, "accounting.reconciliation")
+
+    # A4: the admission lock is the FIRST financial/domain lock — before the
+    # projection drain, the bank-line lock, and any journal work. The freshly
+    # locked row is the sole authoritative profile source for the gate below
+    # (ActorContext is frozen, hence dataclasses.replace — the decorator
+    # pattern, applied conditionally here).
+    locked_company = lock_company_for_admission(actor.company.pk)
+    actor = dataclasses.replace(actor, company=locked_company)
 
     # A5-PR3c (D#9, Codex round-2): drain pending reconciliation events before
     # reading the line's match state, so the reversal below sees applied truth.
     _run_reconciliation_projection_sync(actor.company)
 
     try:
-        bank_line = BankStatementLine.objects.get(
+        bank_line = BankStatementLine.objects.select_for_update().get(
             id=bank_line_id,
             company=actor.company,
         )
     except BankStatementLine.DoesNotExist:
         return CommandResult.fail("Bank statement line not found.")
+
+    # A4: match-destructive when the locked line claims a matched status OR
+    # still carries either reversal-bearing relation. The relation checks are
+    # fail-closed defense against inconsistent/partially repaired rows —
+    # _reverse_match_side_effects acts on those links even when match_status
+    # itself is stale.
+    match_destructive = (
+        bank_line.match_status
+        in (
+            BankStatementLine.MatchStatus.AUTO_MATCHED,
+            BankStatementLine.MatchStatus.MANUAL_MATCHED,
+            BankStatementLine.MatchStatus.MATCHED_WITH_DIFFERENCE,
+        )
+        or bank_line.matched_journal_line_id is not None
+        or bank_line.difference_adjustment_entry_id is not None
+    )
+    if match_destructive:
+        # Raises PilotScopeBlocked (stable HTTP 403) under the active pilot,
+        # BEFORE any reversal, event emission, counter consumption or
+        # projection application — the @transaction.atomic rollback leaves
+        # zero residue. Profile NONE proceeds unchanged.
+        require_supported(locked_company, Capability.UNSAFE_BANK_MATCH)
 
     previously_matched_jl = bank_line.matched_journal_line
     inferred_match_kind = _infer_match_kind_for_unmatch(bank_line, previously_matched_jl)

@@ -3458,3 +3458,87 @@ def test_scratchpad_commit_carries_the_serialized_pilot_refusal():
     assert core_callers == ["scratchpad/commands.py"], (
         f"_commit_scratchpad_groups may be called only by its admission wrapper; found in {core_callers}"
     )
+
+
+# ===========================================================================
+# Rule 19 (A4 matched-line exclusion gate): exclude_line is a CONDITIONAL
+# serialized UNSAFE_BANK_MATCH site — never-matched nuisance exclusion stays
+# supported under the pilot, while any match-destructive exclusion admits on
+# the Company admission lock and refuses under the active profile BEFORE any
+# reversal work. These pins freeze the load-bearing source order and the
+# single production door.
+# ===========================================================================
+
+
+def test_exclude_line_conditional_unsafe_bank_match_gate_order():
+    """Company admission -> reconciliation drain -> BankStatementLine lock ->
+    conditional capability decision -> reversal work, in exactly that source
+    order — and the classification is fail-closed on BOTH reversal-bearing
+    relations, not just match_status."""
+    import inspect
+
+    from reconciliation import commands as recon_commands
+
+    src = inspect.getsource(recon_commands.exclude_line)
+
+    order = [
+        "lock_company_for_admission(",
+        "_run_reconciliation_projection_sync(",
+        "select_for_update(",
+        "matched_journal_line_id is not None",
+        "difference_adjustment_entry_id is not None",
+        "require_supported(locked_company, Capability.UNSAFE_BANK_MATCH)",
+        "_reverse_match_side_effects(",
+    ]
+    positions = [src.find(marker) for marker in order]
+    assert all(p != -1 for p in positions), f"exclude_line lost a load-bearing gate step: {dict(zip(order, positions))}"
+    assert positions == sorted(positions), f"exclude_line gate steps out of order: {dict(zip(order, positions))}"
+    # The locked-row actor replacement (the decorator pattern, inlined).
+    assert "dataclasses.replace(actor, company=locked_company)" in src
+    # All three matched statuses participate in the classification.
+    for status in ("AUTO_MATCHED", "MANUAL_MATCHED", "MATCHED_WITH_DIFFERENCE"):
+        assert status in src, f"exclude_line classification lost MatchStatus.{status}"
+
+
+def test_exclude_line_is_not_in_the_unconditional_decorator_set():
+    """The unconditional @requires_capability decorator would block the
+    supported never-matched nuisance exclusion — exclude_line must stay a
+    conditional site (no _pilot_capability marker), while its gated siblings
+    keep theirs."""
+    from reconciliation import commands as recon_commands
+
+    assert not hasattr(recon_commands.exclude_line, "_pilot_capability"), (
+        "exclude_line must remain CONDITIONALLY gated — an unconditional "
+        "decorator blocks the supported never-matched exclusion"
+    )
+    for gated in ("auto_match_statement", "unmatch_line", "unmatch_and_delete_statement"):
+        fn = getattr(recon_commands, gated)
+        assert getattr(fn, "_pilot_capability_serialized", False), (
+            f"{gated} lost its serialized UNSAFE_BANK_MATCH decorator"
+        )
+
+
+def test_bank_exclude_view_routes_through_canonical_command():
+    """BankExcludeLineView must keep routing through reconciliation.commands.
+    exclude_line (where the conditional gate lives) and must not catch
+    PilotScopeBlocked — the stable 403 renders via DRF."""
+    import inspect
+
+    from accounting import bank_views
+
+    src = inspect.getsource(bank_views.BankExcludeLineView)
+    assert "recon.exclude_line(" in src
+    assert "PilotScopeBlocked" not in src, "BankExcludeLineView must let PilotScopeBlocked propagate to DRF's 403"
+
+
+def test_exclude_line_has_a_single_production_call_site():
+    """Exactly one production mutation door: the bank view. A second caller
+    would be a second matched-line exclusion writer bypassing the gate."""
+    callers = sorted(
+        path.relative_to(BACKEND_ROOT).as_posix()
+        for path in _production_files()
+        if "exclude_line(" in path.read_text(encoding="utf-8")
+    )
+    assert callers == ["accounting/bank_views.py", "reconciliation/commands.py"], (
+        f"unexpected exclude_line call sites: {callers}"
+    )
