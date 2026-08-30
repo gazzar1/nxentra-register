@@ -212,12 +212,28 @@ def _invalid_source() -> PilotAdjustmentInvalid:
     )
 
 
-def validate_manual_source_stamp(company, source_module: str, source_document: str) -> None:
+def validate_manual_source_stamp(
+    company, source_module: str, source_document: str, *, current_source_module: str = ""
+) -> None:
     """Draft-door validation (create/update, under the manual sentinel):
     the manual surface may stamp ONLY the pilot-adjustment discriminator,
     and a supplied reference must resolve same-company. Raises; emits
     nothing. Runs for every profile — the reference must be real whenever
-    it is stored; only the post-time REQUIREMENT is pilot-scoped."""
+    it is stored; only the post-time REQUIREMENT is pilot-scoped.
+
+    Codex PR #134 round-8 P1: ``current_source_module`` guards the EXISTING
+    stamp on an update — system flows persist failed journals as
+    INCOMPLETE drafts carrying their own provenance (e.g. the je_builder's
+    platform stamps), and reconciliation/idempotency readers join on those
+    stamps. The manual door may edit or clear a source only when the current
+    stamp is blank or already pilot-adjustment; overwriting (or blanking) a
+    system-owned stamp would sever those joins or relabel provider evidence.
+    """
+    if current_source_module and current_source_module != PILOT_ADJUSTMENT_SOURCE_MODULE:
+        raise PilotAdjustmentInvalid(
+            CODE_INVALID_SOURCE,
+            "This entry carries system-owned source provenance; the manual door cannot edit or clear it.",
+        )
     if not source_module and not source_document:
         return  # draft without a source is allowed
     if source_module != PILOT_ADJUSTMENT_SOURCE_MODULE:

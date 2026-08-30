@@ -1314,6 +1314,37 @@ def test_source_edit_cycle_lands_the_final_state(actor_context, company, cash_ac
     assert event.get_data()["source_document"] == source_b["source_document"]
 
 
+def test_manual_door_cannot_edit_or_clear_system_owned_stamp(actor_context, company, cash_account, revenue_account):
+    """Codex PR #134 round-8 P1: system flows persist failed journals as
+    INCOMPLETE drafts carrying their own provenance, and recon/idempotency
+    readers join on those stamps. The manual PATCH door must refuse to edit
+    OR clear a system-owned stamp — while pilot-adjustment and blank stamps
+    stay freely editable (pinned elsewhere)."""
+    _pilot(company)
+    r = create_journal_entry(  # the internal (non-sentinel) door stamps freely
+        actor_context,
+        date=date.today(),
+        memo="failed platform journal draft",
+        currency="EGP",
+        lines=_lines(cash_account, revenue_account),
+        source_module="platform_stripe",
+        source_document="po_pr4a_sys",
+    )
+    assert r.success, r.error
+
+    new_source = _settlement_source(company)
+    with pytest.raises(PilotAdjustmentInvalid) as exc:
+        update_manual_journal_entry(actor_context, r.data.id, **new_source)
+    assert "system-owned" in str(exc.value.detail)
+
+    with pytest.raises(PilotAdjustmentInvalid):
+        update_manual_journal_entry(actor_context, r.data.id, source_module="", source_document="")
+
+    r.data.refresh_from_db()
+    assert r.data.source_module == "platform_stripe"
+    assert r.data.source_document == "po_pr4a_sys"
+
+
 # --------------------------------------------------------------------------- #
 # (24)(25) rebuild reproduces the trace; backup keeps the fields
 # --------------------------------------------------------------------------- #

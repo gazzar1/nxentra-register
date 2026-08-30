@@ -1209,11 +1209,19 @@ def update_journal_entry(
     # A5-PR4a: validate a supplied source stamp BEFORE change tracking and any
     # event emission — the manual door may only carry the pilot-adjustment
     # discriminator with a same-company-resolvable reference (or clear both
-    # to ""). Raises; no event, entry untouched.
+    # to ""), and (round-8 P1) may never edit or clear an entry whose CURRENT
+    # stamp is system-owned (provider flows persist failed journals as
+    # INCOMPLETE drafts carrying join-load-bearing provenance). Raises; no
+    # event, entry untouched.
     if _process_token is _MANUAL_JOURNAL_PROCESS and source_module is not None:
         from accounting.pilot_adjustments import validate_manual_source_stamp
 
-        validate_manual_source_stamp(actor.company, source_module, source_document or "")
+        validate_manual_source_stamp(
+            actor.company,
+            source_module,
+            source_document or "",
+            current_source_module=entry.source_module or "",
+        )
 
     # Track changes
     changes = {}
