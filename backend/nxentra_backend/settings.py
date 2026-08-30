@@ -373,6 +373,14 @@ CORS_ALLOWED_ORIGINS = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000"
 
 CORS_ALLOW_CREDENTIALS = True
 
+# A5-PR4b (founder-authorized configuration exception): the manual journal
+# create door reads the A177 `Idempotency-Key` request header (PR #134), and the
+# browser preflight refuses any header outside this list. Append exactly that
+# one header to the django-cors-headers defaults — no wildcard, defaults kept.
+from corsheaders.defaults import default_headers
+
+CORS_ALLOW_HEADERS = (*default_headers, "idempotency-key")
+
 CSRF_TRUSTED_ORIGINS = os.getenv("CSRF_TRUSTED_ORIGINS", "http://localhost:3000").split(",")
 
 # Production guard: REJECT wildcard / localhost origins (hard fail, not just a warning).

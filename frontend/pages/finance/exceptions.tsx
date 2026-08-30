@@ -17,6 +17,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { GetServerSideProps } from "next";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
+import Link from "next/link";
 import {
   AlertCircle,
   AlertTriangle,
@@ -27,6 +28,7 @@ import {
   XCircle,
   ChevronDown,
   ChevronRight,
+  FilePlus2,
 } from "lucide-react";
 
 import { AppLayout } from "@/components/layout";
@@ -36,6 +38,14 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader } from "@/components/common";
 import { useToast } from "@/components/ui/toaster";
 import { useAuth } from "@/contexts/AuthContext";
+import { buildNewAdjustmentHref } from "@/lib/pilot-adjustments";
+import { isConstrainedPilot } from "@/lib/constrained-pilot";
+
+// A5-PR4b: a manual adjustment records a correction — it is never proof the
+// underlying source problem was repaired, and it does not resolve/acknowledge
+// the evidence row.
+const ADJUSTMENT_CAVEAT =
+  "Creating an adjustment records a correction — it does not resolve or repair the source item.";
 import {
   projectionFailuresService,
   type FailureCategory,
@@ -131,12 +141,20 @@ function timeAgo(iso: string | null): string {
 
 export default function ExceptionsPage() {
   const { toast } = useToast();
-  const { user, membership } = useAuth();
+  const { user, membership, company, hasPermission } = useAuth();
   // F22: company OWNER/ADMIN can resolve their own exceptions (matches the
   // backend gate) — previously is_staff-only, so merchants saw "Admin only".
   const isAdmin = Boolean(
     user?.is_staff || user?.is_superuser || membership?.role === "OWNER" || membership?.role === "ADMIN"
   );
+  // A5-PR4b: the "Create adjustment" convenience is shown only under the ACTIVE
+  // constrained pilot AND with journal.create. It is a pilot-adjustment prefill:
+  // under profile NONE the form deliberately carries no source fields (D.10), so
+  // offering the link there would silently drop the evidence linkage. It is
+  // navigation-only — a guided prefill, never an authorization boundary and
+  // never a resolve/acknowledge of the source.
+  const canCreateJournal =
+    isConstrainedPilot(company?.pilot_profile) && hasPermission("journal.create");
 
   const [summary, setSummary] = useState<ProjectionFailureSummary | null>(null);
   const [items, setItems] = useState<ProjectionFailure[]>([]);
@@ -559,6 +577,11 @@ export default function ExceptionsPage() {
           }
         />
 
+        {/* A5-PR4b: caveat for the per-row "Create adjustment" convenience. */}
+        {canCreateJournal && (
+          <p className="text-xs text-muted-foreground">{ADJUSTMENT_CAVEAT}</p>
+        )}
+
         {/* A5-PR1a: PERSISTENT visibility state — a failed load must never fall
             through to an all-clear, and a toast alone (auto-dismissing) is not
             an error surface. */}
@@ -807,6 +830,7 @@ export default function ExceptionsPage() {
                       detail={detailById[f.id]}
                       loadingDetail={loadingDetailId === f.id}
                       isAdmin={isAdmin}
+                      canCreateAdjustment={canCreateJournal}
                       isResolving={resolvingId === f.id}
                       resolutionNote={resolutionNote}
                       onResolutionNoteChange={setResolutionNote}
@@ -914,24 +938,36 @@ export default function ExceptionsPage() {
                           {timeAgo(r.last_seen_at)}
                         </td>
                         <td className="px-3 py-2 align-top text-right">
-                          {r.resolved ? (
-                            <Badge variant="outline">Resolved</Badge>
-                          ) : isAdmin ? (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => handleResolveReject(r)}
-                              disabled={resolvingRejectId === r.id}
-                            >
-                              {resolvingRejectId === r.id ? (
-                                <Loader2 className="h-3 w-3 animate-spin" />
-                              ) : (
-                                "Mark resolved"
-                              )}
-                            </Button>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">Admin only</span>
-                          )}
+                          <div className="flex flex-col items-end gap-1">
+                            {r.resolved ? (
+                              <Badge variant="outline">Resolved</Badge>
+                            ) : isAdmin ? (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleResolveReject(r)}
+                                disabled={resolvingRejectId === r.id}
+                              >
+                                {resolvingRejectId === r.id ? (
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                ) : (
+                                  "Mark resolved"
+                                )}
+                              </Button>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">Admin only</span>
+                            )}
+                            {canCreateJournal && (
+                              <Link
+                                href={buildNewAdjustmentHref("import_reject", r.public_id)}
+                                title={ADJUSTMENT_CAVEAT}
+                                className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                              >
+                                <FilePlus2 className="h-3 w-3" />
+                                Create adjustment
+                              </Link>
+                            )}
+                          </div>
                         </td>
                       </tr>
                       {expandedRejectId === r.id && (
@@ -1082,26 +1118,38 @@ export default function ExceptionsPage() {
                           {timeAgo(r.last_seen_at)}
                         </td>
                         <td className="px-3 py-2 align-top text-right">
-                          {r.superseded_at ? (
-                            <Badge variant="outline">Superseded</Badge>
-                          ) : r.acknowledged ? (
-                            <Badge variant="outline">Acknowledged</Badge>
-                          ) : isAdmin ? (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => handleAcknowledgeEvidence(r)}
-                              disabled={ackingEvidenceId === r.id}
-                            >
-                              {ackingEvidenceId === r.id ? (
-                                <Loader2 className="h-3 w-3 animate-spin" />
-                              ) : (
-                                "Acknowledge"
-                              )}
-                            </Button>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">Admin only</span>
-                          )}
+                          <div className="flex flex-col items-end gap-1">
+                            {r.superseded_at ? (
+                              <Badge variant="outline">Superseded</Badge>
+                            ) : r.acknowledged ? (
+                              <Badge variant="outline">Acknowledged</Badge>
+                            ) : isAdmin ? (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleAcknowledgeEvidence(r)}
+                                disabled={ackingEvidenceId === r.id}
+                              >
+                                {ackingEvidenceId === r.id ? (
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                ) : (
+                                  "Acknowledge"
+                                )}
+                              </Button>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">Admin only</span>
+                            )}
+                            {canCreateJournal && (
+                              <Link
+                                href={buildNewAdjustmentHref("shopify_reject", r.public_id)}
+                                title={ADJUSTMENT_CAVEAT}
+                                className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                              >
+                                <FilePlus2 className="h-3 w-3" />
+                                Create adjustment
+                              </Link>
+                            )}
+                          </div>
                         </td>
                       </tr>
                       {expandedEvidenceId === r.id && (
@@ -1207,6 +1255,7 @@ interface FailureRowProps {
   detail: ProjectionFailureDetail | undefined;
   loadingDetail: boolean;
   isAdmin: boolean;
+  canCreateAdjustment: boolean;
   isResolving: boolean;
   resolutionNote: string;
   onResolutionNoteChange: (s: string) => void;
@@ -1220,6 +1269,7 @@ function FailureRow({
   detail,
   loadingDetail,
   isAdmin,
+  canCreateAdjustment,
   isResolving,
   resolutionNote,
   onResolutionNoteChange,
@@ -1266,24 +1316,36 @@ function FailureRow({
           {timeAgo(failure.last_seen_at)}
         </td>
         <td className="px-3 py-2 align-top text-right">
-          {failure.resolved ? (
-            <Badge variant="outline">Resolved</Badge>
-          ) : isAdmin ? (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={onResolve}
-              disabled={isResolving}
-            >
-              {isResolving ? (
-                <Loader2 className="h-3 w-3 animate-spin" />
-              ) : (
-                "Mark resolved"
-              )}
-            </Button>
-          ) : (
-            <span className="text-xs text-muted-foreground">Admin only</span>
-          )}
+          <div className="flex flex-col items-end gap-1">
+            {failure.resolved ? (
+              <Badge variant="outline">Resolved</Badge>
+            ) : isAdmin ? (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={onResolve}
+                disabled={isResolving}
+              >
+                {isResolving ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  "Mark resolved"
+                )}
+              </Button>
+            ) : (
+              <span className="text-xs text-muted-foreground">Admin only</span>
+            )}
+            {canCreateAdjustment && (
+              <Link
+                href={buildNewAdjustmentHref("projection_failure", failure.event_id)}
+                title={ADJUSTMENT_CAVEAT}
+                className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+              >
+                <FilePlus2 className="h-3 w-3" />
+                Create adjustment
+              </Link>
+            )}
+          </div>
         </td>
       </tr>
       {isExpanded && (

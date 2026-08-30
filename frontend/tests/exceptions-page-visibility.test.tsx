@@ -35,6 +35,9 @@ vi.mock("@/contexts/AuthContext", () => ({
   useAuth: () => ({
     user: { id: 1, name: "Owner", email: "o@test.com", is_staff: false, is_superuser: false },
     membership: { role: "OWNER" },
+    // A5-PR4b: the page reads hasPermission for the Create-adjustment shortcut.
+    // OWNER bypasses in the real context; mirror that here.
+    hasPermission: () => true,
   }),
 }));
 vi.mock("next-i18next/serverSideTranslations", () => ({

@@ -4,6 +4,7 @@ import type {
   JournalEntryCreatePayload,
   JournalEntryUpdatePayload,
   JournalEntrySaveCompletePayload,
+  JournalEntryReversePayload,
   JournalEntryFilters,
 } from '@/types/journal';
 import type { PaginatedResponse, PaginationParams } from '@/types/common';
@@ -15,8 +16,15 @@ export const journalService = {
   get: (id: number) =>
     apiClient.get<JournalEntry>(`/accounting/journal-entries/${id}/`),
 
-  create: (data: JournalEntryCreatePayload) =>
-    apiClient.post<JournalEntry>('/accounting/journal-entries/', data),
+  // A5-PR4b: an optional stable Idempotency-Key is sent as a header (A177
+  // request_id) so a retried create attempt returns the original entry rather
+  // than duplicating. Omitting the key preserves the original 2-arg call shape.
+  create: (data: JournalEntryCreatePayload, idempotencyKey?: string) =>
+    idempotencyKey === undefined
+      ? apiClient.post<JournalEntry>('/accounting/journal-entries/', data)
+      : apiClient.post<JournalEntry>('/accounting/journal-entries/', data, {
+          headers: { 'Idempotency-Key': idempotencyKey },
+        }),
 
   update: (id: number, data: JournalEntryUpdatePayload) =>
     apiClient.patch<JournalEntry>(`/accounting/journal-entries/${id}/`, data),
@@ -27,8 +35,12 @@ export const journalService = {
   post: (id: number) =>
     apiClient.post<JournalEntry>(`/accounting/journal-entries/${id}/post/`),
 
-  reverse: (id: number) =>
-    apiClient.post<JournalEntry>(`/accounting/journal-entries/${id}/reverse/`),
+  // A5-PR4b: under the active pilot the reversal carries a body (reason + source).
+  // Omitting the payload preserves the original no-body call for profile NONE.
+  reverse: (id: number, payload?: JournalEntryReversePayload) =>
+    payload === undefined
+      ? apiClient.post<JournalEntry>(`/accounting/journal-entries/${id}/reverse/`)
+      : apiClient.post<JournalEntry>(`/accounting/journal-entries/${id}/reverse/`, payload),
 
   delete: (id: number) =>
     apiClient.delete(`/accounting/journal-entries/${id}/`),
