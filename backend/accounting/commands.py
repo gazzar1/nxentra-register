@@ -261,7 +261,14 @@ def _return_original_je_or_conflict(actor: ActorContext, existing_event, content
         return CommandResult.fail(
             "This request ID already created a journal entry, but it is not yet projected; retry shortly."
         )
-    return CommandResult.ok(entry, event=existing_event)
+    result = CommandResult.ok(entry, event=existing_event)
+    # A5-PR4a (Codex PR #134 round-4 P2): mark the reuse so the caller can
+    # distinguish "this request MINTED the entry" from "this request replayed
+    # an existing one" — side-band writes keyed off creation (e.g. the
+    # period-override audit) must be creator-only, or a concurrent retry
+    # carrying different side-band inputs could win and record them.
+    result.reused_existing = True
+    return result
 
 
 def _next_company_sequence(company, name: str) -> int:

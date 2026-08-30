@@ -1154,6 +1154,104 @@ def test_malformed_tolerant_bodies_are_flagged_and_refused(company, actor_contex
     assert "invalid_pilot_adjustment_reference" in codes
 
 
+def test_unicode_digit_shopify_reference_refuses_cleanly(company, actor_context, cash_account, revenue_account):
+    """Codex PR #134 round-4 P2: str.isdigit() accepts non-convertible
+    Unicode digits ("²") that make int() raise — the reference must refuse
+    with the controlled invalid-source response (never a 500) and a seeded
+    payload must produce a violation, not abort the preflight scan."""
+    _pilot(company)
+    with pytest.raises(PilotAdjustmentInvalid) as exc:
+        create_manual_journal_entry(
+            actor_context,
+            date=date.today(),
+            memo=GOOD_MEMO,
+            currency="EGP",
+            lines=_lines(cash_account, revenue_account),
+            source_module="pilot_adjustment",
+            source_document="shopify_order:²",
+        )
+    assert exc.value.code == "pilot_adjustment_invalid_source"
+
+    _seed_event(
+        company,
+        "journal_entry.posted",
+        data={
+            "entry_public_id": str(uuid4()),
+            "entry_number": "JE-999701",
+            "source_module": "pilot_adjustment",
+            "source_document": "shopify_order:²",
+            "memo": GOOD_MEMO,
+        },
+    )
+    codes = _preflight_codes(company)  # must not raise
+    assert "invalid_pilot_adjustment_reference" in codes
+
+
+def test_period_override_audit_is_creator_only(
+    api_client, user, owner_membership, company, cash_account, revenue_account
+):
+    """Codex PR #134 round-4 P2: a same-key retry NEVER writes the audit —
+    only the request that minted the entry does (creator-first by
+    construction, so a concurrent different-reason retry cannot win the row)."""
+    from datetime import datetime as _dt
+
+    from accounting.models import PeriodOverrideAudit
+    from accounts.models import CompanyMembershipPermission, NxPermission
+    from projections.models import FiscalPeriod
+
+    perm, _ = NxPermission.objects.get_or_create(
+        code="accounting.je.override_period",
+        defaults={"name": "Override JE period", "module": "accounting"},
+    )
+    CompanyMembershipPermission.objects.get_or_create(membership=owner_membership, company=company, permission=perm)
+
+    entry_date = date.today()
+    derived = entry_date.month
+    override_period = derived - 1 if derived > 1 else derived + 1
+    for period in (derived, override_period):
+        FiscalPeriod.objects.get_or_create(
+            company=company,
+            fiscal_year=entry_date.year,
+            period=period,
+            defaults={
+                "start_date": _dt(entry_date.year, period, 1).date(),
+                "end_date": date(entry_date.year, period, 28),
+                "status": FiscalPeriod.Status.OPEN,
+            },
+        )
+
+    api_client.force_authenticate(user=user)
+    body = {
+        "date": str(entry_date),
+        "memo": GOOD_MEMO,
+        "period": override_period,
+        "override_reason": "the creator's authorizing reason",
+        "lines": [
+            {"account_id": cash_account.id, "debit": "100.00", "credit": "0"},
+            {"account_id": revenue_account.id, "debit": "0", "credit": "100.00"},
+        ],
+    }
+    first = api_client.post(
+        "/api/accounting/journal-entries/", body, format="json", HTTP_IDEMPOTENCY_KEY="pr4a-creator-key"
+    )
+    assert first.status_code == 201, first.data
+    assert PeriodOverrideAudit.objects.filter(company=company).count() == 1
+
+    # Prove retries SKIP the write entirely (not merely lose get_or_create):
+    # with the creator's row removed, a different-reason retry still writes
+    # nothing — a retry can never author audit evidence.
+    PeriodOverrideAudit.objects.filter(company=company).delete()
+    retry = api_client.post(
+        "/api/accounting/journal-entries/",
+        {**body, "override_reason": "a contradictory retry reason"},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="pr4a-creator-key",
+    )
+    assert retry.status_code == 201, retry.data
+    assert retry.data["id"] == first.data["id"]
+    assert PeriodOverrideAudit.objects.filter(company=company).count() == 0
+
+
 # --------------------------------------------------------------------------- #
 # (24)(25) rebuild reproduces the trace; backup keeps the fields
 # --------------------------------------------------------------------------- #

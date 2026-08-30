@@ -27,10 +27,15 @@ def _parse_shopify_id(body: str):
     # Shopify order/refund ids are positive integers; the natural key
     # (company, shopify_order_id) is the recreate-stable identity (a re-sync
     # after row loss mints a NEW public_id, so public_id is deliberately NOT
-    # the reference here).
-    if not body or not body.isdigit():
+    # the reference here). Codex PR #134 round-4 P2: str.isdigit() accepts
+    # non-convertible Unicode digits ("²") that make int() raise — restrict
+    # to ASCII digits and never let the conversion escape.
+    if not body or not body.isascii() or not body.isdigit():
         return None
-    return int(body)
+    try:
+        return int(body)
+    except ValueError:
+        return None
 
 
 def resolve_shopify_order(company, body: str) -> bool:

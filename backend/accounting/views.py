@@ -519,7 +519,12 @@ class JournalEntryListCreateView(APIView):
         # If audit-row creation fails for any reason, log and continue —
         # we don't roll back the JE since the override has already taken
         # effect at the event/projection level.
-        if is_override:
+        if is_override and not getattr(result, "reused_existing", False):
+            # Codex PR #134 round-4 P2: creator-first — only the request that
+            # actually MINTED the entry writes the audit. A same-key retry
+            # (result.reused_existing) skips entirely, so a concurrent
+            # different-reason retry can never win the row and record a
+            # reason that did not authorize the creation.
             try:
                 from datetime import datetime as _dt
 
