@@ -2595,7 +2595,7 @@ EXPECTED_JOURNAL_COMMAND_CALLERS: dict[str, frozenset[str]] = {
             "reconciliation/commands.py::resolve_difference",  # reconciliation
             "sales/commands.py::post_credit_note_or_raise",  # shopify-platform (manual door gated at public post_credit_note)
             "sales/commands.py::post_sales_invoice_or_raise",  # shopify-platform (manual door gated at public post_sales_invoice)
-            "scratchpad/commands.py::commit_scratchpad_groups",  # scratchpad
+            "scratchpad/commands.py::_commit_scratchpad_groups",  # scratchpad (admission-locked wrapper: commit_scratchpad_groups, A5-PR4a)
             "shopify_connector/commands.py::_create_cogs_for_fulfillment",  # shopify-platform
             "shopify_connector/management/commands/seed_shopify_demo.py::Command._create_opening_balance",  # seed-ops
             "shopify_connector/management/commands/seed_shopify_demo.py::Command._create_operating_expenses",  # seed-ops
@@ -2624,7 +2624,7 @@ EXPECTED_JOURNAL_COMMAND_CALLERS: dict[str, frozenset[str]] = {
             "reconciliation/commands.py::resolve_difference",  # reconciliation
             "sales/commands.py::post_credit_note_or_raise",  # shopify-platform (manual door gated at public post_credit_note)
             "sales/commands.py::post_sales_invoice_or_raise",  # shopify-platform (manual door gated at public post_sales_invoice)
-            "scratchpad/commands.py::commit_scratchpad_groups",  # scratchpad
+            "scratchpad/commands.py::_commit_scratchpad_groups",  # scratchpad (admission-locked wrapper: commit_scratchpad_groups, A5-PR4a)
             "shopify_connector/commands.py::_create_cogs_for_fulfillment",  # shopify-platform
             "shopify_connector/management/commands/seed_shopify_demo.py::Command._create_opening_balance",  # seed-ops
             "shopify_connector/management/commands/seed_shopify_demo.py::Command._create_operating_expenses",  # seed-ops
@@ -2639,7 +2639,7 @@ EXPECTED_JOURNAL_COMMAND_CALLERS: dict[str, frozenset[str]] = {
             "edim/commands.py::commit_batch",  # edim-commit (AUTO_POST branch)
             "inventory/commands.py::_post_negative_stock_variance_je",  # inventory
             "projections/views.py::CurrencyRevaluationView.post",  # revaluation
-            "scratchpad/commands.py::commit_scratchpad_groups",  # scratchpad
+            "scratchpad/commands.py::_commit_scratchpad_groups",  # scratchpad (admission-locked wrapper: commit_scratchpad_groups, A5-PR4a)
             "shopify_connector/commands.py::_create_cogs_for_fulfillment",  # shopify-platform
             "shopify_connector/management/commands/seed_shopify_demo.py::Command._create_opening_balance",  # seed-ops
             "shopify_connector/management/commands/seed_shopify_demo.py::Command._create_operating_expenses",  # seed-ops
@@ -3420,21 +3420,41 @@ def test_pilot_adjustment_stamp_literal_is_server_side_only():
     )
 
 
-def test_scratchpad_commit_carries_the_pilot_refusal():
+def test_scratchpad_commit_carries_the_serialized_pilot_refusal():
     """The scratchpad is the one non-wrapper free-authoring door into the
-    shared journal commands; under the active pilot it must refuse before any
-    mutation (the drift scan backstops the unlocked activation race)."""
+    shared journal commands. Codex PR #134 round-6 P1: its pilot refusal must
+    be a real ADMISSION boundary — decided on the Company row locked by
+    serialized_company_admission (one serializable ordering with
+    activate_pilot_profile), before the mutation core runs. The core
+    (_commit_scratchpad_groups) must be reachable only through the wrapper."""
     source = (BACKEND_ROOT / "scratchpad" / "commands.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
-    segment = ""
+    wrapper = ""
+    core = ""
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == "commit_scratchpad_groups":
-            segment = ast.get_source_segment(source, node) or ""
-            break
-    assert segment, "commit_scratchpad_groups not found"
-    refusal = segment.index("is_pilot(actor.company)")
-    raise_pos = segment.index("raise PilotScopeBlocked(")
-    first_write = segment.index("batch_id = ")
-    assert refusal < first_write and raise_pos < first_write, (
-        "scratchpad commit must refuse on an active pilot BEFORE any batch work begins"
+            wrapper = ast.get_source_segment(source, node) or ""
+        if isinstance(node, ast.FunctionDef) and node.name == "_commit_scratchpad_groups":
+            core = ast.get_source_segment(source, node) or ""
+    assert wrapper and core, "scratchpad wrapper/core pair not found"
+
+    lock = wrapper.index("serialized_company_admission(")
+    gate = wrapper.index("is_pilot(locked_company)")
+    raise_pos = wrapper.index("raise PilotScopeBlocked(")
+    delegate = wrapper.rindex("_commit_scratchpad_groups(")
+    assert lock < gate < delegate and raise_pos < delegate, (
+        "scratchpad commit must decide the pilot refusal on the ADMISSION-LOCKED "
+        "Company row before delegating to the mutation core"
+    )
+    assert "batch_id" not in wrapper, "no mutation work may precede the admission decision"
+    assert "is_pilot" not in core, "the core must not re-decide (the wrapper owns admission)"
+
+    # The core has exactly one production caller: the wrapper.
+    core_callers = [
+        path.relative_to(BACKEND_ROOT).as_posix()
+        for path in _python_files_under(BACKEND_ROOT, exclude=("migrations/", "tests/", "venv", ".venv", "__pycache__"))
+        if not path.name.startswith("test_") and "_commit_scratchpad_groups(" in path.read_text(encoding="utf-8")
+    ]
+    assert core_callers == ["scratchpad/commands.py"], (
+        f"_commit_scratchpad_groups may be called only by its admission wrapper; found in {core_callers}"
     )
