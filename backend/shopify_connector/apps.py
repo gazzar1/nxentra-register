@@ -54,6 +54,14 @@ class ShopifyConnectorConfig(AppConfig):
 
         register_known_order_lookup("shopify", _known_shopify_order_ids)
 
+        # A5-PR4a: the ADAPTER registers its pilot-adjustment source
+        # resolvers (shopify_order / shopify_refund / shopify_reject) into
+        # the core registry — same dependency inversion as above; core
+        # accounting never imports shopify_connector models.
+        from shopify_connector.pilot_adjustment_sources import register_pilot_adjustment_sources
+
+        register_pilot_adjustment_sources()
+
         # A5-PR2b: the ADAPTER registers how to count its open rejected source
         # evidence, so the core health fold (/_health/alerts) never imports
         # provider code — the same dependency inversion as above.

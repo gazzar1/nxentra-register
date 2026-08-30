@@ -393,6 +393,33 @@ class JournalEntryListCreateView(APIView):
         lines = data.pop("lines", [])
         override_reason = (data.pop("override_reason", "") or "").strip()
 
+        # A5-PR4a: map the typed adjustment inputs to the server-stamped
+        # provenance pair. The view does NO validation beyond shape — the
+        # command's manual sentinel branch runs the one canonical
+        # validate_manual_source_stamp under the admission lock.
+        adj_kind = (data.pop("adjustment_source_kind", "") or "").strip()
+        adj_reference = (data.pop("adjustment_source_reference", "") or "").strip()
+        if bool(adj_kind) != bool(adj_reference):
+            return Response(
+                {"detail": "adjustment_source_kind and adjustment_source_reference must be supplied together."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        source_kwargs = {}
+        if adj_kind:
+            source_kwargs = {
+                "source_module": "pilot_adjustment",
+                "source_document": f"{adj_kind}:{adj_reference}",
+            }
+
+        # A5-PR4a: wire the dormant A177 request identity through the manual
+        # HTTP door. With the header, an exact retry returns the ORIGINAL
+        # entry and a same-key different-payload replay is a loud conflict
+        # (the content hash already covers memo, source provenance, period,
+        # lines and counterparties). Namespaced so a client value can never
+        # collide with internal writers' structured request ids.
+        idem_header = (request.headers.get("Idempotency-Key") or "").strip()
+        request_id = f"manual_je:{idem_header}" if idem_header else None
+
         # Convert lines to command format (already has account_id)
         command_lines = []
         for line in lines:
@@ -478,6 +505,8 @@ class JournalEntryListCreateView(APIView):
             exchange_rate=data.get("exchange_rate"),
             lines=command_lines,
             period=requested_period,
+            request_id=request_id,
+            **source_kwargs,
         )
 
         if not result.success:
@@ -490,7 +519,12 @@ class JournalEntryListCreateView(APIView):
         # If audit-row creation fails for any reason, log and continue —
         # we don't roll back the JE since the override has already taken
         # effect at the event/projection level.
-        if is_override:
+        if is_override and not getattr(result, "reused_existing", False):
+            # Codex PR #134 round-4 P2: creator-first — only the request that
+            # actually MINTED the entry writes the audit. A same-key retry
+            # (result.reused_existing) skips entirely, so a concurrent
+            # different-reason retry can never win the row and record a
+            # reason that did not authorize the creation.
             try:
                 from datetime import datetime as _dt
 
@@ -503,19 +537,35 @@ class JournalEntryListCreateView(APIView):
                     except (TypeError, ValueError):
                         audit_date = None
                 if audit_date is not None:
-                    PeriodOverrideAudit.objects.create(
-                        company=actor.company,
-                        user=request.user,
-                        source=PeriodOverrideAudit.Source.MANUAL_JE,
-                        source_document_ref=result.data.entry_number or f"JE-{result.data.id}",
-                        journal_entry=result.data,
-                        original_date=audit_date,
-                        original_period=int(date_derived_period or audit_date.month),
-                        original_fiscal_year=audit_date.year,
-                        override_period=int(requested_period),
-                        override_fiscal_year=audit_date.year,
-                        reason=override_reason,
-                    )
+                    # Codex PR #134 rounds 2-3 P2: with an Idempotency-Key, a
+                    # retried create returns the ORIGINAL entry — the audit
+                    # must not append another row per retry (nor record a
+                    # contradictory reason from a changed-override retry).
+                    # One audit row per (company, journal_entry, MANUAL_JE),
+                    # first write wins; the model has no uniqueness
+                    # constraint (and this PR adds no migration), so the
+                    # get_or_create is SERIALIZED on the journal-entry row
+                    # lock — two overlapping same-key retries cannot both
+                    # observe row-absent on PostgreSQL.
+                    from django.db import transaction as _tx
+
+                    with _tx.atomic():
+                        JournalEntry.objects.select_for_update().get(pk=result.data.pk)
+                        PeriodOverrideAudit.objects.get_or_create(
+                            company=actor.company,
+                            journal_entry=result.data,
+                            source=PeriodOverrideAudit.Source.MANUAL_JE,
+                            defaults={
+                                "user": request.user,
+                                "source_document_ref": result.data.entry_number or f"JE-{result.data.id}",
+                                "original_date": audit_date,
+                                "original_period": int(date_derived_period or audit_date.month),
+                                "original_fiscal_year": audit_date.year,
+                                "override_period": int(requested_period),
+                                "override_fiscal_year": audit_date.year,
+                                "reason": override_reason,
+                            },
+                        )
             except Exception:
                 logger.exception(
                     "Failed to write PeriodOverrideAudit for JE %s — override "
@@ -599,6 +649,24 @@ class JournalEntryDetailView(APIView):
             kwargs["currency"] = data["currency"]
         if "exchange_rate" in data:
             kwargs["exchange_rate"] = data["exchange_rate"]
+
+        # A5-PR4a: draft-time source change. Both typed inputs together set
+        # the stamp; both explicitly blank clear it; one without the other is
+        # a shape error. Validation happens in the command's sentinel branch.
+        if "adjustment_source_kind" in data or "adjustment_source_reference" in data:
+            adj_kind = (data.get("adjustment_source_kind", "") or "").strip()
+            adj_reference = (data.get("adjustment_source_reference", "") or "").strip()
+            if bool(adj_kind) != bool(adj_reference):
+                return Response(
+                    {"detail": "adjustment_source_kind and adjustment_source_reference must be supplied together."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if adj_kind:
+                kwargs["source_module"] = "pilot_adjustment"
+                kwargs["source_document"] = f"{adj_kind}:{adj_reference}"
+            else:
+                kwargs["source_module"] = ""
+                kwargs["source_document"] = ""
 
         if "lines" in data:
             lines = data["lines"]
@@ -793,7 +861,32 @@ class JournalReverseView(APIView):
         actor = resolve_actor(request)
         # Permission check happens in command
 
-        result = reverse_manual_journal_entry(actor, pk)
+        # A5-PR4a: the reversal body — a reversal reason (required under an
+        # active pilot; validated in the command's sentinel branch) and,
+        # only when the original lacks pilot-adjustment provenance, a new
+        # typed source reference for the reversal itself. Codex round-1 P2:
+        # values must be strings (or absent) — a JSON number/array here must
+        # 400, never AttributeError into a 500.
+        body = request.data if isinstance(request.data, dict) else {}
+        body_values = {}
+        for key in ("reason", "adjustment_source_kind", "adjustment_source_reference"):
+            value = body.get(key)
+            if value is None:
+                body_values[key] = ""
+            elif isinstance(value, str):
+                body_values[key] = value.strip()
+            else:
+                return Response(
+                    {"detail": f"{key} must be a string."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        result = reverse_manual_journal_entry(
+            actor,
+            pk,
+            reversal_reason=body_values["reason"],
+            adjustment_source_kind=body_values["adjustment_source_kind"],
+            adjustment_source_reference=body_values["adjustment_source_reference"],
+        )
 
         if not result.success:
             return Response(

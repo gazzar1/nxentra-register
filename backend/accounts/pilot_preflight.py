@@ -149,6 +149,7 @@ def run_preflight(company, *, phase: str = "go-live", for_activation: bool = Fal
         v += _seeded_event_violations(company)
         v += _backfill_dims_residue_violations(company)
         v += _projection_rebuild_violations(company)
+        v += _pilot_adjustment_violations(company)
 
     return v
 
@@ -1198,3 +1199,249 @@ def _projection_rebuild_violations(company) -> list[Violation]:
             )
         ]
     return []
+
+
+def _pilot_adjustment_violations(company) -> list[Violation]:
+    """A5-PR4a: post-activation manual-journal traceability drift, derived
+    from the IMMUTABLE posted-event payloads (projection rows and applied
+    markers can both lie — the ``can_change_account_type`` template), with
+    referent existence/ownership re-verified by row lookup.
+
+    Scope rules (settled):
+    - Runs only for an ACTIVE pilot: at activation the profile is still NONE,
+      so every existing posted journal is pre-activation setup/opening
+      history and is permitted untouched.
+    - The cutoff is the durable ``PilotProfileActivation.activated_at`` row
+      (compared against the event's preserved ``occurred_at``) — an active
+      profile WITHOUT an activation row is itself a violation.
+    - A post-activation posted payload with BLANK source_module is
+      untraceable-manual UNLESS a same-company document event claims its
+      entry id (``journal_entry_public_id`` / ``reversing_journal_entry_
+      public_id`` on the sales/purchase posted+void payloads) — the supported
+      Shopify sales limb posts blank-source JEs by design, and those claims
+      are themselves immutable events.
+    - ``pilot_adjustment`` payloads must carry a parseable registered
+      reference and a qualifying 10–180-char memo. Strict kinds
+      (projection_failure / import_reject / shopify_reject /
+      settlement_event — deletion-proof evidence) must still resolve
+      same-company; dangling-tolerant kinds (shopify_order / shopify_refund /
+      bank_line — sanctioned domain-row deletion) are grammar-checked only,
+      plus a company-mismatch report when an owner probe makes it
+      deterministically observable. Preflight never repairs anything.
+    """
+    from accounting.pilot_adjustments import (
+        DANGLING_TOLERANT_SOURCE_KINDS,
+        PILOT_ADJUSTMENT_SOURCE_MODULE,
+        parse_source_reference,
+        resolve_source_reference,
+        source_owner_probe,
+    )
+    from accounts.models import PilotProfileActivation
+    from accounts.pilot_policy import is_pilot
+    from events.models import BusinessEvent
+    from events.types import EventTypes
+
+    if not is_pilot(company):
+        return []
+
+    activation = PilotProfileActivation.objects.filter(company=company).order_by("-activated_at").first()
+    if activation is None:
+        return [
+            Violation(
+                "pilot_activation_audit_missing",
+                "The company is on an active pilot profile but has NO PilotProfileActivation "
+                "row — the traceability cutoff cannot be established. Activation must go "
+                "through activate_pilot_profile (which writes the audit row transactionally).",
+            )
+        ]
+
+    # Corroboration set: entry ids claimed by immutable document events (the
+    # supported Shopify sales limb posts blank-source JEs whose entries these
+    # payloads claim). An unreadable document payload simply cannot
+    # corroborate — fail-closed toward flagging.
+    claimed_entry_ids: set[str] = set()
+    document_types = [
+        EventTypes.SALES_INVOICE_POSTED,
+        EventTypes.SALES_INVOICE_VOIDED,
+        EventTypes.SALES_CREDIT_NOTE_POSTED,
+        EventTypes.SALES_CREDIT_NOTE_VOIDED,
+        EventTypes.PURCHASES_BILL_POSTED,
+        EventTypes.PURCHASES_BILL_VOIDED,
+        EventTypes.PURCHASES_CREDIT_NOTE_POSTED,
+        EventTypes.PURCHASES_CREDIT_NOTE_VOIDED,
+    ]
+    for doc_event in (
+        BusinessEvent.objects.filter(company=company, event_type__in=document_types)
+        .select_related("payload_ref")
+        .iterator(chunk_size=500)
+    ):
+        try:
+            doc_data = doc_event.get_data()
+        except Exception:
+            continue
+        if not isinstance(doc_data, dict):
+            continue
+        for claim_key in ("journal_entry_public_id", "reversing_journal_entry_public_id"):
+            claim = doc_data.get(claim_key)
+            if claim:
+                claimed_entry_ids.add(str(claim))
+
+    # Codex PR #134 round-3 P2: supported reconciliation unmatch/exclude
+    # reverse their clearance/difference JEs through the INTERNAL reversal
+    # path, whose reversal payloads carry blank provenance BY DESIGN (a
+    # stamped POSTED reversal would impersonate the live system JE). A
+    # blank-source REVERSAL is therefore a system reversal — exempt — iff
+    # the immutable journal_entry.reversed linkage shows its ORIGINAL is
+    # itself non-manual (a system-stamped payload, or one claimed by a
+    # document event). A blank REVERSAL of a pilot adjustment or of an
+    # unclaimed manual entry stays flagged: the manual reversal door always
+    # stamps provenance post-PR4a.
+    reversal_to_original: dict[str, str] = {}
+    for reversed_event in (
+        BusinessEvent.objects.filter(company=company, event_type=EventTypes.JOURNAL_ENTRY_REVERSED)
+        .select_related("payload_ref")
+        .iterator(chunk_size=500)
+    ):
+        try:
+            reversed_data = reversed_event.get_data()
+        except Exception:
+            continue
+        if not isinstance(reversed_data, dict):
+            continue
+        reversal_id = str(reversed_data.get("reversal_entry_public_id") or "")
+        original_id = str(reversed_data.get("original_entry_public_id") or "")
+        if reversal_id and original_id:
+            reversal_to_original[reversal_id] = original_id
+
+    # entry_public_id -> source_module across ALL posted payloads (originals
+    # of post-activation reversals may themselves be pre-activation).
+    posted_source_by_entry: dict[str, str] = {}
+    for any_posted in (
+        BusinessEvent.objects.filter(company=company, event_type=EventTypes.JOURNAL_ENTRY_POSTED)
+        .select_related("payload_ref")
+        .iterator(chunk_size=500)
+    ):
+        try:
+            any_data = any_posted.get_data()
+        except Exception:
+            continue
+        if isinstance(any_data, dict) and any_data.get("entry_public_id"):
+            posted_source_by_entry[str(any_data["entry_public_id"])] = str(any_data.get("source_module") or "")
+
+    def _is_system_reversal(entry_public_id: str) -> bool:
+        original_id = reversal_to_original.get(entry_public_id, "")
+        if not original_id:
+            return False
+        if original_id in claimed_entry_ids:
+            return True  # reversal minted by a document void
+        original_source = posted_source_by_entry.get(original_id, "")
+        return bool(original_source) and original_source != PILOT_ADJUSTMENT_SOURCE_MODULE
+
+    untraceable: list[str] = []
+    invalid_reference: list[str] = []
+    company_mismatch: list[str] = []
+
+    posted_events = (
+        BusinessEvent.objects.filter(
+            company=company,
+            event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+            occurred_at__gte=activation.activated_at,
+        )
+        .select_related("payload_ref")
+        .iterator(chunk_size=500)
+    )
+    for event in posted_events:
+        label = str(event.id)
+        try:
+            data = event.get_data()
+        except Exception:
+            # Unreadable posted payload post-activation: cannot prove its
+            # provenance — fail closed.
+            untraceable.append(label)
+            continue
+        if not isinstance(data, dict):
+            untraceable.append(label)
+            continue
+        entry_public_id = str(data.get("entry_public_id") or "")
+        source_module = str(data.get("source_module") or "")
+
+        if source_module == "":
+            if entry_public_id and entry_public_id in claimed_entry_ids:
+                continue  # supported document JE (claimed by an immutable document event)
+            if str(data.get("kind") or "") == "REVERSAL" and entry_public_id and _is_system_reversal(entry_public_id):
+                continue  # supported system reversal (recon unmatch/exclude, document void)
+            untraceable.append(data.get("entry_number") or label)
+            continue
+
+        if source_module != PILOT_ADJUSTMENT_SOURCE_MODULE:
+            continue  # system provenance (payment_settlement, clearance, …)
+
+        source_document = str(data.get("source_document") or "")
+        parsed = parse_source_reference(source_document)
+        if parsed is None:
+            invalid_reference.append(data.get("entry_number") or label)
+            continue
+        kind, body = parsed
+
+        # Codex PR #134 round-1 P2: a manual pilot REVERSAL's memo is the
+        # write-gated 10-180-char reason PLUS the " — Reverses JE-######"
+        # suffix the reversal command appends, so the composed memo can
+        # legitimately exceed 180. The payload carries `kind`; REVERSAL
+        # payloads get the column bound (255) while forward adjustments keep
+        # the write contract's 180. The >=10 floor is the load-bearing
+        # anti-blank check either way.
+        memo = str(data.get("memo") or "").strip()
+        memo_cap = 255 if str(data.get("kind") or "") == "REVERSAL" else 180
+        if not (10 <= len(memo) <= memo_cap):
+            untraceable.append(data.get("entry_number") or label)
+            continue
+
+        if kind in DANGLING_TOLERANT_SOURCE_KINDS:
+            probe = source_owner_probe(kind)
+            owner_id = probe(body) if probe is not None else None
+            if owner_id is not None and owner_id != company.id:
+                company_mismatch.append(data.get("entry_number") or label)
+            # A later sanctioned deletion of the domain row must NOT
+            # manufacture a violation — grammar (+observable ownership) only.
+            continue
+
+        if not resolve_source_reference(company, source_document):
+            probe = source_owner_probe(kind)
+            owner_id = probe(body) if probe is not None else None
+            if owner_id is not None and owner_id != company.id:
+                company_mismatch.append(data.get("entry_number") or label)
+            else:
+                invalid_reference.append(data.get("entry_number") or label)
+
+    def _fmt(entries: list[str]) -> str:
+        sample = ", ".join(entries[:3])
+        more = f" (+{len(entries) - 3} more)" if len(entries) > 3 else ""
+        return f"{sample}{more}"
+
+    out: list[Violation] = []
+    if untraceable:
+        out.append(
+            Violation(
+                "untraceable_manual_posted_journal",
+                f"{len(untraceable)} post-activation posted journal payload(s) carry no "
+                f"pilot-adjustment provenance (and no document event claims them): {_fmt(untraceable)}. "
+                "Every manual journal posted under the active pilot must be a traced pilot adjustment.",
+            )
+        )
+    if invalid_reference:
+        out.append(
+            Violation(
+                "invalid_pilot_adjustment_reference",
+                f"{len(invalid_reference)} pilot-adjustment payload(s) carry a reference that does "
+                f"not parse or no longer resolves for this company: {_fmt(invalid_reference)}.",
+            )
+        )
+    if company_mismatch:
+        out.append(
+            Violation(
+                "pilot_adjustment_source_company_mismatch",
+                f"{len(company_mismatch)} pilot-adjustment payload(s) reference a source item "
+                f"owned by ANOTHER company: {_fmt(company_mismatch)}.",
+            )
+        )
+    return out
