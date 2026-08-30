@@ -1042,6 +1042,118 @@ def test_period_override_audit_is_idempotent_under_retry(
     assert audits[0].reason == "posting into the prior open period"
 
 
+def test_system_reversal_via_reversed_linkage_stays_preflight_clean(
+    actor_context, company, cash_account, revenue_account
+):
+    """Codex PR #134 round-3 P2: recon unmatch/exclude reverse system-stamped
+    JEs through the internal path — blank-provenance reversals BY DESIGN.
+    The drift predicate must recognize them through the immutable
+    journal_entry.reversed linkage (original carries a system stamp), while
+    a seeded blank REVERSAL with no linkage stays flagged."""
+    from accounting.commands import post_journal_entry, reverse_journal_entry, save_journal_entry_complete
+
+    _pilot(company)
+    r = create_journal_entry(
+        actor_context,
+        date=date.today(),
+        memo="clearance-style system JE",
+        currency="EGP",
+        lines=_lines(cash_account, revenue_account),
+        source_module="payment_settlement_clearance",
+        source_document="stripe:po_pr4a_drift",
+    )
+    assert r.success, r.error
+    assert save_journal_entry_complete(actor_context, r.data.id).success
+    assert post_journal_entry(actor_context, r.data.id).success
+    reversed_ = reverse_journal_entry(actor_context, r.data.id)  # internal path, blank provenance
+    assert reversed_.success, reversed_.error
+    assert reversed_.data["reversal"].source_module == ""
+
+    codes = _preflight_codes(company)
+    assert "untraceable_manual_posted_journal" not in codes
+
+    # Negative control: a blank REVERSAL payload with NO reversed-event
+    # linkage (seeded/forged) is still untraceable.
+    _seed_event(
+        company,
+        "journal_entry.posted",
+        data={
+            "entry_public_id": str(uuid4()),
+            "entry_number": "JE-999801",
+            "kind": "REVERSAL",
+            "source_module": "",
+            "memo": "orphan reversal artifact",
+        },
+    )
+    assert "untraceable_manual_posted_journal" in _preflight_codes(company)
+
+
+def test_legacy_key_retry_with_pre_completion_updates_dedupes(actor_context, company, cash_account, revenue_account):
+    """Codex PR #134 round-3 P2: an entry with UPDATED events BEFORE its
+    pre-deployment save-complete stores a legacy-shaped key. A post-deploy
+    identical retry (no edit after the completion) must reuse the STORED key
+    and dedupe — never mint a count-shaped key and emit a duplicate."""
+    r = create_manual_journal_entry(
+        actor_context,
+        date=date.today(),
+        memo="legacy w/ updates",
+        currency=None,
+        lines=_lines(cash_account, revenue_account),
+    )
+    assert r.success, r.error
+    assert update_manual_journal_entry(actor_context, r.data.id, memo="legacy w/ updates v2").success
+    assert save_manual_journal_entry_complete(actor_context, r.data.id).success
+
+    completions = BusinessEvent.objects.filter(
+        company=company, aggregate_id=str(r.data.public_id), event_type="journal_entry.saved_complete"
+    )
+    stored = completions.get()
+    # Simulate the PRE-deployment key shape (the immutability guard blocks
+    # save(); queryset.update is the sanctioned at-rest-corruption idiom).
+    legacy_key = stored.idempotency_key.rsplit(":", 1)[-1]
+    legacy_key = f"journal_entry.saved_complete:{r.data.public_id}:{legacy_key}"
+    BusinessEvent.objects.filter(pk=stored.pk).update(idempotency_key=legacy_key)
+
+    # Identical retry: reuses the stored (legacy) key — no duplicate event,
+    # and the entry still reads DRAFT.
+    assert save_manual_journal_entry_complete(actor_context, r.data.id).success
+    assert completions.count() == 1
+    r.data.refresh_from_db()
+    assert r.data.status == JournalEntry.Status.DRAFT
+
+
+def test_malformed_tolerant_bodies_are_flagged_and_refused(company, actor_context, cash_account, revenue_account):
+    """Codex PR #134 round-3 P2: grammar includes the kind's body SYNTAX —
+    `bank_line:not-a-uuid` / `shopify_order:12ab` are malformed references,
+    not legitimately-dangling ones: drift flags them and the write path
+    refuses them."""
+    _pilot(company)
+    for bad in ("bank_line:not-a-uuid", "shopify_order:12ab", "import_reject:xyz"):
+        _seed_event(
+            company,
+            "journal_entry.posted",
+            data={
+                "entry_public_id": str(uuid4()),
+                "entry_number": f"JE-99{abs(hash(bad)) % 10000:04d}",
+                "source_module": "pilot_adjustment",
+                "source_document": bad,
+                "memo": GOOD_MEMO,
+            },
+        )
+        with pytest.raises(PilotAdjustmentInvalid):
+            create_manual_journal_entry(
+                actor_context,
+                date=date.today(),
+                memo=GOOD_MEMO,
+                currency="EGP",
+                lines=_lines(cash_account, revenue_account),
+                source_module="pilot_adjustment",
+                source_document=bad,
+            )
+    codes = _preflight_codes(company)
+    assert "invalid_pilot_adjustment_reference" in codes
+
+
 # --------------------------------------------------------------------------- #
 # (24)(25) rebuild reproduces the trace; backup keeps the fields
 # --------------------------------------------------------------------------- #

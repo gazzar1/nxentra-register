@@ -104,8 +104,22 @@ _SOURCE_RESOLVERS: dict[str, Callable] = {}
 # Never consulted on the write path.
 _SOURCE_OWNER_PROBES: dict[str, Callable] = {}
 
+# kind -> body_syntax(reference_body) -> bool. Pure SYNTAX validation,
+# independent of existence — Codex PR #134 round-3 P2: drift checking of
+# dangling-tolerant kinds is grammar-only, so the grammar must include the
+# kind's body shape (a `bank_line:not-a-uuid` payload is malformed, not a
+# legitimately-deleted referent). Enforced inside parse_source_reference so
+# write path and preflight share the one implementation.
+_SOURCE_BODY_SYNTAX: dict[str, Callable] = {}
 
-def register_adjustment_source_resolver(kind: str, resolver: Callable, *, owner_probe: Callable | None = None) -> None:
+
+def register_adjustment_source_resolver(
+    kind: str,
+    resolver: Callable,
+    *,
+    owner_probe: Callable | None = None,
+    body_syntax: Callable | None = None,
+) -> None:
     """Register the resolver for one source kind.
 
     Same contract as the apply-validator and health-counter registries:
@@ -127,6 +141,11 @@ def register_adjustment_source_resolver(kind: str, resolver: Callable, *, owner_
         if existing_probe is not None and existing_probe is not owner_probe:
             raise RuntimeError(f"Pilot-adjustment owner probe for kind '{kind}' is already registered.")
         _SOURCE_OWNER_PROBES[kind] = owner_probe
+    if body_syntax is not None:
+        existing_syntax = _SOURCE_BODY_SYNTAX.get(kind)
+        if existing_syntax is not None and existing_syntax is not body_syntax:
+            raise RuntimeError(f"Pilot-adjustment body-syntax validator for kind '{kind}' is already registered.")
+        _SOURCE_BODY_SYNTAX[kind] = body_syntax
 
 
 def registered_adjustment_source_kinds() -> frozenset[str]:
@@ -146,14 +165,19 @@ def source_owner_probe(kind: str) -> Callable | None:
 
 def parse_source_reference(source_document: str) -> tuple[str, str] | None:
     """Split a canonical ``<kind>:<body>`` reference. Returns None when the
-    string is not even grammatically a reference (no colon, blank half,
-    unregistered kind, over-length)."""
+    string is not grammatically a reference: no colon, blank half,
+    unregistered kind, over-length, or a body that fails the kind's
+    registered SYNTAX validator (grammar includes body shape — the one
+    implementation both the write path and drift checking share)."""
     if not source_document or len(source_document) > SOURCE_DOCUMENT_MAX_LENGTH:
         return None
     kind, sep, body = source_document.partition(":")
     if not sep or not kind or not body:
         return None
     if kind not in _SOURCE_RESOLVERS:
+        return None
+    syntax = _SOURCE_BODY_SYNTAX.get(kind)
+    if syntax is not None and not syntax(body):
         return None
     return kind, body
 
@@ -398,9 +422,22 @@ def _probe_bank_line(body: str):
     return BankStatementLine.objects.filter(public_id=line_uuid).values_list("company_id", flat=True).first()
 
 
+def _uuid_body_syntax(body: str) -> bool:
+    return _parse_uuid(body) is not None
+
+
 register_adjustment_source_resolver(
-    "projection_failure", _resolve_projection_failure, owner_probe=_probe_projection_failure
+    "projection_failure",
+    _resolve_projection_failure,
+    owner_probe=_probe_projection_failure,
+    body_syntax=_uuid_body_syntax,
 )
-register_adjustment_source_resolver("import_reject", _resolve_import_reject, owner_probe=_probe_import_reject)
-register_adjustment_source_resolver("settlement_event", _resolve_settlement_event, owner_probe=_probe_settlement_event)
-register_adjustment_source_resolver("bank_line", _resolve_bank_line, owner_probe=_probe_bank_line)
+register_adjustment_source_resolver(
+    "import_reject", _resolve_import_reject, owner_probe=_probe_import_reject, body_syntax=_uuid_body_syntax
+)
+register_adjustment_source_resolver(
+    "settlement_event", _resolve_settlement_event, owner_probe=_probe_settlement_event, body_syntax=_uuid_body_syntax
+)
+register_adjustment_source_resolver(
+    "bank_line", _resolve_bank_line, owner_probe=_probe_bank_line, body_syntax=_uuid_body_syntax
+)

@@ -1508,30 +1508,43 @@ def save_journal_entry_complete(
     # earlier SAVED_COMPLETE even when UPDATED events (e.g. a source-stamp
     # change, or an edit that was reverted) had since reset the aggregate to
     # INCOMPLETE — the emitter returned the OLD event, no new event landed,
-    # and the entry could never reach DRAFT again. Discriminating on the
-    # count of UPDATED events (Codex PR #134 round-1 P2: NOT the whole
-    # stream — counting the SAVED_COMPLETE itself gave an identical
-    # post-commit retry a fresh key and broke true-retry dedup) keeps every
-    # retry with no interleaved edit on the SAME key, while any re-complete
-    # after a new edit gets a fresh one.
+    # and the entry could never reach DRAFT again.
+    #
+    # Key rules (Codex PR #134 rounds 1-3):
+    # 1. TRUE RETRY — a completion whose latest stored SAVED_COMPLETE has no
+    #    UPDATED event after it and carries the SAME content digest reuses
+    #    that stored event's OWN key (whatever its shape, legacy included),
+    #    so identical retries always dedupe — pre-deployment history and
+    #    entries with pre-completion edits included.
+    # 2. Otherwise a FRESH completion: the lifetime UPDATED count joins the
+    #    key (monotonic — an edit-and-revert cycle can never re-collide with
+    #    an earlier completion's key), with the count-free LEGACY shape kept
+    #    for the zero-updates case.
     from events.models import BusinessEvent as _BusinessEvent
 
-    updated_event_count = _BusinessEvent.objects.filter(
-        company=actor.company,
-        aggregate_id=str(entry.public_id),
-        event_type=EventTypes.JOURNAL_ENTRY_UPDATED,
-    ).count()
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
-    # Codex PR #134 round-2 P2: zero interleaved updates keeps the LEGACY key
-    # shape, so an identical retry of a PRE-deployment save-complete (whose
-    # stored key has the old `{pid}:{digest}` form) still dedupes instead of
-    # emitting a duplicate and consuming another company sequence. The
-    # discriminator only matters when an edit was interleaved (count > 0) —
-    # exactly when a fresh key is wanted anyway.
-    if updated_event_count:
-        idem_key = f"journal_entry.saved_complete:{entry.public_id}:{updated_event_count}:{digest}"
+    aggregate_events = _BusinessEvent.objects.filter(company=actor.company, aggregate_id=str(entry.public_id))
+    latest_complete = (
+        aggregate_events.filter(event_type=EventTypes.JOURNAL_ENTRY_SAVED_COMPLETE)
+        .order_by("-company_sequence")
+        .first()
+    )
+    updates_after_latest_complete = aggregate_events.filter(
+        event_type=EventTypes.JOURNAL_ENTRY_UPDATED,
+        company_sequence__gt=latest_complete.company_sequence if latest_complete else -1,
+    ).count()
+    if (
+        latest_complete is not None
+        and updates_after_latest_complete == 0
+        and latest_complete.idempotency_key.endswith(f":{digest}")
+    ):
+        idem_key = latest_complete.idempotency_key
     else:
-        idem_key = f"journal_entry.saved_complete:{entry.public_id}:{digest}"
+        lifetime_updates = aggregate_events.filter(event_type=EventTypes.JOURNAL_ENTRY_UPDATED).count()
+        if lifetime_updates:
+            idem_key = f"journal_entry.saved_complete:{entry.public_id}:{lifetime_updates}:{digest}"
+        else:
+            idem_key = f"journal_entry.saved_complete:{entry.public_id}:{digest}"
     event = emit_event(
         actor=actor,
         event_type=EventTypes.JOURNAL_ENTRY_SAVED_COMPLETE,

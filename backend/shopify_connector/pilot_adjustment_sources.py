@@ -74,13 +74,25 @@ def probe_shopify_reject(body: str):
     return ShopifyRejectedEvidence.objects.filter(public_id=row_uuid).values_list("company_id", flat=True).first()
 
 
+def _digit_body_syntax(body: str) -> bool:
+    return _parse_shopify_id(body) is not None
+
+
+def _uuid_body_syntax(body: str) -> bool:
+    return _parse_uuid(body) is not None
+
+
 def register_pilot_adjustment_sources() -> None:
     """Idempotent registration (app-ready may run more than once)."""
     from accounting.pilot_adjustments import register_adjustment_source_resolver
 
     # No owner probes for shopify_order/shopify_refund: the numeric id is
     # unique only per (company, id), so cross-company ownership is not
-    # deterministically observable from the reference alone.
-    register_adjustment_source_resolver("shopify_order", resolve_shopify_order)
-    register_adjustment_source_resolver("shopify_refund", resolve_shopify_refund)
-    register_adjustment_source_resolver("shopify_reject", resolve_shopify_reject, owner_probe=probe_shopify_reject)
+    # deterministically observable from the reference alone. Body-syntax
+    # validators make grammar checks (write path AND drift) reject a
+    # malformed body regardless of referent existence.
+    register_adjustment_source_resolver("shopify_order", resolve_shopify_order, body_syntax=_digit_body_syntax)
+    register_adjustment_source_resolver("shopify_refund", resolve_shopify_refund, body_syntax=_digit_body_syntax)
+    register_adjustment_source_resolver(
+        "shopify_reject", resolve_shopify_reject, owner_probe=probe_shopify_reject, body_syntax=_uuid_body_syntax
+    )

@@ -1286,6 +1286,57 @@ def _pilot_adjustment_violations(company) -> list[Violation]:
             if claim:
                 claimed_entry_ids.add(str(claim))
 
+    # Codex PR #134 round-3 P2: supported reconciliation unmatch/exclude
+    # reverse their clearance/difference JEs through the INTERNAL reversal
+    # path, whose reversal payloads carry blank provenance BY DESIGN (a
+    # stamped POSTED reversal would impersonate the live system JE). A
+    # blank-source REVERSAL is therefore a system reversal — exempt — iff
+    # the immutable journal_entry.reversed linkage shows its ORIGINAL is
+    # itself non-manual (a system-stamped payload, or one claimed by a
+    # document event). A blank REVERSAL of a pilot adjustment or of an
+    # unclaimed manual entry stays flagged: the manual reversal door always
+    # stamps provenance post-PR4a.
+    reversal_to_original: dict[str, str] = {}
+    for reversed_event in (
+        BusinessEvent.objects.filter(company=company, event_type=EventTypes.JOURNAL_ENTRY_REVERSED)
+        .select_related("payload_ref")
+        .iterator(chunk_size=500)
+    ):
+        try:
+            reversed_data = reversed_event.get_data()
+        except Exception:
+            continue
+        if not isinstance(reversed_data, dict):
+            continue
+        reversal_id = str(reversed_data.get("reversal_entry_public_id") or "")
+        original_id = str(reversed_data.get("original_entry_public_id") or "")
+        if reversal_id and original_id:
+            reversal_to_original[reversal_id] = original_id
+
+    # entry_public_id -> source_module across ALL posted payloads (originals
+    # of post-activation reversals may themselves be pre-activation).
+    posted_source_by_entry: dict[str, str] = {}
+    for any_posted in (
+        BusinessEvent.objects.filter(company=company, event_type=EventTypes.JOURNAL_ENTRY_POSTED)
+        .select_related("payload_ref")
+        .iterator(chunk_size=500)
+    ):
+        try:
+            any_data = any_posted.get_data()
+        except Exception:
+            continue
+        if isinstance(any_data, dict) and any_data.get("entry_public_id"):
+            posted_source_by_entry[str(any_data["entry_public_id"])] = str(any_data.get("source_module") or "")
+
+    def _is_system_reversal(entry_public_id: str) -> bool:
+        original_id = reversal_to_original.get(entry_public_id, "")
+        if not original_id:
+            return False
+        if original_id in claimed_entry_ids:
+            return True  # reversal minted by a document void
+        original_source = posted_source_by_entry.get(original_id, "")
+        return bool(original_source) and original_source != PILOT_ADJUSTMENT_SOURCE_MODULE
+
     untraceable: list[str] = []
     invalid_reference: list[str] = []
     company_mismatch: list[str] = []
@@ -1317,6 +1368,8 @@ def _pilot_adjustment_violations(company) -> list[Violation]:
         if source_module == "":
             if entry_public_id and entry_public_id in claimed_entry_ids:
                 continue  # supported document JE (claimed by an immutable document event)
+            if str(data.get("kind") or "") == "REVERSAL" and entry_public_id and _is_system_reversal(entry_public_id):
+                continue  # supported system reversal (recon unmatch/exclude, document void)
             untraceable.append(data.get("entry_number") or label)
             continue
 
