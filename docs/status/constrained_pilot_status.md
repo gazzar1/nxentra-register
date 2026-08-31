@@ -8,6 +8,9 @@ defined in the two-contract readiness model
 Sequence: **A1+A2 → A4 → A3 → A5 → G1 → G2**.
 
 Operational sequence from here: **fresh-pilot runbook → G1 → G2 → first supervised merchant**.
+The runbook is the [fresh isolated pilot runbook](../runbooks/fresh-isolated-pilot.md).
+It is written but has not been executed — it is documentation, not proof that
+G1 or G2 has run. **G1 and G2 remain OPEN. Merchant data remains blocked.**
 
 | Item | Status | Notes |
 |---|---|---|
