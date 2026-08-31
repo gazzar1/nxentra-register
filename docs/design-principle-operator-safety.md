@@ -116,24 +116,26 @@ only what it can explain.
   zero-states are dead ends, the `bogus` test provider is visible; drilldown
   is `source='shopify'`-locked.
 
-## Standing violations of the principle itself (gating gaps)
+## Standing gating findings
 
-These are places where today the *only* barrier is authentication — not
-construction, not refusal, and not even meaningful gating:
+### Narrowed residual — no longer authentication-only
 
-- **A173** — EDIM generic import (~4.4k LOC, AUTO_POST-capable). The original
-  "reachable by any authenticated user" claim is stale (live-code check in the
-  2026-08-30 A5 closure review): every mutating command now carries
-  `require()` (commit needs `edim.commit_batches`, OWNER/ADMIN-defaulted) and
-  the pilot ledger door is capability-blocked
-  (`Capability.EDIM_FINANCIAL_COMMIT`). Remaining scope — module
-  registration and per-view visibility hardening — stays open under its
-  original owner; this bullet is narrowed, not closed.
-- **A174** — settlement CSV import/preview and Stripe disconnect require only
-  `IsAuthenticated`; any member can post settlement JEs or sever a live
-  integration.
+- **A173** — EDIM generic import (~4.4k LOC, AUTO_POST-capable).
+  The original "reachable by any authenticated user" claim is stale:
+  every mutating command now carries `require()`; commit requires
+  `edim.commit_batches`; and the constrained-pilot ledger door is blocked
+  by `Capability.EDIM_FINANCIAL_COMMIT`. Remaining module-registration and
+  per-view visibility hardening stays open under its original owner.
+  A173 is no longer an authentication-only financial-write breach and is
+  not part of the P1 class below.
 
-Both are P1. Until they land, no new capability may ship with
+### Current authentication-only P1
+
+- **A174** — settlement CSV import/preview and Stripe disconnect require
+  only `IsAuthenticated`; any member can post settlement JEs or sever a
+  live integration.
+
+A174 remains P1. Until it lands, no new capability may ship with
 `IsAuthenticated` as its only guard on a financial write.
 
 ## How to apply in review
