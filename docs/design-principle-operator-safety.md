@@ -80,8 +80,18 @@ nothing at all.
   resolve, drill-proven).
 - Known violations (tracked): **A184** dormant-vertical logger+return
   branches; **A187** FIFO issues below zero cost the remainder at 0 —
-  a guess, not a refusal; **A179** weak ingress schemas let malformed
-  financial events become immutable truth that only fails at projection time.
+  a guess, not a refusal; **A179** weak *generic-ingress* schemas remain
+  open. Since A3-PR3 (PR #125) every event traverses the single
+  apply-dispatch choke point, but only event types with registered apply
+  validators are validated there. The registered journal-family events are
+  validated at that boundary and violations quarantine visibly through
+  `ProjectionFailureLog`. Unregistered generic-ingress event families pass
+  through apply validation unchanged and may still fail or skip in their
+  downstream handlers. External `account.*` mutation remains prohibited, and
+  malformed Shopify order/refund payloads are durably rejected before event
+  creation (`ShopifyRejectedEvidence`, A5 PR #130). The generic-ingress
+  schema hardening itself remains open (External-Ingest-Surface-Hardening,
+  tracked in the pilot-status open decisions).
 
 ### Rule 3 — Every number can explain itself to a nonaccountant
 
@@ -106,18 +116,26 @@ only what it can explain.
   zero-states are dead ends, the `bogus` test provider is visible; drilldown
   is `source='shopify'`-locked.
 
-## Standing violations of the principle itself (gating gaps)
+## Standing gating findings
 
-These are places where today the *only* barrier is authentication — not
-construction, not refusal, and not even meaningful gating:
+### Narrowed residual — no longer authentication-only
 
-- **A173** — EDIM generic import (~4.4k LOC, AUTO_POST-capable) reachable by
-  any authenticated user. The single worst offender.
-- **A174** — settlement CSV import/preview and Stripe disconnect require only
-  `IsAuthenticated`; any member can post settlement JEs or sever a live
-  integration.
+- **A173** — EDIM generic import (~4.4k LOC, AUTO_POST-capable).
+  The original "reachable by any authenticated user" claim is stale:
+  every mutating command now carries `require()`; commit requires
+  `edim.commit_batches`; and the constrained-pilot ledger door is blocked
+  by `Capability.EDIM_FINANCIAL_COMMIT`. Remaining module-registration and
+  per-view visibility hardening stays open under its original owner.
+  A173 is no longer an authentication-only financial-write breach and is
+  not part of the P1 class below.
 
-Both are P1. Until they land, no new capability may ship with
+### Current authentication-only P1
+
+- **A174** — settlement CSV import/preview and Stripe disconnect require
+  only `IsAuthenticated`; any member can post settlement JEs or sever a
+  live integration.
+
+A174 remains P1. Until it lands, no new capability may ship with
 `IsAuthenticated` as its only guard on a financial write.
 
 ## How to apply in review
