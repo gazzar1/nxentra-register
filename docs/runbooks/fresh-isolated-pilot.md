@@ -362,20 +362,37 @@ Sign-off: operator ______ date ______
 
 ## I. Phase 6 — Preflight and activation
 
-Distinct stages: pre-activation configuration checks → profile activation →
-go-live preflight → post-activation drift verification. For every run
-record: exact command, company identifier, phase, exit code, complete
-output, timestamp, operator (`preflight/`).
+Distinct stages: activation-aware validation-only check → profile
+activation → go-live preflight → post-activation drift verification. For
+every run record: exact command, company identifier, phase, exit code,
+complete output, timestamp, operator (`preflight/`).
 
 **Never repair or suppress a violation inside preflight.** Correct the cause
 through its owning configuration or process, then rerun the full preflight.
 
-- [ ] **I1. Setup-phase preflight (read-only).**
+The standalone `pilot_preflight` command runs **without** activation
+awareness, so before activation it always reports `profile_not_enabled` —
+it is NOT usable as the pre-activation check and must not be worked around.
+The activation command's validation-only mode is the sanctioned
+pre-activation check:
+
+- [ ] **I1. Activation-aware validation-only check — no persistent
+  mutation.**
   - Command / action:
-    `python manage.py pilot_preflight --company <PILOT_COMPANY_ID> --phase setup --json`
-    (`<PILOT_COMPANY_ID>` is the numeric Company id.)
-  - Expected result: `ok: true`, exit 0.
-  - STOP if: any violation (exit 1) — fix the owning configuration, rerun.
+    `python manage.py activate_pilot_profile --company <PILOT_COMPANY_ID>`
+    (`<PILOT_COMPANY_ID>` is the numeric Company id.) **Intentionally omit
+    `--yes`.**
+  - Expected result: exit code **1**, with output containing
+    `Validation passed. Re-run with --yes to activate.`
+    This nonzero exit is the command's deliberate confirmation barrier,
+    not a failed validation. No pilot-profile change or
+    `PilotProfileActivation` row is written.
+  - Evidence to retain (`preflight/`): complete stdout/stderr, exit code,
+    company identifier, timestamp, operator.
+  - STOP if: the output says `Refusing to activate`; any violation is
+    listed; the command exits 0 because the company is already active
+    unexpectedly; the expected validation-passed message is absent; or any
+    persistent state changes.
 - [ ] **I2. Activate the profile.**
   - Command / action:
     `python manage.py activate_pilot_profile --company <PILOT_COMPANY_ID> --yes`
@@ -474,13 +491,31 @@ Minimum schema:
 | Reconciliation counts and unmatched amount | reconciliation page |
 | Rejected / quarantined / failed item counts | exceptions queue |
 | Traced-adjustment count and value | journal list (pilot adjustments) |
+| Per-source-row financial-effect classification and linked JE/value | source files vs system |
+| Per-source-row durable review/reconciliation state(s) | source files vs system |
 | Trial-balance control total | trial balance report |
 | Every unexplained variance | — must be zero — |
 
-Every source row and amount must be accounted for as exactly one of:
-**posted, matched, rejected, failed, quarantined, or intentionally excluded
-under the documented nuisance-row mapping** (the A5 REJECTED-class outcome
-in the [closure artifact](../audits/2026-08-30-a5-final-closure-review.md)).
+Every source row and amount must record **both** of two orthogonal
+dimensions — they are **not mutually exclusive**:
+
+1. **Financial effect:** `POSTED_EXACTLY_ONCE` (with the journal
+   identifier and amount) or `NO_FINANCIAL_EFFECT`.
+2. **Durable review / reconciliation evidence** — record every applicable
+   state: `CLEAR / NONE`, `MATCHED`, `REJECTED`, `FAILED`, `QUARANTINED`,
+   `INTENTIONALLY_EXCLUDED` under the documented nuisance-row mapping (the
+   A5 REJECTED-class outcome in the
+   [closure artifact](../audits/2026-08-30-a5-final-closure-review.md)),
+   or `HEALED / SUPERSEDED` where historical failure evidence remains
+   relevant.
+
+The required `ORPHAN_ORDER_ID` settlement representation is
+**`POSTED_EXACTLY_ONCE` + `QUARANTINED`**: the committed journal is the
+financial effect; the quarantine flag is the operator-review state.
+Financial totals count the amount once, from the financial-effect
+dimension; exception/review totals independently count the quarantine
+evidence. Never double-count a value merely because it carries two
+truthful classifications.
 
 STOP on any unexplained difference — **even when Nxentra reports healthy.**
 
@@ -556,12 +591,31 @@ result itself must reproduce the control pack.
   this check but does not fail on it).
 - [ ] N2. Boot the application (same pinned revision) against the scratch
   database, isolated from production traffic and from Shopify webhooks.
-- [ ] N3. Compare against the frozen control pack — all must match
-  exactly: company/account configuration; BusinessEvent count and
-  sequence; journal and line counts; total debits and credits;
-  Shopify/provider/bank source totals; rejection/failure/quarantine
-  counts; reconciliation totals; trial balance; traced-adjustment
-  provenance; alert state; stored backup hash and restored revision.
+- [ ] N3. Compare durable controls and evaluate derived alert conditions.
+  **Exact equality is required** for all persisted and financially
+  material controls: company/account configuration; BusinessEvent count
+  and sequence; journal and line counts; total debits and credits;
+  Shopify/provider/bank source totals; durable rejected, failed, and
+  quarantined evidence rows; reconciliation state and totals; trial
+  balance; traced-adjustment provenance; persisted alert inputs
+  (store status, `needs_reauth`, `created_at`, `last_sync_at`, bookmark
+  state, paused/error state, unresolved evidence counts); stored backup
+  hash and restored application revision.
+
+  The pre-backup `/_health/alerts` JSON is **not** required to match
+  byte-for-byte where fields are derived from the current clock. Record:
+  control-pack timestamp; backup timestamp; restore evaluation timestamp;
+  effective `SHOPIFY_SOURCE_STALE_SECONDS`; effective
+  `ALERT_PROJECTION_STALENESS_SECONDS`. Recompute the expected
+  restore-time values of `shopify_stale_sources`, `stale_consumers`, and
+  any other clock-derived alert condition from the restored durable
+  inputs and the restore-time clock; require `/_health/alerts` to match
+  that **age-aware expectation**. A difference caused solely by elapsed
+  time is acceptable only when all underlying persisted inputs match
+  exactly AND the recorded threshold calculation fully explains the
+  difference. Do not run a live Shopify sync, rewrite
+  `last_sync_at`/`created_at`, resolve evidence, or otherwise mutate
+  restored state merely to recreate the pre-backup alert response.
 - [ ] N4. Evidence to retain (`restore/`): the comparison table, restored
   revision, hashes.
 
