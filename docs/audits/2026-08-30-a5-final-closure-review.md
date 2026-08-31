@@ -56,6 +56,21 @@ truthful durable outcome from the vocabulary
 9. missing visibility data cannot produce a false all-clear;
 10. a manual correction cannot hide its source and reason.
 
+The five names are **contract-level outcome classes**, not one shared storage
+enum: a domain model may use a domain-specific status name for one of these
+classes when the class-to-storage mapping is explicitly defined and the
+outcome is durably evidenced. Normative mapping for the one domain-specific
+name in scope: a never-matched bank statement line deliberately excluded as a
+nuisance row maps to the A5 **REJECTED** outcome class. Its concrete durable
+representation is `BankStatementLine.MatchStatus.EXCLUDED` plus the
+`RECONCILIATION_MATCH_UNMATCHED` event with `final_status=EXCLUDED`; its
+meaning is that the operator intentionally rejected the imported row from
+further reconciliation — an intentional no-financial-effect terminal
+disposition, not MATCHED, not FAILED, not QUARANTINED. Match-destructive
+exclusion (excluding a line that would dismantle an existing match) is
+**not** part of this mapping — it is blocked under
+`Capability.UNSAFE_BANK_MATCH` by PR #137.
+
 A5 deliberately does **not** require: active alert delivery to a named human
 (G1 owns it), the isolated restore rehearsal (G2), production deployment,
 commercial proof, or handling of workflows outside the supported contract
@@ -67,7 +82,12 @@ banking, shared multi-merchant databases).
 
 The audit's A5 definition was checked criterion by criterion on the merged
 head: the headline durable-visible-state requirement; the mapping of the five
-states onto existing mechanisms (not a new state machine); all four
+outcome classes onto existing mechanisms (not a new state machine, and not
+one shared generic state machine — the REJECTED class, for example, is
+concretely `ImportRejectedRow.Status.REJECTED` for ingress refusal,
+`ShopifyRejectedEvidence` for authenticated malformed Shopify input, and
+`BankStatementLine.MatchStatus.EXCLUDED` for the permitted operator rejection
+of a never-matched nuisance row); all four
 closed-scope bullets (the Shopify credit-note/missing-mapping/orphan
 branches; the named Paymob/Bosta settlement branches; bank CSV row accounting
 plus permitted matching; the resulting journal generation); the
@@ -87,7 +107,7 @@ a retry heals exactly once (applied-marker dedup + A177 idempotency +
 | Shopify refund (positive; zero; negative aggregate; malformed; orphan; credit-note failure; corrected + exact redelivery) | 8 | 8 PASS | PR #132 MALFORMED_MONEY reroute (no row, no event, no sequence, no journal); identical redelivery re-sights one row; corrected redelivery supersedes and posts exactly once; `test_a5_pr2c_negative_refund_evidence` |
 | Paymob/Bosta settlement import (valid; malformed; blank batch; malformed numerics; imbalance; ORPHAN_ORDER_ID; duplicate retry) | 7 | 6 PASS + R1 | Per-row REJECTED evidence outside the batch atomics; the zero-substitution masquerade pinned dead; orphan QUARANTINE flags exist iff the JE committed; `test_a5_pr3a`, `test_a5_pr3bc` |
 | Bank CSV (valid; malformed dates/numerics/amounts; zero; duplicates; non-EGP; commit retry) | 7 | 7 PASS | Signed parse token; every row imported, rejected, or quarantined, none silently dropped |
-| Reconciliation (canonical match; manual match; difference; resolve_difference adjustment; unmatch; exclude; materialization failure) | 7 | 6 PASS + R2 | Projection is the sole writer of match state (replay convergence pinned); D#9 honest rollback (no matched-response/UNMATCHED contradiction); one correction path. Post-review: match-destructive exclusion is now REFUSED under the constrained pilot by PR #137 (`3e962c5`); never-matched nuisance-row exclusion remains a supported, durable EXCLUDED outcome |
+| Reconciliation (canonical match; manual match; difference; resolve_difference adjustment; unmatch; exclude; materialization failure) | 7 | 6 PASS + R2 | Projection is the sole writer of match state (replay convergence pinned); D#9 honest rollback (no matched-response/UNMATCHED contradiction); one correction path. Post-review: match-destructive exclusion is now REFUSED under the constrained pilot by PR #137 (`3e962c5`); never-matched nuisance-row exclusion remains supported, and its durable EXCLUDED status is the concrete A5 REJECTED-class outcome for that permitted action (mapping defined in the closure standard above) |
 | Projection framework (retryable failure; A3 terminal quarantine; DeferEvent; TerminalSkip atomicity; self-heal) | 5 | 5 PASS | Rule 17 one-owning-transaction pins (evidence → marker → bookmark, all or none); a quarantined financial event can never be consumed traceless; `test_a5_pr1b_terminalskip_atomicity` |
 | Pilot adjustments + end-to-end contract (traced create/edit/post; untraceable refusal; invalid/cross-company; exact retry; changed-content conflict; reversal inherit/new-source; scratchpad refusal; source-resolution link survival; D1–D8) | 17 | 17 PASS | Zero-residue refusals before the JE mint; raw stamps non-request-writable (Rule 18); server-side enforcement load-bearing; profile-NONE body/financial semantics unchanged; CORS strictly additive (`test_a5_pr4a`, `test_a5_pr4b_cors_idempotency_header`, `test_a177_je_idempotency`) |
 | Visibility & alerts (C1–C8) | 8 | 8 PASS | See below |
@@ -180,18 +200,21 @@ block A5 under the strict test.
   error body with zero evidence and zero financial residue — a loud refusal
   the operator cannot mistake for success. Align the HTTP status with the
   bank-import door post-A5.
-- **R2 — terminal nuisance-row exclusion.** A never-matched bank line may
-  still be deliberately marked EXCLUDED under the active pilot. EXCLUDED has
-  no in-pilot "unexclude" transition. If the operator wrongly classifies such
-  a line, the source action remains durably auditable and the bounded
-  FINANCIAL recovery is a supervised traced adjustment (PRs #134/#135); the
-  original line remains terminal — a traced adjustment corrects the financial
-  consequence, it does not restore or reopen the excluded bank line.
-  (Post-PR #137 note: under the active pilot, unmatch is blocked AND
-  match-destructive exclusion is blocked, so no reversal-bearing exclude path
-  is an admitted pilot operation any more. The older attempt-scoped reversal
+- **R2 — terminal nuisance-row rejection.** Under the active pilot a
+  never-matched nuisance bank row may be deliberately rejected from further
+  reconciliation. The concrete status is
+  `BankStatementLine.MatchStatus.EXCLUDED`, which maps to the contract-level
+  REJECTED outcome class (the normative mapping in the closure standard
+  above); the row and its exclusion event are durable and auditable.
+  EXCLUDED has no in-pilot unexclude transition — an accepted operational
+  limitation, not a missing durable outcome. For a misclassified real row: a
+  supervised traced adjustment (PRs #134/#135) may correct the FINANCIAL
+  consequence while preserving the exclusion history; it does not reopen,
+  reconcile, resolve, or "heal" the bank line. Match-destructive exclusion
+  and unmatch are blocked after PR #137, so no reversal-bearing exclude path
+  is an admitted pilot operation any more; the older attempt-scoped reversal
   `request_id` observation therefore belongs to the profile-NONE / general
-  reconciliation backlog, not to this contract's residuals.)
+  reconciliation backlog, not to this contract's residuals.
 
 ## What this closure does and does not mean
 

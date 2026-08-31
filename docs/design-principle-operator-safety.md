@@ -80,15 +80,18 @@ nothing at all.
   resolve, drill-proven).
 - Known violations (tracked): **A184** dormant-vertical logger+return
   branches; **A187** FIFO issues below zero cost the remainder at 0 —
-  a guess, not a refusal; **A179** weak *generic-ingress* schemas can still
-  admit malformed financial events as immutable truth — but the failure mode
-  is no longer silent: since A3-PR3 (PR #125) every event is validated at the
-  apply choke point and a malformed one quarantines to a visible
-  `ProjectionFailureLog` row, external `account.*` mutation is prohibited
-  outright, and Shopify order/refund payloads are durably rejected pre-event
-  (`ShopifyRejectedEvidence`, A5 PR #130). The generic-ingress schema
-  hardening itself remains open (External-Ingest-Surface-Hardening, tracked
-  in the pilot-status open decisions).
+  a guess, not a refusal; **A179** weak *generic-ingress* schemas remain
+  open. Since A3-PR3 (PR #125) every event traverses the single
+  apply-dispatch choke point, but only event types with registered apply
+  validators are validated there. The registered journal-family events are
+  validated at that boundary and violations quarantine visibly through
+  `ProjectionFailureLog`. Unregistered generic-ingress event families pass
+  through apply validation unchanged and may still fail or skip in their
+  downstream handlers. External `account.*` mutation remains prohibited, and
+  malformed Shopify order/refund payloads are durably rejected before event
+  creation (`ShopifyRejectedEvidence`, A5 PR #130). The generic-ingress
+  schema hardening itself remains open (External-Ingest-Surface-Hardening,
+  tracked in the pilot-status open decisions).
 
 ### Rule 3 — Every number can explain itself to a nonaccountant
 
