@@ -90,7 +90,7 @@ and verified by [`backend/accounts/pilot_preflight.py`](../../backend/accounts/p
 | Authoritative writer | Commands `auto_match_statement` / `manual_match` / `unmatch_line` ([backend/reconciliation/commands.py](../../backend/reconciliation/commands.py)) emit events; `ReconciliationProjection` ([backend/reconciliation/projections.py](../../backend/reconciliation/projections.py)) is the **sole writer of match state** (legacy direct mutation was decommissioned in A86.7b; guarded-field architecture tests hold the line). |
 | Derived readers | Reconciliation page, exception queue, close checklist, F16 tie-outs. |
 | Legacy / competing | Two exception representations still exist (rich legacy `bank_connector.ReconciliationException` vs. the needs-review queue over statement-line differences) — a known, documented split from ADR-0001. `source_document` string joins persist in older views. |
-| Contract status | **Manual matching in scope; unsafe auto-match/unmatch blocked** (`Capability.UNSAFE_BANK_MATCH` gates `auto_match_statement` and unmatch paths for the pilot). |
+| Contract status | **Manual matching and exclusion of a never-matched nuisance row are in scope. Automatic matching, unmatching, statement deletion requiring unmatch, and match-destructive exclusion are blocked** by `Capability.UNSAFE_BANK_MATCH` under the constrained pilot (the last door gated by PR #137). |
 | Known gap | Exception-model unification remains future work. Posted-journal enforcement for match and clearance journals is complete under A3 at both emit and apply. |
 
 ## 7. Posted journal entry

@@ -26,6 +26,13 @@ private-beta/GA requirements.
   **#135** A5-PR4b (`2c7cabb`).
 - Post-merge main CI run **33322761489** on `2c7cabb7…`: all seven jobs
   successful, including Quality Gate.
+- **Post-review correction (2026-08-31, before this artifact was
+  finalized):** PR #137 (`3e962c5`; reviewed head `4ba27c1`; post-merge main
+  CI run 33370644540 green) closed the matched-line exclusion A4 admission
+  gap found during this review (side-finding item 9 below). PR #137 changed
+  ADMISSION only — it did not change A5 durable-outcome semantics or the
+  65-row A5 verdict. The review itself ran on main `2c7cabb`, as recorded
+  above; it was not rerun.
 - Method: read-only; eight focused readers over the supported contract only
   (no repository-wide sweep), each verdict anchored to code lines and the
   merged test suites; every proposed A5 blocker was independently and
@@ -80,7 +87,7 @@ a retry heals exactly once (applied-marker dedup + A177 idempotency +
 | Shopify refund (positive; zero; negative aggregate; malformed; orphan; credit-note failure; corrected + exact redelivery) | 8 | 8 PASS | PR #132 MALFORMED_MONEY reroute (no row, no event, no sequence, no journal); identical redelivery re-sights one row; corrected redelivery supersedes and posts exactly once; `test_a5_pr2c_negative_refund_evidence` |
 | Paymob/Bosta settlement import (valid; malformed; blank batch; malformed numerics; imbalance; ORPHAN_ORDER_ID; duplicate retry) | 7 | 6 PASS + R1 | Per-row REJECTED evidence outside the batch atomics; the zero-substitution masquerade pinned dead; orphan QUARANTINE flags exist iff the JE committed; `test_a5_pr3a`, `test_a5_pr3bc` |
 | Bank CSV (valid; malformed dates/numerics/amounts; zero; duplicates; non-EGP; commit retry) | 7 | 7 PASS | Signed parse token; every row imported, rejected, or quarantined, none silently dropped |
-| Reconciliation (canonical match; manual match; difference; resolve_difference adjustment; unmatch; exclude; materialization failure) | 7 | 6 PASS + R2 | Projection is the sole writer of match state (replay convergence pinned); D#9 honest rollback (no matched-response/UNMATCHED contradiction); one correction path |
+| Reconciliation (canonical match; manual match; difference; resolve_difference adjustment; unmatch; exclude; materialization failure) | 7 | 6 PASS + R2 | Projection is the sole writer of match state (replay convergence pinned); D#9 honest rollback (no matched-response/UNMATCHED contradiction); one correction path. Post-review: match-destructive exclusion is now REFUSED under the constrained pilot by PR #137 (`3e962c5`); never-matched nuisance-row exclusion remains a supported, durable EXCLUDED outcome |
 | Projection framework (retryable failure; A3 terminal quarantine; DeferEvent; TerminalSkip atomicity; self-heal) | 5 | 5 PASS | Rule 17 one-owning-transaction pins (evidence → marker → bookmark, all or none); a quarantined financial event can never be consumed traceless; `test_a5_pr1b_terminalskip_atomicity` |
 | Pilot adjustments + end-to-end contract (traced create/edit/post; untraceable refusal; invalid/cross-company; exact retry; changed-content conflict; reversal inherit/new-source; scratchpad refusal; source-resolution link survival; D1–D8) | 17 | 17 PASS | Zero-residue refusals before the JE mint; raw stamps non-request-writable (Rule 18); server-side enforcement load-bearing; profile-NONE body/financial semantics unchanged; CORS strictly additive (`test_a5_pr4a`, `test_a5_pr4b_cors_idempotency_header`, `test_a177_je_idempotency`) |
 | Visibility & alerts (C1–C8) | 8 | 8 PASS | See below |
@@ -159,7 +166,7 @@ block A5 under the strict test.
 | 6 | `ProjectionFailureLog` has no table-level RLS | SHARED-BETA / GA FOLLOW-UP (isolation is deployment-level under this contract) |
 | 7 | `ReconciliationLink.confirmed_by` fields not populated | SHARED-BETA / GA FOLLOW-UP |
 | 8 | Older Shopify-family tables lack the `ShopifyRejectedEvidence` table-level RLS posture | SHARED-BETA / GA FOLLOW-UP |
-| 9 | `exclude_line` reversal-capability posture vs `UNSAFE_BANK_MATCH` | A3/A4 FOLLOW-UP, NOT A5 |
+| 9 | `exclude_line` reversal-capability posture vs `UNSAFE_BANK_MATCH` | **CLOSED BEFORE PUBLICATION** — PR #137 (`3e962c5`) conditionally applies the serialized `Capability.UNSAFE_BANK_MATCH` gate to match-destructive exclusion (decided on the admission-locked Company row after the `BankStatementLine` row lock, before any reversal work). Never-matched nuisance-row exclusion remains supported. A5's outcome verdict is unchanged |
 | 10 | Period-override enforcement gaps on PATCH/save-complete | A3/A4 FOLLOW-UP, NOT A5 |
 | 11 | `journal_entry.updated` lacks a separate A3 apply-door validator | A3/A4 FOLLOW-UP, NOT A5 |
 | 12 | `_emit_automatic_reversal` payload-vs-emit-validation compatibility | GENERAL BACKLOG |
@@ -173,14 +180,18 @@ block A5 under the strict test.
   error body with zero evidence and zero financial residue — a loud refusal
   the operator cannot mistake for success. Align the HTTP status with the
   bank-import door post-A5.
-- **R2 — repeated unmatch/exclude reversal + terminal EXCLUDED.** The
-  clearance `request_id` is not attempt-scoped, so repeating a reversal of
-  the same original can fail loudly (400, zero residue) instead of posting;
-  and EXCLUDED is terminal under the pilot (unmatch is blocked, manual match
-  requires UNMATCHED). In both cases the money remains **visibly**
-  unreconciled (open EBD residual in aging + the unmatched deposit line) and
-  the bounded recovery is exactly the supervised traced-adjustment lane that
-  PRs #134/#135 shipped. Make the `request_id` attempt-scoped post-A5.
+- **R2 — terminal nuisance-row exclusion.** A never-matched bank line may
+  still be deliberately marked EXCLUDED under the active pilot. EXCLUDED has
+  no in-pilot "unexclude" transition. If the operator wrongly classifies such
+  a line, the source action remains durably auditable and the bounded
+  FINANCIAL recovery is a supervised traced adjustment (PRs #134/#135); the
+  original line remains terminal — a traced adjustment corrects the financial
+  consequence, it does not restore or reopen the excluded bank line.
+  (Post-PR #137 note: under the active pilot, unmatch is blocked AND
+  match-destructive exclusion is blocked, so no reversal-bearing exclude path
+  is an admitted pilot operation any more. The older attempt-scoped reversal
+  `request_id` observation therefore belongs to the profile-NONE / general
+  reconciliation backlog, not to this contract's residuals.)
 
 ## What this closure does and does not mean
 

@@ -20,7 +20,9 @@ orders/refunds → Paymob/Bosta settlement CSVs → canonical bank CSV → shado
 ledger, operated by the founder. Not statutory books.
 
 Implemented by A4 (PR #107, merged 2026-07-27 at `1e12250`; reopened
-2026-08-10 and RE-CLOSED through PRs #118–#123 — see the tracker's A4 row).
+2026-08-10 and RE-CLOSED through PRs #118–#123, then again by PR #137
+(`3e962c5`), which closed the matched-line exclusion admission gap surfaced
+during the A5 closure review — see the tracker's A4 row).
 Enforcement is
 **runtime gates at the deepest shared boundaries**
 ([backend/accounts/pilot_policy.py](../../backend/accounts/pilot_policy.py)) —
@@ -112,7 +114,7 @@ No global deadlock-freedom is claimed.
 | Foreign currency | `require_pilot_currency` at settlement/bank/Shopify ingestion; `require_pilot_journal_currency` (header + every line + `amount_currency` legs + non-1 rates) at the serialized manual-journal process boundary; EGP-only proven at go-live and by the `non_egp_journal_line_data` / `fx_line_residue` / `fx_header_rate_residue` drift codes |
 | Multiple users | `Capability.ADD_MEMBER` on every membership path |
 | Legacy banking module | `Capability.LEGACY_BANKING` |
-| Unsafe automatic bank matching | `Capability.UNSAFE_BANK_MATCH` (manual matching retained) |
+| Unsafe bank-match actions | `Capability.UNSAFE_BANK_MATCH` — blocked: automatic matching, unmatching, statement deletion requiring unmatch, and (PR #137) match-destructive exclusion. Retained: manual matching, and exclusion of a never-matched nuisance row |
 | Rebuild / replay | `Capability.PROJECTION_REBUILD` at the single shared choke point |
 | Second company / signup | `deployment_has_pilot()` deployment-wide block |
 | In-app backup **restore** | `Capability.BACKUP_RESTORE` — a restore overwrites the company's books, configuration and event stream in one transaction; blocked at the canonical boundary `backups.importer.restore_company` under the Company admission lock (early HTTP 403 + CLI refusal; break-glass flags do not bypass it). Backup **export/download stay available**. **This is not G2** — G2 recovery is a separate **isolated-database** restore drill, not this in-app route |
