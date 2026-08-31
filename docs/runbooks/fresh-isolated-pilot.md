@@ -112,8 +112,9 @@ database, or explicitly choose the legacy-history path and audit it (§D).
   - Expected result: **every count is 0.** (On a freshly migrated empty
     database no migration or bootstrap creates rows in any listed model.
     The one later caveat: `EventBookmark` rows are created lazily the first
-    time projections run — after C4, nonzero bookmarks alone do not imply
-    merchant data; at THIS step, before any boot, the count must be 0.)
+    time projections run — after the §G service startup, nonzero bookmarks
+    alone do not imply merchant data; at THIS step, before any boot, the
+    count must be 0.)
   - Evidence to retain (`environment/`): the full count output with
     timestamp and database identifier.
   - STOP if: any count is nonzero. Do not delete or reset the data
@@ -286,10 +287,19 @@ Sign-off: operator ______ date ______
 
 ---
 
-## H. Phase 5 — Single-company bootstrap
+## H. Phase 5 — Base company bootstrap (before activation)
 
-Use the supported HTTP/frontend surfaces. Operator-only CLI actions are
-labelled. Do not use Django admin or raw SQL for bootstrap.
+Use the supported HTTP surfaces. Operator-only CLI actions are labelled.
+Do not use Django admin or raw SQL for bootstrap.
+
+**Order is load-bearing.** Shopify provisioning, store connect, and product
+sync happen ONLY AFTER activation (§I): under profile NONE,
+`complete_onboarding(business_type="shopify")` creates the
+`shopify_connector` INVENTORY and COGS module mappings (inventory is a
+supported capability on NONE), and a pre-activation product sync can create
+INVENTORY items — activation preflight then deterministically refuses with
+`module_inv_cogs_mapping` / `inventory_items`. Under the active pilot the
+same provisioning withholds those mappings.
 
 - [ ] **H1. Create the operator account and the one company.**
   - Command / action: `POST /api/auth/register/` (frontend `/register`)
@@ -303,55 +313,30 @@ labelled. Do not use Django admin or raw SQL for bootstrap.
     `BETA_GATE_ENABLED` is set, complete the gate flow.
   - STOP if: the company was created with any currency other than EGP —
     recreate the company; do not attempt to edit currency afterward.
-- [ ] **H2. Complete onboarding.**
-  - Command / action: frontend `/onboarding/setup`
-    (`POST /api/onboarding/setup/`), with: fiscal year starting
-    **January** with **12 or 13 periods** (preflight enforces both), a
-    chart-of-accounts template (`minimal` or `retail`), and
-    `business_type = "shopify"` — this auto-provisions the GL accounts and
-    the `shopify_connector` `SHOPIFY_CLEARING` (11500) and
-    `EXPECTED_BANK_DEPOSIT` (11600) module-account mappings.
-    The EBD mapping is provisioned **only** by this onboarding path — the
-    account-mapping PUT endpoint does not carry that role.
-  - Expected result: onboarding completes; accounts and both mappings
-    exist. (The POST is idempotent and may be re-run.)
-- [ ] **H3. Connect exactly one Shopify store.**
-  - Command / action: from `/onboarding/setup` or `/shopify/settings`:
-    `POST /api/shopify/install/` → complete OAuth for `<SHOP_DOMAIN>`.
-  - Expected result: exactly one ACTIVE store; the OWNER's Shopify user
-    binding exists (go-live preflight checks `store_count` and
-    `binding_missing`).
-- [ ] **H4. Prove the store currency is EGP.**
-  - Command / action: run an initial **product sync** — that is the sync
-    path that persists the durable `shop_currency` snapshot (an order sync
-    alone does not persist it; the go-live preflight then falls back to a
-    read-only live probe). The go-live preflight
-    (`store_currency_unknown` / `store_currency_not_egp`) is the proof.
-  - STOP if: preflight reports either store-currency violation.
-- [ ] **H5. Settlement providers and posting profiles.**
-  - Command / action: the Shopify setup bootstraps the provider rows and
-    `PG-*` posting profiles; review at `/shopify/settings`
-    (`PATCH /api/accounting/settlement-providers/<pk>/`) so that at least
-    one of **paymob** / **bosta** is ACTIVE — and note the preflight
-    checks **every** ACTIVE supported provider, so each provider left
-    ACTIVE must route to an ACTIVE posting profile with a postable
-    control account (preflight codes `provider_missing`,
-    `provider_posting_profile`).
-- [ ] **H6. Cash/Bank account.**
-  - Command / action: confirm an ACTIVE, non-header LIQUIDITY account
-    exists (template account `11000 Cash and Bank`, or create one at
-    `/accounting/chart-of-accounts/new`). Preflight code:
-    `bank_account_missing`.
-- [ ] **H7. Single-company / single-owner proof.**
-  - Command / action: re-run the §C2 count for `Company` (expect exactly
-    1) and confirm in the UI there is exactly one active OWNER membership
-    and no other members. (After activation, `deployment_has_pilot()`
-    blocks all further signup/company creation deployment-wide.)
-  - STOP if: more than one company or active membership exists.
-- [ ] **H8. Excluded modules stay unavailable.**
-  - Command / action: confirm purchases/clinic/properties are not enabled
-    and their enable doors refuse under the pilot (spot-check one refusal
-    after activation in §J).
+- [ ] **H2. Base onboarding pass — no Shopify provisioning.**
+  - Command / action: authenticated `POST /api/onboarding/setup/` with an
+    explicit payload containing: `company_name`; `company_name_ar` (if
+    used); `fiscal_year_start_month = 1`; `thousand_separator`;
+    `decimal_separator`; `decimal_places`; `date_format`;
+    `enable_arabic_fields`; `fiscal_year`; `num_periods` = 12 or 13;
+    `current_period`; `coa_template = <BASE_COA_TEMPLATE>` (`minimal` or
+    `retail`); `import_mode = "skip"`. **Explicitly omit** `business_type`
+    (or submit it as `""`), `modules`, and `import_from_date`. Do not
+    connect a Shopify store, do not run product sync, do not import
+    orders. **Record `<BASE_COA_TEMPLATE>` and the
+    `enable_arabic_fields` boolean** — the pilot-aware pass 2 (I3) must
+    repeat both exactly.
+  - Expected result: fiscal structure exists (`num_periods` NORMAL
+    periods plus one framework ADJUSTMENT period; preflight requires the
+    January start and 12/13 periods); the chosen chart of accounts
+    exists; `onboarding_completed` is true; **no** `ShopifyStore` exists;
+    **no** `Item` with `item_type=INVENTORY` exists; **no**
+    `shopify_connector` mapping with role INVENTORY or COGS exists; no
+    unsupported optional module is enabled.
+  - Evidence to retain (`preflight/`): the response plus the recorded
+    template/Arabic choices.
+  - STOP if: any expected-absent object exists, or fiscal configuration
+    deviates from the January / 12-or-13-period requirement.
 
 Evidence to retain (`preflight/`): screenshots or API responses for each
 step, redacting any merchant PII.
@@ -360,12 +345,14 @@ Sign-off: operator ______ date ______
 
 ---
 
-## I. Phase 6 — Preflight and activation
+## I. Phase 6 — Activation, pilot-aware Shopify provisioning, go-live
 
-Distinct stages: activation-aware validation-only check → profile
-activation → go-live preflight → post-activation drift verification. For
-every run record: exact command, company identifier, phase, exit code,
-complete output, timestamp, operator (`preflight/`).
+One chronological sequence — do not jump backward into §H: activation-aware
+validation-only check → activation → pilot-aware Shopify provisioning →
+store connect and sync → configuration proofs → go-live preflight →
+drift-verification cadence. For every run record: exact command, company
+identifier, phase, exit code, complete output, timestamp, operator
+(`preflight/`).
 
 **Never repair or suppress a violation inside preflight.** Correct the cause
 through its owning configuration or process, then rerun the full preflight.
@@ -399,19 +386,116 @@ pre-activation check:
   - Expected result:
     `Activated ISOLATED_SHADOW_LEDGER_V1 on company <PILOT_COMPANY_ID>.`
     exit 0; a `PilotProfileActivation` audit row (source `cli`) exists.
-    (Without `--yes` a clean validation still exits 1 with
-    "Re-run with --yes to activate." — that is the confirmation step, not
-    an error.)
+  - **Warning:** activation at I2 means the constrained capability profile
+    is active. It does NOT authorize merchant financial data. Go-live
+    preflight, G1, and G2 remain incomplete.
   - STOP if: `Refusing to activate: …` — violations are listed; nothing
     was modified; correct and return to I1.
-- [ ] **I3. Go-live preflight.**
+- [ ] **I3. Pilot-aware Shopify provisioning pass.**
+  - Command / action: an authenticated **direct API request** to
+    `POST /api/onboarding/setup/`. **Do not use the ordinary frontend
+    Shopify wizard** for this pass — its submission sends
+    `fiscal_year_start_month`, `fiscal_year`, the full module list with
+    `purchases=true` and `inventory=true`, and `business_type=shopify`,
+    which the active pilot refuses. Exact payload:
+
+    ```json
+    {
+      "business_type": "shopify",
+      "coa_template": "<BASE_COA_TEMPLATE>",
+      "enable_arabic_fields": <SAME_BOOLEAN_AS_H2>,
+      "modules": [
+        {"key": "sales", "is_enabled": true},
+        {"key": "shopify_connector", "is_enabled": true}
+      ],
+      "import_mode": "skip"
+    }
+    ```
+
+    Do **not** send: `fiscal_year_start_month`, `fiscal_year`,
+    `num_periods`, `current_period`, `import_from_date`, or any other
+    module (`purchases`, `inventory`, `clinic`, `properties`,
+    `stripe_connector`, `bank_connector`).
+  - Serializer-default warning (why the payload is exactly this):
+    `fiscal_year_start_month` and `fiscal_year` default to **0** when
+    omitted, so this pass requests no fiscal mutation (the
+    `CURRENCY_FISCAL_CHANGE` gate fires only on a start month in 1–12 or
+    `fiscal_year > 0`); the module payload is validated by
+    `require_module_enable_allowed` on the locked Company, and neither
+    `sales` nor `shopify_connector` is module-enablement-blocked;
+    `coa_template` defaults to `"minimal"` and `enable_arabic_fields`
+    defaults to `false` **and is always persisted** — both MUST be
+    repeated with the exact H2 values or the defaults silently overwrite
+    them.
+  - Expected result: `business_type` becomes `shopify`; `sales` and
+    `shopify_connector` are enabled; the Shopify GL accounts are
+    provisioned; the `SHOPIFY_CLEARING` (11500) and
+    `EXPECTED_BANK_DEPOSIT` (11600) mappings exist (the EBD mapping is
+    provisioned **only** by this onboarding path — the account-mapping
+    PUT endpoint does not carry that role); `shopify_connector`
+    INVENTORY and COGS mappings do **not** exist; no INVENTORY `Item`
+    exists; no historical import is queued; fiscal configuration,
+    `coa_template`, and `enable_arabic_fields` are byte-for-byte
+    unchanged from H2. (The exact H2 → I1 → I2 → I3 sequence was executed
+    successfully against a fresh throwaway database; the PII-free summary
+    is recorded in the PR.)
+  - STOP if: the request is refused with `CURRENCY_FISCAL_CHANGE`; any
+    unsupported module is enabled; any INVENTORY/COGS module mapping
+    exists; fiscal settings change; COA-template metadata changes;
+    Arabic-field configuration changes; or an import task is queued.
+- [ ] **I4. Connect exactly one Shopify store.**
+  - Command / action: from `/shopify/settings`:
+    `POST /api/shopify/install/` → complete OAuth for `<SHOP_DOMAIN>`.
+  - Expected result: exactly one ACTIVE store; the OWNER's Shopify user
+    binding exists (go-live preflight checks `store_count` and
+    `binding_missing`).
+- [ ] **I5. Product sync and EGP currency proof.**
+  - Command / action: run the initial **product sync** only now — after
+    activation — so every synchronized item is forced NON_STOCK. The
+    product sync is the path that persists the durable `shop_currency`
+    snapshot (an order sync alone does not persist it; the go-live
+    preflight then falls back to a read-only live probe). The go-live
+    preflight (`store_currency_unknown` / `store_currency_not_egp`) is
+    the proof. Historical import stays `skip` throughout bootstrap and
+    G1 preparation — no live historical merchant-order import occurs
+    before G1 and G2 close.
+  - Expected result: durable `shop_currency` = EGP; every synchronized
+    item is NON_STOCK; zero item inventory/COGS account links; zero
+    inventory ledger/FIFO residue.
+  - STOP if: preflight reports either store-currency violation, or any
+    INVENTORY item / inventory residue appears.
+- [ ] **I6. Settlement providers and posting profiles.**
+  - Command / action: the Shopify setup bootstraps the provider rows and
+    `PG-*` posting profiles; review at `/shopify/settings`
+    (`PATCH /api/accounting/settlement-providers/<pk>/`) so that at least
+    one of **paymob** / **bosta** is ACTIVE — and note the preflight
+    checks **every** ACTIVE supported provider, so each provider left
+    ACTIVE must route to an ACTIVE posting profile with a postable
+    control account (preflight codes `provider_missing`,
+    `provider_posting_profile`).
+- [ ] **I7. Cash/Bank account.**
+  - Command / action: confirm an ACTIVE, non-header LIQUIDITY account
+    exists (template account `11000 Cash and Bank`, or create one at
+    `/accounting/chart-of-accounts/new`). Preflight code:
+    `bank_account_missing`.
+- [ ] **I8. Single-company / single-owner proof.**
+  - Command / action: re-run the §C2 count for `Company` (expect exactly
+    1) and confirm in the UI there is exactly one active OWNER membership
+    and no other members. (After activation, `deployment_has_pilot()`
+    blocks all further signup/company creation deployment-wide.)
+  - STOP if: more than one company or active membership exists.
+- [ ] **I9. Excluded-capability refusal checks.**
+  - Command / action: confirm purchases/clinic/properties are not enabled
+    and their enable doors refuse under the active pilot (spot-check one
+    refusal; the rehearsal in §J exercises more).
+- [ ] **I10. Go-live preflight.**
   - Command / action:
     `python manage.py pilot_preflight --company <PILOT_COMPANY_ID> --phase go-live --json`
   - Expected result: `ok: true`, exit 0 — this is the full agreed-workflow
     proof (EGP store, OWNER↔store binding, postable clearing/EBD mappings,
     active provider + posting profile, canonical bank account).
   - STOP if: any violation.
-- [ ] **I4. Drift verification cadence.** Re-run I3 after every
+- [ ] **I11. Drift verification cadence.** Re-run I10 after every
   sync/import during the rehearsal (§J) and before every sign-off in this
   runbook. Any new violation is a STOP.
 
@@ -670,8 +754,40 @@ restore/            # §N comparison
 signoff/            # dated stop/go decisions
 ```
 
-Safe to attach to GitHub: revision pins, command outputs that are
-secret-free and PII-free (preflight JSON, health JSON, count outputs).
-Private encrypted storage only: backups, source CSVs, Shopify exports,
-anything carrying merchant names/amounts/identifiers, monitor payloads
-containing addresses or tokens.
+**Raw operational evidence is PRIVATE by default.**
+
+Safe to attach without merchant-specific redaction:
+
+- Git commit and tree SHAs;
+- public CI run IDs and conclusions;
+- the fresh-database zero-count output when every business count is zero
+  and no host/database identifier is included;
+- explicitly synthetic, manually inspected aggregate `/_health/alerts`
+  output.
+
+The following must **never** be attached raw: `pilot_preflight` JSON;
+`/_health/full`; `/_metrics/`; application, worker, beat, or proxy logs;
+bootstrap API responses or screenshots; source CSVs and Shopify exports;
+reconciliation/control packs; backups; request/response headers;
+environment dumps.
+
+Before any GitHub attachment:
+
+1. Preserve the unmodified original in private encrypted storage.
+2. Create a separate sanitized copy.
+3. Inspect for and remove: names; email addresses; shop domains; company
+   slugs; customer/order/refund identifiers; source row contents;
+   merchant amounts; hostnames/IP addresses where private; cookies;
+   authorization headers; CSRF tokens; Shopify secrets/tokens;
+   database/Redis/Sentry URLs or credentials.
+4. Record the private original's hash and the sanitized copy's hash.
+5. Upload only the sanitized copy.
+
+For `pilot_preflight` results, GitHub evidence may contain only a manually
+redacted summary of: phase; exit code; violation codes; final PASS/FAIL.
+Do not attach raw violation messages — they can contain `shop_domain`.
+For `/_health/full` and `/_metrics/`: private evidence only; never attach
+raw to a public GitHub issue or PR (consistent with the §F2 deployment
+restriction on those endpoints). For real merchant runs, even aggregate
+counts may be commercially sensitive — keep them private unless the
+founder explicitly approves a sanitized excerpt.
