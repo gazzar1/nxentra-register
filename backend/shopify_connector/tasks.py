@@ -455,6 +455,7 @@ def _sync_refunds(store, updated_at_min: str, updated_at_max: str) -> dict:
     scanned = 0
     refunds_created = 0
     errors = 0
+    fetch_failures = 0
     for order_payload in client.iter_refunded_orders(updated_at_min, updated_at_max):
         scanned += 1
         shopify_order_id = order_payload.get("id")
@@ -496,19 +497,50 @@ def _sync_refunds(store, updated_at_min: str, updated_at_max: str) -> dict:
                 connection.rollback()
             continue
 
-        refunds_created += _backfill_order_refunds(store, client, shopify_order_id)
+        backfill = _backfill_order_refunds(store, client, shopify_order_id)
+        refunds_created += backfill["booked"]
+        if backfill["fetch_failed"]:
+            fetch_failures += 1
+            errors += 1
+        errors += backfill["process_errors"]
 
-    return {"status": "ok", "scanned": scanned, "refunds_created": refunds_created, "errors": errors}
+    if fetch_failures:
+        # A refund history that could not be fetched COMPLETELY must never
+        # read as a successful leg — a truncated or unfetchable refund
+        # list silently understates the refund aggregate.
+        return {
+            "status": "error",
+            "error": f"complete refund history unavailable for {fetch_failures} candidate order(s)",
+            "scanned": scanned,
+            "refunds_created": refunds_created,
+            "errors": errors,
+            "fetch_failures": fetch_failures,
+        }
+    return {
+        "status": "ok",
+        "scanned": scanned,
+        "refunds_created": refunds_created,
+        "errors": errors,
+        "fetch_failures": 0,
+    }
 
 
-def _backfill_order_refunds(store, client, shopify_order_id) -> int:
-    """A159: pull an order's refunds and book each via process_refund
-    (idempotent on shopify_refund_id — re-runs skip already-booked ones).
+def _backfill_order_refunds(store, client, shopify_order_id) -> dict:
+    """A159: pull an order's COMPLETE refunds and book each via
+    process_refund (idempotent on shopify_refund_id — re-runs skip
+    already-booked ones).
 
-    Best-effort by contract, mirroring _backfill_order_fulfillments: a
-    refund fetch/processing failure is logged and swallowed — it must
-    never roll back the order or abort the rest of the sync batch.
-    Returns the count of refunds newly booked.
+    Returns {"booked": int, "fetch_failed": bool, "process_errors": int}.
+
+    A refund FETCH failure (including ShopifyGraphQLIncomplete — the
+    client refuses to return a truncated refund list as complete) books
+    nothing for the order and is reported as fetch_failed so the calling
+    leg can surface a structured non-success: an incomplete fetch must
+    never read as "ok, 0 refunds". Already-booked candidate orders stay
+    committed — the retry path is idempotent. Per-refund PROCESSING
+    failures remain best-effort (logged, counted), mirroring
+    _backfill_order_fulfillments: they must never roll back the order or
+    abort the rest of the sync batch.
     """
     from .commands import process_refund
 
@@ -521,9 +553,10 @@ def _backfill_order_refunds(store, client, shopify_order_id) -> int:
             store.shop_domain,
             e,
         )
-        return 0
+        return {"booked": 0, "fetch_failed": True, "process_errors": 0}
 
     booked = 0
+    process_errors = 0
     for refund in refunds:
         try:
             _reassert_shopify_rls()
@@ -532,6 +565,7 @@ def _backfill_order_refunds(store, client, shopify_order_id) -> int:
             if result.success and not (result.data and result.data.get("skipped")):
                 booked += 1
             elif not result.success:
+                process_errors += 1
                 logger.warning(
                     "[A159] Refund backfill failed for refund %s on order %s (%s): %s",
                     refund.get("id"),
@@ -540,6 +574,7 @@ def _backfill_order_refunds(store, client, shopify_order_id) -> int:
                     result.error,
                 )
         except Exception as e:
+            process_errors += 1
             logger.warning(
                 "[A159] Refund backfill failed for refund %s on order %s (%s): %s",
                 refund.get("id"),
@@ -552,7 +587,7 @@ def _backfill_order_refunds(store, client, shopify_order_id) -> int:
             if connection.needs_rollback:
                 connection.rollback()
 
-    return booked
+    return {"booked": booked, "fetch_failed": False, "process_errors": process_errors}
 
 
 def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
@@ -708,7 +743,15 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
             # backfilled too (its refunds/create webhooks were missed along
             # with orders/paid). Same best-effort contract as fulfillments.
             if (order_payload.get("financial_status") or "").lower() in ("refunded", "partially_refunded"):
-                refunds_backfilled += _backfill_order_refunds(store, client, shopify_order_id)
+                refund_backfill = _backfill_order_refunds(store, client, shopify_order_id)
+                refunds_backfilled += refund_backfill["booked"]
+                if refund_backfill["fetch_failed"]:
+                    # The order stayed booked, but its refund history could
+                    # not be fetched completely — count it so the leg's
+                    # errors field surfaces it (the durable-recovery leg,
+                    # _sync_refunds, additionally hard-fails its status).
+                    errors += 1
+                errors += refund_backfill["process_errors"]
 
     # A52: warning when fetch returns nothing — likely indicates token/date/
     # API-version issue rather than a "genuinely zero orders" situation.
