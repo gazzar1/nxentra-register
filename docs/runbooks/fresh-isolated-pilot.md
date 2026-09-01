@@ -378,10 +378,14 @@ Sign-off: operator ______ date ______
 
 One chronological sequence — do not jump backward into §H: activation-aware
 validation-only check → activation → pilot-aware Shopify provisioning →
-standalone OAuth store connection (deliberately unbound) → the I5/J0
-`not_bound` → link → authenticated ceremony (which CREATES the canonical
-binding) → product sync → configuration and refusal proofs → the first
-go-live preflight that can legitimately pass → drift-verification cadence. For every run record: exact command, company
+**controlled Shopify intake hold** → standalone OAuth store connection
+(deliberately unbound; initial sync queued but unable to execute) → the
+I6/J0 `not_bound` → link → authenticated ceremony (which CREATES the
+canonical binding) → configuration and refusal proofs → the first go-live
+preflight that can legitimately pass (read-only currency probe) →
+pre-release no-ingestion proof → intake authorization → **staged release:
+worker only (the initial sync owns the first product sync) → webhooks →
+beat LAST** → drift-verification cadence. For every run record: exact command, company
 identifier, phase, exit code, complete output, timestamp, operator
 (`preflight/`).
 
@@ -474,7 +478,36 @@ pre-activation check:
     unsupported module is enabled; any INVENTORY/COGS module mapping
     exists; fiscal settings change; COA-template metadata changes;
     Arabic-field configuration changes; or an import task is queued.
-- [ ] **I4. Connect exactly one SYNTHETIC development store —
+- [ ] **I4. Establish the CONTROLLED SHOPIFY INTAKE HOLD.**
+  - Why: `complete_oauth()` automatically schedules `initial_store_sync`
+    the moment the store becomes ACTIVE, and that task pulls an
+    execution-time seven-day order/refund window plus products and
+    payouts as soon as a worker consumes it; declarative Shopify
+    webhooks can also begin delivering immediately after connection.
+    Store connection is therefore NOT inert — ingestion must be held
+    until deliberately released. (`import_mode="skip"` suppresses only
+    the onboarding historical-import request; it does NOT suppress the
+    OAuth-triggered initial sync.)
+  - Command / action, in order: (1) keep the web process available for
+    exactly: Shopify OAuth install/callback, embedded session login,
+    linking-nonce creation/redemption, authenticated configuration
+    reads/writes, and preflight; (2) block the Shopify
+    financial/source-ingestion routes at the reverse proxy — at minimum
+    `/api/shopify/webhooks` and `/api/shopify/webhooks/` — with a
+    retryable non-success response (e.g. 503; never a discarding 200),
+    and prevent accidental calls to interactive sync/resync endpoints
+    during the hold; (3) stop Celery beat and prove it stopped;
+    (4) inspect active/reserved/scheduled worker tasks, drain to empty
+    and accounted-for, then stop the worker; (5) keep Redis/the broker
+    AVAILABLE so the OAuth-triggered initial sync can be queued;
+    (6) record an empty (or fully accounted-for) task-queue baseline.
+  - Evidence to retain (`preflight/`): proxy rule proof, beat/worker
+    stop proofs, queue baseline, timestamps, operator.
+  - STOP if: a worker can consume tasks; beat can enqueue the periodic
+    catch-up; a Shopify webhook can reach Django; an interactive sync
+    endpoint remains usable; or the pre-OAuth task queue contains
+    unexplained work.
+- [ ] **I5. Connect exactly one SYNTHETIC development store —
   deliberately UNBOUND.**
   - Command / action: initiate the connection through the **top-level
     standalone Nxentra OAuth path**: `/shopify/settings` →
@@ -491,11 +524,25 @@ pre-activation check:
   - Expected result: exactly one ACTIVE synthetic Shopify development
     store exists. **No active `ShopifyUserBinding` exists yet** for the
     synthetic Shopify user and store — this is deliberate: the
-    immediately following I5/J0 ceremony must first prove the
+    immediately following I6/J0 ceremony must first prove the
     fail-closed `not_bound` state and then create the canonical binding.
     (The standalone OAuth path creates/activates the store but never a
     binding; only the embedded token-exchange path and the linking-nonce
-    redemption create bindings.)
+    redemption create bindings.) The OAuth-triggered
+    `initial_store_sync` enqueue is recorded in the private application
+    log ("Queued initial Shopify sync for <shop>"); the worker and beat
+    remain stopped and webhook ingress remains blocked, so **the task is
+    queued but cannot execute** and no automatic sync has run.
+    **Enqueue-failure disposition:** OAuth success is NOT proof the task
+    was queued — the helper swallows broker failures. If the log shows
+    "Could not queue initial Shopify sync" or the enqueue result is
+    uncertain: STOP before any release, keep worker/beat/webhooks
+    blocked, repair the broker condition; do not rely silently on the
+    periodic catch-up and do not blindly enqueue a second task while the
+    first task's existence is uncertain. Any manual enqueue recovery
+    command must first be verified against live code, must return a
+    recorded task id, and must be proven on the synthetic rehearsal
+    before it may appear in this runbook.
   - STOP if: any active `ShopifyUserBinding` already exists before J0;
     the connect path automatically authenticates the embedded user; the
     store was connected through a path that bypasses the intended
@@ -503,7 +550,7 @@ pre-activation check:
     first merchant's live store; the store contains real merchant
     catalog, customers, orders, or financial history; or data was copied
     from the merchant merely to make the test realistic.
-- [ ] **I5 / J0. A1 live Shopify embedded-authentication proof —
+- [ ] **I6 / J0. A1 live Shopify embedded-authentication proof —
   independently signed; executed HERE, before product sync and before
   go-live preflight.** This is the named J0 criterion of the G1 matrix
   (§J), placed at its only executable point in the chronology: the store
@@ -575,24 +622,7 @@ pre-activation check:
   `not_bound → linked → authenticated` state transition, endpoint/result
   categories, final PASS/FAIL, timestamps.
 
-  Sign-off (I5/J0 alone): operator ______ date ______
-- [ ] **I6. Product sync and EGP currency proof (synthetic catalog
-  only).**
-  - Command / action: run the initial **product sync** only now — after
-    activation — so every synchronized item is forced NON_STOCK. The
-    sync imports only the synthetic development-store catalog. The
-    product sync is the path that persists the durable `shop_currency`
-    snapshot (an order sync alone does not persist it; the go-live
-    preflight then falls back to a read-only live probe). The go-live
-    preflight (`store_currency_unknown` / `store_currency_not_egp`) is
-    the proof. Historical import stays `skip` throughout bootstrap and
-    G1 preparation — no live historical merchant-order import occurs
-    before G1 and G2 close.
-  - Expected result: durable `shop_currency` = EGP; every synchronized
-    item is NON_STOCK; zero item inventory/COGS account links; zero
-    inventory ledger/FIFO residue.
-  - STOP if: preflight reports either store-currency violation, or any
-    INVENTORY item / inventory residue appears.
+  Sign-off (I6/J0 alone): operator ______ date ______
 - [ ] **I7. Settlement providers and posting profiles.**
   - Command / action: the Shopify setup bootstraps the provider rows and
     `PG-*` posting profiles; review at `/shopify/settings`
@@ -617,20 +647,61 @@ pre-activation check:
   - Command / action: confirm purchases/clinic/properties are not enabled
     and their enable doors refuse under the active pilot (spot-check one
     refusal; the rehearsal in §J exercises more).
-- [ ] **I11. Go-live preflight.**
+- [ ] **I11. First binding-dependent go-live preflight.**
   - Command / action:
     `python manage.py pilot_preflight --company <PILOT_COMPANY_ID> --phase go-live --json`
+    Because no product sync has run yet under the intake hold, the
+    store-currency check legitimately uses the preflight's read-only
+    live probe (no durable `shop_currency` snapshot exists until the
+    initial sync's product leg runs at I14).
   - Expected result: `ok: true`, exit 0 — this is the full agreed-workflow
     proof (EGP store, OWNER↔store binding, postable clearing/EBD mappings,
     active provider + posting profile, canonical bank account).
   - STOP if: any violation.
-- [ ] **I12. Drift verification cadence.** I11 is the FIRST go-live
-  preflight that can legitimately pass, because I5/J0 has now created the
-  required binding. **After the first successful I11 go-live preflight**,
-  rerun it after every subsequent sync/import or supported configuration
-  action and before every later phase sign-off. If any post-J0 operation
-  causes `binding_missing` or another violation: STOP, investigate the
-  state change — do not recreate or bypass the binding casually.
+- [ ] **I12. Pre-release no-ingestion proof.** Read-only proof that no
+  automatic sync executed during the hold: no `ShopifyOrder` /
+  `ShopifyRefund` rows; no synchronized Shopify product `Item`; no
+  `ShopifyPayout` / provider-payout financial state; no sync-created
+  `ProviderRawObject`; no order/refund/payout financial `BusinessEvent`;
+  no Shopify-ingestion `JournalEntry`; no sync-caused `last_sync_at`
+  update. Name the EXPECTED bootstrap state explicitly (do not assert a
+  blanket zero-event claim): the `ShopifyStore` row, the post-J0
+  `ShopifyUserBinding`, the Shopify warehouse/Customer/PostingProfile
+  setup records, the module-account mappings, the non-financial
+  `SHOPIFY_STORE_CONNECTED` event, and account/provider configuration.
+- [ ] **I13. Synthetic-rehearsal intake authorization.** A dated
+  sign-off authorizing release of the queued initial sync for the
+  SYNTHETIC store (the rehearsal twin of the §Q GO decision).
+  Sign-off: operator ______ date ______
+- [ ] **I14. Controlled initial-sync release — worker only.** Start the
+  Celery worker ONLY; keep beat stopped and webhooks blocked. Observe
+  the queued `shopify.initial_store_sync` task: record its task id from
+  the worker receive/start log, its start/finish timestamps, and its
+  complete result (privately); require exactly one accounted initial
+  task for this connection. Verify the task's effective order/refund
+  window is `INITIAL_SYNC_STARTED_AT − 7 days` through
+  `INITIAL_SYNC_STARTED_AT` (the window is computed at EXECUTION time,
+  not at OAuth time). Then verify: synthetic products synchronized and
+  every product NON_STOCK with zero inventory/COGS account links and
+  zero inventory ledger/FIFO residue; the durable `shop_currency`
+  snapshot now exists and is EGP; synthetic orders/refunds carry
+  truthful outcomes with no duplicate journal; the payout leg's result
+  is recorded and payout ACCOUNTING remains blocked/skipped under the
+  constrained profile; no unexplained source or financial row appears.
+  Rerun the go-live preflight and `/_health/alerts`.
+- [ ] **I15. Webhook release and retry reconciliation.** Unblock the
+  Shopify webhook route while beat remains stopped. Allow queued
+  Shopify retries to arrive; verify idempotency — duplicate deliveries
+  create no duplicate financial effects; account for the webhook
+  backlog.
+- [ ] **I16. Beat restart LAST + drift cadence.** Once the initial task
+  and webhook retries are reconciled and health is stable, start Celery
+  beat. Rerun the go-live preflight and `/_health/alerts`. From here on,
+  rerun the go-live preflight after every subsequent sync/import or
+  supported configuration action and before every later phase sign-off.
+  If any post-J0 operation causes `binding_missing` or another
+  violation: STOP, investigate the state change — do not recreate or
+  bypass the binding casually.
 
 Sign-off: operator ______ date ______
 
@@ -650,7 +721,7 @@ HTTP APIs), not test harnesses. Existing test fixtures and documented APIs
 are references only. Record every scenario's evidence in
 `failure-injection/` and `reconciliation/`.
 
-**J0 was executed and independently signed at I5, before go-live
+**J0 was executed and independently signed at I6, before go-live
 preflight.** It is a G1 prerequisite but is not repeated here, because
 repeating its initial unbound state would require destroying or revoking
 the binding that I11 correctly requires. Do not remove the binding to
@@ -698,7 +769,7 @@ STOP if any scenario yields: a silent missing financial effect, a duplicate
 financial effect, a false success, terminal evidence loss, a false
 all-clear, or an unhealable corrected retry.
 
-**G1 cannot close unless I5/J0 and J1–J7 all pass.** The financial J1–J7
+**G1 cannot close unless I6/J0 and J1–J7 all pass.** The financial J1–J7
 matrix alone is insufficient — the tracker's A1 row remains operationally
 open until J0 evidence exists. This documentation PR marks neither A1 nor
 G1 complete.
@@ -986,6 +1057,21 @@ Sign-off: operator ______ date ______
 - BusinessEvent watermark or control-manifest hash changing before or
   during the backup;
 - synthetic history appearing in the real merchant database.
+- worker or beat active before the merchant GO decision;
+- Shopify webhook ingress active before GO;
+- an interactive Shopify sync endpoint usable during the intake hold;
+- the queued initial task consumed before GO;
+- the automatic initial-sync enqueue failed or uncertain;
+- any source/product/order/refund/payout/financial row appearing before
+  GO;
+- a blanket zero-event assertion treating the non-financial
+  `SHOPIFY_STORE_CONNECTED` event as financial ingestion;
+- a GO decision that does not explicitly authorize the seven-day
+  lookback;
+- an initial-sync result not observed and retained;
+- webhook release before initial-task reconciliation;
+- beat restarted before initial-task and webhook-retry reconciliation;
+- a queue purge proposed as evidence of a clean cutover.
 
 The stop/go decision belongs to the **founder/operator**; every stop or go
 is recorded with a dated sign-off in `signoff/`.
@@ -1072,32 +1158,91 @@ after G1 and G2 are recorded complete in the
    fresh-database zero-count proof (§C); the environment-safety proof
    (§E); base onboarding (§H); activation-aware validation (§I1); pilot
    activation (§I2); pilot-aware Shopify provisioning (§I3);
-4. connect the **real merchant Shopify store** — for the first time
+4. establish the **controlled Shopify intake hold** (§I4 form): webhook
+   and interactive-sync ingress blocked with retryable non-success
+   responses; beat stopped; worker drained and stopped; Redis/broker
+   AVAILABLE; task-queue baseline recorded;
+5. connect the **real merchant Shopify store** — for the first time
    anywhere in this process — through the controlled **standalone OAuth
-   path**. Expected interim state: exactly one ACTIVE real store and
-   **no active `ShopifyUserBinding` yet**;
-5. perform the **merchant-specific embedded-authentication cutover
-   proof** (the same ceremony class the synthetic I5/J0 rehearsal
-   proved, now applied to the real operator and store): third-party
-   cookies disabled under the designated pilot browser posture →
-   session token → `not_bound` → the standalone intended merchant OWNER
-   creates the linking nonce → embedded redemption → exact real
+   path**;
+6. prove the post-connect state: exactly one ACTIVE real store; **no
+   active `ShopifyUserBinding` yet**; the `initial_store_sync` enqueue
+   succeeded (private log "Queued initial Shopify sync for <shop>" — on
+   "Could not queue initial Shopify sync" or uncertainty, apply the §I5
+   enqueue-failure disposition and STOP before GO); **no sync has
+   executed**;
+7. perform the **real-store J0 binding ceremony** (the same ceremony
+   class the synthetic I6/J0 rehearsal proved): third-party cookies
+   disabled under the designated pilot browser posture → session token →
+   `not_bound` → the standalone intended merchant OWNER creates the
+   linking nonce → embedded redemption → exact real
    store/`sub`/membership/company binding → nonce replay refusal →
    bound embedded session login resolving the correct merchant company
-   and membership. This does not replace G1 — it applies the
-   already-proven ceremony to the new merchant environment;
-6. run the real-store product sync;
-7. verify: exactly one ACTIVE store; EGP store currency; every product
-   NON_STOCK; no inventory/COGS mappings or residue;
-   provider/posting-profile configuration; bank account;
-8. run the **binding-dependent go-live preflight (§I11 form)** — now
-   legitimately able to pass — and require it clean, including the
-   expected OWNER/store binding;
-9. verify `/_health/alerts` healthy and the remaining cutover controls;
-   keep historical order import set to `skip` until the founder
-   separately authorizes the intake window;
-10. sign a dated GO decision before the first real
-    order/refund/settlement/bank item is admitted.
+   and membership;
+8. complete provider, bank, and remaining configuration;
+9. run the **first binding-dependent go-live preflight** — legitimately
+   using the read-only store-currency probe, since no product sync has
+   run under the hold — and require it clean, including the expected
+   OWNER/store binding;
+10. capture the **pre-GO no-ingestion baseline** (read-only): prove no
+    new `ShopifyOrder`; no `ShopifyRefund`; no synchronized Shopify
+    product `Item`; no `ShopifyPayout` or provider-payout financial
+    state; no sync-created `ProviderRawObject`; no order/refund/payout
+    financial `BusinessEvent`; no posted `JournalEntry` from Shopify
+    ingestion; no sync-caused `last_sync_at` update. Name the EXPECTED
+    bootstrap/configuration state explicitly — the `ShopifyStore` row,
+    the post-ceremony `ShopifyUserBinding`, the Shopify
+    warehouse/Customer/PostingProfile setup records, the module-account
+    mappings, the non-financial `SHOPIFY_STORE_CONNECTED` event, and
+    account/provider configuration — a blanket "zero BusinessEvent"
+    assertion is WRONG because store connection itself emits a
+    non-financial connection event. Capture:
+    `PRE_GO_INGESTION_BASELINE_HASH`, `PRE_GO_EVENT_TYPE_COUNTS`,
+    `PRE_GO_JOURNAL_COUNT`, `PRE_GO_SHOPIFY_SOURCE_COUNTS`,
+    `PRE_GO_TIMESTAMP`. If merchant source or financial data has
+    already been ingested: STOP and recreate the fresh merchant
+    environment — never delete it manually to recover the proof;
+11. sign the **dated GO decision**, which must state: "I authorize
+    release of Shopify financial/source intake for this merchant. I
+    explicitly authorize the queued `initial_store_sync` task to import
+    its execution-time seven-day Shopify order/refund window, together
+    with the merchant product catalog. I understand this can include
+    source transactions whose Shopify timestamps predate this GO
+    decision by up to seven days." Record: `GO_TIMESTAMP`,
+    `GO_OPERATOR`, the redacted store identity,
+    `INITIAL_LOOKBACK_DAYS = 7`, `PRE_GO_INGESTION_BASELINE_HASH`, the
+    authorized shadow-ledger intake period, and merchant
+    acknowledgement/approval where required. Clarify in the record:
+    `import_mode="skip"` suppresses the onboarding historical-import
+    request; it does NOT suppress the OAuth-triggered seven-day initial
+    sync. **If the merchant or founder does not approve that
+    retrospective window: STOP before releasing any worker or webhook
+    ingress — do not attempt a queue purge, and do not claim a
+    post-GO-only source-date cutover under the current code. A
+    code-level ingestion-hold or suppress-initial-sync mechanism must
+    be implemented and reviewed before connecting that merchant
+    store;**
+12. release intake — **worker only**: keep webhooks blocked and beat
+    stopped; start the Celery worker; observe the queued
+    `shopify.initial_store_sync` task; record its task id, start/end
+    timestamps, and complete result; verify its execution-time
+    seven-day window; require completion or a fully explained loud
+    failure. Verify: source rows and financial effects reconcile to the
+    authorized window; every expected financial effect posts once;
+    rejected/failed/quarantined outcomes appear in their operator
+    surfaces; no unsupported payout-accounting effect occurs; every
+    product remains NON_STOCK; no inventory/COGS residue appears;
+13. rerun `pilot_preflight --phase go-live`, `/_health/alerts`, and the
+    source/control totals;
+14. only after the initial task is accounted for, unblock Shopify
+    webhooks; observe and reconcile webhook retries; prove duplicate
+    webhook delivery does not duplicate financial effects;
+15. start Celery beat **LAST**;
+16. rerun the go-live preflight and alerts after beat starts;
+17. sign the final **intake-complete checkpoint**.
+
+The GO decision precedes the first merchant product/order/refund source
+write.
 
 STOP if: the intended merchant deployment uses a revision or image not
 named by the completed revision pack; the rehearsal database or its
@@ -1107,9 +1252,22 @@ connected before G1/G2 closure; the real-store go-live preflight is run
 before the binding ceremony; the connect path silently creates or
 selects an unrelated binding; the intended merchant OWNER is not the
 bound membership; a first-owner fallback occurs; the real embedded user
-reaches Nxentra before the explicit binding; merchant financial data
-arrives before the final go-live preflight and GO sign-off; or go-live
-preflight is not clean.
+reaches Nxentra before the explicit binding; the initial task runs
+before GO; its effective window differs from the authorized seven-day
+contract; more than one unexplained initial task runs; webhooks are
+unblocked before the initial task is accounted for; beat starts before
+initial intake and retries are reconciled; any unsupported
+payout/COGS/inventory financial effect appears; any source row lacks a
+truthful outcome; merchant financial data arrives before the final
+go-live preflight and GO sign-off; or go-live preflight is not clean.
+
+**Future product debt (non-blocking):** the first pilot uses an
+operator-enforced intake hold because store connection and initial
+synchronization are currently coupled. A future self-service pilot/beta
+should add a persistent, server-enforced store-ingestion state or an
+explicitly authorized suppress-initial-sync / release-intake mechanism
+respected by scheduled tasks and webhooks. It is deliberately NOT
+implemented in this PR.
 
 No in-place synthetic-store-to-real-store replacement procedure exists or
 is permitted: the exactly-one-ACTIVE-store constraint and the rehearsal
