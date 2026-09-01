@@ -134,34 +134,49 @@ class _FakeClient:
 def test_get_order_refunds_shapes_graphql_payload_and_lowercases_enums():
     """GraphQL enums come back UPPERCASE; process_refund compares
     lowercase REST strings — forgetting to lowercase silently yields
-    refund_amount=0."""
+    refund_amount=0. (Two-phase fetch: refund id list, then per-refund
+    connection detail.)"""
     client = ShopifyAdminClient(SHOP_DOMAIN, "token")
-    client.execute = lambda *args, **kwargs: {
-        "order": {
-            "refunds": [
-                {
-                    "legacyResourceId": "777001",
-                    "createdAt": "2026-04-29T10:00:00Z",
-                    "note": "damaged item",
-                    "transactions": {
-                        "nodes": [
-                            {"kind": "REFUND", "status": "SUCCESS", "amountSet": {"shopMoney": {"amount": "50.00"}}}
-                        ]
-                    },
-                    "refundLineItems": {
+
+    def scripted_execute(query, variables=None, allow_partial=False):
+        if "OrderRefundIds" in query:
+            return {
+                "order": {
+                    "refunds": {
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
                         "nodes": [
                             {
-                                "quantity": 1,
-                                "restockType": "RETURN",
-                                "subtotalSet": {"shopMoney": {"amount": "50.00"}},
-                                "lineItem": {"sku": "TSH-001", "title": "T-Shirt"},
+                                "id": "gid://shopify/Refund/777001",
+                                "legacyResourceId": "777001",
+                                "createdAt": "2026-04-29T10:00:00Z",
+                                "note": "damaged item",
                             }
-                        ]
-                    },
+                        ],
+                    }
                 }
-            ]
+            }
+        assert "RefundDetail" in query
+        return {
+            "refund": {
+                "transactions": {
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    "nodes": [{"kind": "REFUND", "status": "SUCCESS", "amountSet": {"shopMoney": {"amount": "50.00"}}}],
+                },
+                "refundLineItems": {
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    "nodes": [
+                        {
+                            "quantity": 1,
+                            "restockType": "RETURN",
+                            "subtotalSet": {"shopMoney": {"amount": "50.00"}},
+                            "lineItem": {"sku": "TSH-001", "title": "T-Shirt"},
+                        }
+                    ],
+                },
+            }
         }
-    }
+
+    client.execute = scripted_execute
 
     out = client.get_order_refunds(9000001)
 
@@ -251,8 +266,10 @@ def test_backfill_order_refunds_is_idempotent(shopify_store, monkeypatch):
     first = tasks._backfill_order_refunds(shopify_store, fake, 9000001)
     second = tasks._backfill_order_refunds(shopify_store, fake, 9000001)
 
-    assert first == 1
-    assert second == 0, "re-runs must skip already-booked refunds"
+    assert first == {"booked": 1, "fetch_failed": False, "process_errors": 0}
+    assert second == {"booked": 0, "fetch_failed": False, "process_errors": 0}, (
+        "re-runs must skip already-booked refunds"
+    )
     assert ShopifyRefund.objects.filter(company=shopify_store.company).count() == 1
 
 

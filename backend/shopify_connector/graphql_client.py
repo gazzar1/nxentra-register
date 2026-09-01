@@ -77,6 +77,17 @@ class ShopifyGraphQLDenied(ShopifyGraphQLError):
     access_denied = True
 
 
+class ShopifyGraphQLIncomplete(ShopifyGraphQLError):
+    """
+    Complete data could not be assembled for a financially load-bearing
+    read (a page failed, a connection page had an invalid shape, a cursor
+    repeated, or hasNextPage was reported without an endCursor). Callers
+    must treat this as a failed fetch — a partial payload is NEVER
+    returned in its place, because a truncated refund list silently
+    understates the refund aggregate.
+    """
+
+
 def _gid_tail(gid: str | None) -> int | None:
     """'gid://shopify/Order/123' -> 123. None-safe."""
     if not gid:
@@ -587,13 +598,29 @@ class ShopifyAdminClient:
     # ------------------------------------------------------------------
 
     def get_order_refunds(self, order_id) -> list[dict]:
-        """REST-shaped refund dicts for a single order (A159 backfill).
+        """COMPLETE REST-shaped refund dicts for a single order (A159
+        backfill), or a loud failure — never a silently truncated list.
 
-        Pulled per-order (never nested in iter_orders) so the refunds ×
-        transactions × refundLineItems cost stays under Shopify's
-        1000-point single-query ceiling — same rationale as
-        get_order_fulfillments. Each dict matches the refunds/create
-        webhook payload process_refund consumes.
+        Two-phase fetch (A5 refund-catch-up completeness):
+
+        1. The order's complete refund id list. `Order.refunds` is
+           queried connection-style with cursor pagination; if the live
+           schema exposes it as a plain list field instead, the first
+           page's validation error triggers a one-time fallback to the
+           uncapped list-form query (complete by construction). Neither
+           form applies `first` as a completeness cap.
+        2. Per refund, the complete `transactions` and `refundLineItems`
+           connections, cursor-paginated to exhaustion.
+           REFUND_TRANSACTIONS / REFUND_LINE_ITEMS / REFUNDS_PER_ORDER
+           remain page sizes only.
+
+        Pulled per-order (never nested in iter_orders) so each query's
+        cost stays far under Shopify's 1000-point single-query ceiling.
+        Raises ShopifyGraphQLIncomplete when any page fails, has an
+        invalid shape, repeats a cursor, or reports hasNextPage without
+        an endCursor — a partial refund is never returned as complete
+        (the old first-page-only read silently omitted financially
+        relevant refunds, transactions, and refund line items).
 
         GraphQL enums come back UPPERCASE (REFUND/SUCCESS/RETURN) and are
         lowercased here: process_refund compares kind == 'refund' and
@@ -601,81 +628,232 @@ class ShopifyAdminClient:
         restock_type in ('return', 'cancel'). Forgetting this yields a
         silent refund_amount=0.
         """
-        gid = f"gid://shopify/Order/{order_id}"
-        query = f"""
-        query OrderRefunds($id: ID!) {{
-          order(id: $id) {{
-            refunds(first: {REFUNDS_PER_ORDER}) {{
-              legacyResourceId
-              createdAt
-              note
-              transactions(first: {REFUND_TRANSACTIONS}) {{
-                nodes {{
-                  kind
-                  status
-                  amountSet {{ shopMoney {{ amount }} }}
-                }}
-              }}
-              refundLineItems(first: {REFUND_LINE_ITEMS}) {{
-                nodes {{
-                  quantity
-                  restockType
-                  subtotalSet {{ shopMoney {{ amount }} }}
-                  lineItem {{ sku title }}
-                }}
-              }}
-            }}
-          }}
-        }}
-        """
-        data = self.execute(query, {"id": gid}, allow_partial=True)
-        order = data.get("order") or {}
-        raw = order.get("refunds") or []
-        # Tolerate either the list shape or a connection shape ({nodes: [...]})
-        # across Admin API versions — same defense as get_order_fulfillments.
-        if isinstance(raw, dict):
-            raw = raw.get("nodes") or []
-
+        summaries = self._fetch_order_refund_summaries(order_id)
         results = []
-        for r in raw:
-            txns_raw = r.get("transactions") or []
-            if isinstance(txns_raw, dict):
-                txns_raw = txns_raw.get("nodes") or []
-            transactions = [
-                {
-                    "kind": (t.get("kind") or "").lower(),
-                    "status": (t.get("status") or "").lower(),
-                    "amount": _money(t.get("amountSet")),
-                }
-                for t in txns_raw
-            ]
-
-            rli_raw = r.get("refundLineItems") or []
-            if isinstance(rli_raw, dict):
-                rli_raw = rli_raw.get("nodes") or []
-            refund_line_items = []
-            for li in rli_raw:
-                item = li.get("lineItem") or {}
-                refund_line_items.append(
-                    {
-                        "quantity": li.get("quantity", 0),
-                        "restock_type": (li.get("restockType") or "").lower(),
-                        "subtotal": _money(li.get("subtotalSet")),
-                        "line_item": {"sku": item.get("sku") or "", "title": item.get("title") or ""},
-                    }
-                )
-
+        for summary in summaries:
+            transactions, refund_line_items = self._fetch_refund_connections(summary["gid"])
             results.append(
                 {
-                    "id": int(r["legacyResourceId"]),
+                    "id": summary["id"],
                     "order_id": int(order_id),
-                    "created_at": r.get("createdAt") or "",
-                    "note": r.get("note") or "",
+                    "created_at": summary["created_at"],
+                    "note": summary["note"],
                     "transactions": transactions,
                     "refund_line_items": refund_line_items,
                 }
             )
         return results
+
+    def _fetch_order_refund_summaries(self, order_id) -> list[dict]:
+        """Phase 1: the COMPLETE list of the order's refunds (gid,
+        legacy id, createdAt, note) — no nested connections, so the cost
+        stays trivial regardless of refund count."""
+        order_gid = f"gid://shopify/Order/{order_id}"
+        connection_query = f"""
+        query OrderRefundIds($id: ID!, $cursor: String) {{
+          order(id: $id) {{
+            refunds(first: {REFUNDS_PER_ORDER}, after: $cursor) {{
+              pageInfo {{ hasNextPage endCursor }}
+              nodes {{ id legacyResourceId createdAt note }}
+            }}
+          }}
+        }}
+        """
+        list_query = """
+        query OrderRefundIdsList($id: ID!) {
+          order(id: $id) {
+            refunds { id legacyResourceId createdAt note }
+          }
+        }
+        """
+
+        def _summary(node: dict) -> dict:
+            gid = node.get("id") or ""
+            legacy = node.get("legacyResourceId")
+            if not gid or legacy is None:
+                raise ShopifyGraphQLIncomplete(
+                    f"Refund node without id/legacyResourceId for order {order_id} on {self.shop_domain}"
+                )
+            return {
+                "gid": gid,
+                "id": int(legacy),
+                "created_at": node.get("createdAt") or "",
+                "note": node.get("note") or "",
+            }
+
+        if not getattr(self, "_refunds_list_form", False):
+            cursor = None
+            seen_cursors: set[str] = set()
+            summaries: list[dict] = []
+            first_page = True
+            while True:
+                try:
+                    data = self.execute(connection_query, {"id": order_gid, "cursor": cursor})
+                except (ShopifyGraphQLDenied, ShopifyGraphQLIncomplete):
+                    raise
+                except ShopifyGraphQLError:
+                    if not first_page:
+                        # Mid-pagination failure: never return the pages
+                        # already collected as if they were complete.
+                        raise
+                    # First page only: the live schema may expose
+                    # Order.refunds as a plain list field (no connection,
+                    # no pageInfo) — fall back to the uncapped list form.
+                    self._refunds_list_form = True
+                    break
+                order = data.get("order") or {}
+                conn = order.get("refunds")
+                if conn is None:
+                    if summaries:
+                        # The order answered page 1 but vanished mid-pagination:
+                        # returning the collected prefix would be a silent
+                        # truncation — the same rule as a refund vanishing in
+                        # phase 2.
+                        raise ShopifyGraphQLIncomplete(
+                            f"Order {order_id} on {self.shop_domain} vanished mid-pagination of its refunds"
+                        )
+                    return []  # order absent/deleted — not a truncation
+                if not isinstance(conn, dict) or not isinstance(conn.get("nodes"), list):
+                    raise ShopifyGraphQLIncomplete(
+                        f"Invalid refunds page shape for order {order_id} on {self.shop_domain}"
+                    )
+                summaries.extend(_summary(n) for n in conn["nodes"])
+                page_info = conn.get("pageInfo") or {}
+                if not page_info.get("hasNextPage"):
+                    return summaries
+                end_cursor = page_info.get("endCursor")
+                if not end_cursor:
+                    raise ShopifyGraphQLIncomplete(
+                        f"Refunds page for order {order_id} on {self.shop_domain} reports hasNextPage without endCursor"
+                    )
+                if end_cursor in seen_cursors:
+                    raise ShopifyGraphQLIncomplete(
+                        f"Refunds pagination cursor repeated for order {order_id} on {self.shop_domain}"
+                    )
+                seen_cursors.add(end_cursor)
+                cursor = end_cursor
+                first_page = False
+
+        # List-form schema: no `first` argument, so the response is the
+        # complete refund list by construction.
+        data = self.execute(list_query, {"id": order_gid})
+        order = data.get("order") or {}
+        raw = order.get("refunds")
+        if raw is None:
+            return []
+        if isinstance(raw, dict):
+            # A connection shape answered the list-form query — nodes are
+            # usable only when the connection proves itself complete.
+            if (raw.get("pageInfo") or {}).get("hasNextPage"):
+                raise ShopifyGraphQLIncomplete(
+                    f"Refund list for order {order_id} on {self.shop_domain} is truncated (hasNextPage on list-form query)"
+                )
+            raw = raw.get("nodes")
+        if not isinstance(raw, list):
+            raise ShopifyGraphQLIncomplete(f"Invalid refund list shape for order {order_id} on {self.shop_domain}")
+        return [_summary(n) for n in raw]
+
+    def _fetch_refund_connections(self, refund_gid: str) -> tuple[list[dict], list[dict]]:
+        """Phase 2: one refund's COMPLETE transactions and refundLineItems,
+        each cursor-paginated to exhaustion. The first page carries both
+        connections; remaining pages are fetched per connection."""
+        first_query = f"""
+        query RefundDetail($id: ID!) {{
+          refund(id: $id) {{
+            transactions(first: {REFUND_TRANSACTIONS}) {{
+              pageInfo {{ hasNextPage endCursor }}
+              nodes {{ kind status amountSet {{ shopMoney {{ amount }} }} }}
+            }}
+            refundLineItems(first: {REFUND_LINE_ITEMS}) {{
+              pageInfo {{ hasNextPage endCursor }}
+              nodes {{
+                quantity
+                restockType
+                subtotalSet {{ shopMoney {{ amount }} }}
+                lineItem {{ sku title }}
+              }}
+            }}
+          }}
+        }}
+        """
+        transactions_page = f"""
+        query RefundTransactionsPage($id: ID!, $cursor: String) {{
+          refund(id: $id) {{
+            transactions(first: {REFUND_TRANSACTIONS}, after: $cursor) {{
+              pageInfo {{ hasNextPage endCursor }}
+              nodes {{ kind status amountSet {{ shopMoney {{ amount }} }} }}
+            }}
+          }}
+        }}
+        """
+        line_items_page = f"""
+        query RefundLineItemsPage($id: ID!, $cursor: String) {{
+          refund(id: $id) {{
+            refundLineItems(first: {REFUND_LINE_ITEMS}, after: $cursor) {{
+              pageInfo {{ hasNextPage endCursor }}
+              nodes {{
+                quantity
+                restockType
+                subtotalSet {{ shopMoney {{ amount }} }}
+                lineItem {{ sku title }}
+              }}
+            }}
+          }}
+        }}
+        """
+
+        def _connection(data: dict, field: str) -> dict:
+            refund = data.get("refund")
+            if not isinstance(refund, dict):
+                raise ShopifyGraphQLIncomplete(f"Refund {refund_gid} on {self.shop_domain} vanished mid-fetch")
+            conn = refund.get(field)
+            if not isinstance(conn, dict) or not isinstance(conn.get("nodes"), list):
+                raise ShopifyGraphQLIncomplete(
+                    f"Invalid {field} page shape for refund {refund_gid} on {self.shop_domain}"
+                )
+            return conn
+
+        def _drain(page_query: str, field: str, conn: dict, shape) -> list:
+            nodes = [shape(n) for n in conn["nodes"]]
+            seen_cursors: set[str] = set()
+            while True:
+                page_info = conn.get("pageInfo") or {}
+                if not page_info.get("hasNextPage"):
+                    return nodes
+                end_cursor = page_info.get("endCursor")
+                if not end_cursor:
+                    raise ShopifyGraphQLIncomplete(
+                        f"{field} page for refund {refund_gid} on {self.shop_domain} reports hasNextPage without endCursor"
+                    )
+                if end_cursor in seen_cursors:
+                    raise ShopifyGraphQLIncomplete(
+                        f"{field} pagination cursor repeated for refund {refund_gid} on {self.shop_domain}"
+                    )
+                seen_cursors.add(end_cursor)
+                data = self.execute(page_query, {"id": refund_gid, "cursor": end_cursor})
+                conn = _connection(data, field)
+                nodes.extend(shape(n) for n in conn["nodes"])
+
+        def _txn(t: dict) -> dict:
+            return {
+                "kind": (t.get("kind") or "").lower(),
+                "status": (t.get("status") or "").lower(),
+                "amount": _money(t.get("amountSet")),
+            }
+
+        def _line(li: dict) -> dict:
+            item = li.get("lineItem") or {}
+            return {
+                "quantity": li.get("quantity", 0),
+                "restock_type": (li.get("restockType") or "").lower(),
+                "subtotal": _money(li.get("subtotalSet")),
+                "line_item": {"sku": item.get("sku") or "", "title": item.get("title") or ""},
+            }
+
+        data = self.execute(first_query, {"id": refund_gid})
+        transactions = _drain(transactions_page, "transactions", _connection(data, "transactions"), _txn)
+        refund_line_items = _drain(line_items_page, "refundLineItems", _connection(data, "refundLineItems"), _line)
+        return transactions, refund_line_items
 
     # ------------------------------------------------------------------
     # Shopify Payments  (REST shape: /shopify_payments/payouts.json and
