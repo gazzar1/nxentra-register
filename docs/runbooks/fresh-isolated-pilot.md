@@ -29,6 +29,27 @@ It does **not** certify: statutory accounts; tax filing; inventory or COGS;
 foreign currency; Stripe or Shopify Payments payout accounting; multiple
 users; shared multi-merchant deployment; private beta; GA readiness.
 
+This runbook operates **two distinct environments**:
+
+1. **The G1/G2 rehearsal environment** — one isolated
+   deployment/database; one Shopify **development/test** store; synthetic
+   company identity; synthetic product catalog; synthetic orders/refunds;
+   synthetic settlement and bank CSVs; **no real merchant identifiers,
+   catalog, customers, orders, refunds, payouts, or financial records.**
+2. **The real merchant environment** — created **only after G1 and G2
+   close**; a **new empty isolated database**; the same reviewed
+   application revision (or a later `main` revision with its own green
+   required CI); **no data, backup, or BusinessEvent history copied from
+   the rehearsal database.**
+
+The G1/G2 rehearsal database is **never promoted** into the real merchant
+accounting database. It contains synthetic financial history and must not
+be converted by disconnecting the development store and connecting the real
+store. The synthetic G1 backup is **G2 evidence only** and must not be
+restored into the real merchant database. The rehearsal database may be
+privately archived or destroyed after G2, subject to the retained-evidence
+policy (§P).
+
 Every phase below follows the pattern **Command / action → Expected result →
 Evidence to retain → STOP if**. Evidence goes into the manifest structure in
 §P — never into Git, never with secrets or merchant PII.
@@ -443,15 +464,26 @@ pre-activation check:
     unsupported module is enabled; any INVENTORY/COGS module mapping
     exists; fiscal settings change; COA-template metadata changes;
     Arabic-field configuration changes; or an import task is queued.
-- [ ] **I4. Connect exactly one Shopify store.**
+- [ ] **I4. Connect exactly one SYNTHETIC development store.**
   - Command / action: from `/shopify/settings`:
-    `POST /api/shopify/install/` → complete OAuth for `<SHOP_DOMAIN>`.
-  - Expected result: exactly one ACTIVE store; the OWNER's Shopify user
-    binding exists (go-live preflight checks `store_count` and
-    `binding_missing`).
-- [ ] **I5. Product sync and EGP currency proof.**
+    `POST /api/shopify/install/` → complete OAuth for
+    `<SYNTHETIC_DEV_SHOP_DOMAIN>`. The store MUST be a non-production
+    Shopify development/test store containing only synthetic catalog and
+    transaction data — no copied real customer/order/refund data — while
+    still exercising real OAuth, App Bridge/session-token behavior,
+    signed webhook delivery, and API synchronization.
+  - Expected result: exactly one ACTIVE synthetic development store in
+    the rehearsal database; the OWNER's Shopify user binding exists
+    (go-live preflight checks `store_count` and `binding_missing`).
+  - STOP if: the domain is the first merchant's live store; the store
+    contains real merchant catalog, customers, orders, or financial
+    history; or data was copied from the merchant merely to make the
+    test realistic.
+- [ ] **I5. Product sync and EGP currency proof (synthetic catalog
+  only).**
   - Command / action: run the initial **product sync** only now — after
     activation — so every synchronized item is forced NON_STOCK. The
+    sync imports only the synthetic development-store catalog. The
     product sync is the path that persists the durable `shop_currency`
     snapshot (an order sync alone does not persist it; the go-live
     preflight then falls back to a read-only live probe). The go-live
@@ -505,8 +537,13 @@ Sign-off: operator ______ date ______
 
 ## J. Phase 7 — G1 rehearsal matrix
 
-One controlled, current-head rehearsal using synthetic or
-merchant-approved test data. Where the supported workflow is user-facing,
+One controlled, current-head rehearsal using **synthetic data generated
+solely for the rehearsal environment** — merchant approval does not
+convert real merchant data into non-merchant data. The Shopify test cases
+must run through the real deployed Shopify integration using the synthetic
+development store, not merely direct fake command calls; settlement and
+bank files must also be synthetic and contain no real merchant identifiers
+or amounts. Where the supported workflow is user-facing,
 run it through the real deployed application surfaces (frontend pages and
 HTTP APIs), not test harnesses. Existing test fixtures and documented APIs
 are references only. Record every scenario's evidence in
@@ -628,27 +665,88 @@ Sign-off: operator ______ date ______
 
 ---
 
-## M. Phase 10 — Backup capture for G2
+## M. Phase 10 — Enforced quiescence and backup capture for G2
 
-At the conclusion of the successful G1 rehearsal:
+At the conclusion of the successful G1 rehearsal, the control pack and the
+backup must share **one enforced application control point** — "taking no
+new writes" is enforced and proven, never promised. Required order:
 
-- [ ] M1. **Freeze the final control pack** (§K). Take no new business
-  writes between this snapshot and the backup — if any write occurs,
-  repeat the control pack.
-- [ ] M2. **Take the isolated-database backup** (the G2 input is the
-  whole-database backup, not the in-app export):
+- [ ] **M1. Block external write ingress.**
+  - Command / action: put the deployment into recorded maintenance mode
+    at the reverse proxy: reject Shopify webhook requests and every
+    public mutation route with a **retryable non-success** response
+    (e.g. 503) — never return 200 while discarding a webhook. Permit
+    only the explicitly needed authenticated read-only reporting paths
+    until the control pack is finalized.
+  - Evidence to retain (`backup/`): proxy rule/config, external HTTP
+    proof, activation timestamp, operator.
+  - STOP if: any mutation or webhook can still reach Django.
+- [ ] **M2. Stop scheduled enqueueing.**
+  - Command / action: stop Celery beat using the deployment-specific
+    supervisor command recorded in §G; prove beat is stopped; record the
+    last scheduled-task timestamp.
+  - STOP if: beat can enqueue another task.
+- [ ] **M3. Drain and stop workers.**
+  - Command / action: inspect active, reserved, and scheduled Celery
+    tasks; wait until all three are empty. Do not revoke a financial
+    task merely to make the queue appear empty — investigate any stuck
+    task. Stop the worker gracefully only after the drain is proven.
+  - Evidence: active/reserved/scheduled inspection, worker shutdown
+    output, queue state.
+  - STOP if: any task is active, reserved, scheduled, or unaccounted
+    for.
+- [ ] **M4. Finalize the control pack.**
+  - Command / action: with mutation ingress blocked and beat/worker
+    stopped, generate the final §K source and system controls through
+    only the approved read-only surfaces; record every source-file hash;
+    serialize the final control manifest; compute and record its
+    SHA-256; record the timestamp. After this point no source or system
+    control may be edited.
+- [ ] **M5. Stop the web process.**
+  - Command / action: stop gunicorn after the final read-only controls
+    are captured; prove no public application process can reach the
+    database. Do not leave web running merely because the operator
+    promises not to write.
+- [ ] **M6. Prove database quiescence.**
+  - Command / action: using an operator-only database session, retain a
+    private result showing: no application-role client backend remains
+    connected (except the explicitly named operator/backup session where
+    applicable); no active or idle-in-transaction application
+    transaction exists; no application writer process remains. Capture a
+    BusinessEvent watermark for the pilot company — `event_count`,
+    `max_event_id`, `max_company_sequence` — using `rls_bypass` or the
+    proven operator context so RLS cannot make the watermark vacuously
+    empty. Also record the final values/hash of the §K durable-control
+    manifest. The BusinessEvent watermark is a **backstop, not the sole
+    quiescence proof** — some source/write-model changes do not create a
+    BusinessEvent.
+- [ ] **M7. Verify the control point immediately before pg_dump.**
+  - Command / action: re-run the application-session proof, the
+    BusinessEvent watermark, and the durable-control manifest/hash
+    comparison; require **exact equality** with M6.
+  - STOP if anything changed: discard the frozen control pack, do not
+    take the backup, identify the writer, and repeat from M1.
+- [ ] **M8. Take the backup.**
   - Command / action: `scripts/backup-restore-drill.sh --backup-only`
-    (pg_dump custom format of `DATABASE_URL`), and additionally the
-    supported in-app export
+    (pg_dump custom format of `DATABASE_URL`) against the quiesced
+    database; additionally the supported in-app export
     `python manage.py company_backup --company <PILOT_COMPANY_SLUG>` as
-    secondary evidence.
-  - Evidence to retain (`backup/`): timestamp, file size, SHA-256 hash of
-    each artifact, application revision (§B), database/schema revision
-    (latest applied migration per app).
-- [ ] M3. Store the backup off-host in private encrypted storage. Never
-  commit it to Git.
-
-STOP if: the backup fails, or a write occurred after the control snapshot.
+    secondary evidence. Immediately after completion: re-read the
+    BusinessEvent watermark and require equality with M6/M7; calculate
+    the backup SHA-256.
+  - Evidence to retain (`backup/`): backup size, timestamps, database
+    identifier, application SHA (§B), schema/migration revision,
+    control-manifest hash, event watermark.
+  - STOP if: a watermark changed; an application database session
+    appeared; the dump failed; the backup hash cannot be recorded; or
+    any service restarted before the control point was sealed.
+- [ ] **M9. Restart policy.** Do not restart web/worker/beat until the
+  backup hash and control-point evidence are captured AND the operator
+  signs the backup control point. A restart afterward creates later
+  state but does not alter the frozen §M backup — record the restart
+  time separately.
+- [ ] **M10. Store the backup off-host** in private encrypted storage.
+  Never commit it to Git.
 
 Sign-off: operator ______ date ______
 
@@ -676,15 +774,19 @@ result itself must reproduce the control pack.
 - [ ] N2. Boot the application (same pinned revision) against the scratch
   database, isolated from production traffic and from Shopify webhooks.
 - [ ] N3. Compare durable controls and evaluate derived alert conditions.
-  **Exact equality is required** for all persisted and financially
-  material controls: company/account configuration; BusinessEvent count
-  and sequence; journal and line counts; total debits and credits;
-  Shopify/provider/bank source totals; durable rejected, failed, and
-  quarantined evidence rows; reconciliation state and totals; trial
-  balance; traced-adjustment provenance; persisted alert inputs
-  (store status, `needs_reauth`, `created_at`, `last_sync_at`, bookmark
-  state, paused/error state, unresolved evidence counts); stored backup
-  hash and restored application revision.
+  The restored database must reproduce the **§M backup control point**:
+  the §M control-manifest SHA-256 and every underlying durable control;
+  the M6 BusinessEvent watermark — `event_count`, `max_event_id`,
+  `max_company_sequence`. **Exact equality is required** for all
+  persisted and financially material controls: company/account
+  configuration; BusinessEvent count and sequence; journal and line
+  counts; total debits and credits; Shopify/provider/bank source totals;
+  durable rejected, failed, and quarantined evidence rows;
+  reconciliation state and totals; trial balance; traced-adjustment
+  provenance; persisted alert inputs (store status, `needs_reauth`,
+  `created_at`, `last_sync_at`, bookmark state, paused/error state,
+  unresolved evidence counts); stored backup hash, restored application
+  revision, and schema/migration revision.
 
   The pre-backup `/_health/alerts` JSON is **not** required to match
   byte-for-byte where fields are derived from the current clock. Record:
@@ -729,7 +831,17 @@ Sign-off: operator ______ date ______
 - backup failure;
 - restore mismatch;
 - need for raw-SQL repair;
-- any merchant reliance on unsupported reports.
+- any merchant reliance on unsupported reports;
+- real merchant store or data used in the rehearsal database;
+- rehearsal database proposed for promotion to the merchant database;
+- write ingress not blocked before backup;
+- beat still running at the backup control point;
+- active/reserved/scheduled Celery work at the control point;
+- web still running during `pg_dump`;
+- application DB sessions remaining at the control point;
+- BusinessEvent watermark or control-manifest hash changing before or
+  during the backup;
+- synthetic history appearing in the real merchant database.
 
 The stop/go decision belongs to the **founder/operator**; every stop or go
 is recorded with a dated sign-off in `signoff/`.
@@ -791,3 +903,41 @@ raw to a public GitHub issue or PR (consistent with the §F2 deployment
 restriction on those endpoints). For real merchant runs, even aggregate
 counts may be commercially sensitive — keep them private unless the
 founder explicitly approves a sanitized excerpt.
+
+---
+
+## Q. Post-G2 first-merchant cutover — separate authorization required
+
+This phase is procedural only and is **not executed by this PR**. Only
+after G1 and G2 are recorded complete in the
+[live tracker](../status/constrained_pilot_status.md) may the founder:
+
+1. provision a **NEW empty isolated merchant database**;
+2. pin the reviewed application revision and its green CI (§B);
+3. repeat, against the new database: the revision proof (§B); the
+   fresh-database zero-count proof (§C); the environment-safety proof
+   (§E); base onboarding (§H); activation-aware validation (§I1); pilot
+   activation (§I2); pilot-aware Shopify provisioning (§I3);
+4. connect the **real merchant Shopify store** — for the first time
+   anywhere in this process;
+5. run the real-store product sync only after the gates have closed;
+6. verify: exactly one ACTIVE store; OWNER binding; EGP store currency;
+   every product NON_STOCK; no inventory/COGS mappings or residue;
+   provider/posting-profile configuration; bank account; go-live
+   preflight (§I10) clean; `/_health/alerts` healthy;
+7. keep historical order import set to `skip` until the founder
+   separately authorizes the intake window;
+8. sign a dated GO decision before the first real
+   order/refund/settlement/bank item is admitted.
+
+STOP if: the rehearsal database or its backup is reused; synthetic
+financial history appears in the merchant database; both synthetic and
+real stores coexist; the real store is connected before G1/G2 closure; or
+go-live preflight is not clean.
+
+No in-place synthetic-store-to-real-store replacement procedure exists or
+is permitted: the exactly-one-ACTIVE-store constraint and the rehearsal
+database's synthetic financial history make in-place promotion the wrong
+model.
+
+Sign-off: founder/operator ______ date ______
