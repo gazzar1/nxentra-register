@@ -37,10 +37,13 @@ This runbook operates **two distinct environments**:
    synthetic settlement and bank CSVs; **no real merchant identifiers,
    catalog, customers, orders, refunds, payouts, or financial records.**
 2. **The real merchant environment** — created **only after G1 and G2
-   close**; a **new empty isolated database**; the same reviewed
-   application revision (or a later `main` revision with its own green
-   required CI); **no data, backup, or BusinessEvent history copied from
-   the rehearsal database.**
+   close**; a **new empty isolated database**; the **exact G1/G2-tested
+   revision and immutable deployment artifact**. A later application
+   revision is eligible only after **both G1 and G2 are repeated and
+   closed on that exact later revision** — green CI is necessary but does
+   not transfer the earlier operational and restore proofs to changed
+   application code or deployment artifacts. **No data, backup, or
+   BusinessEvent history is copied from the rehearsal database.**
 
 The G1/G2 rehearsal database is **never promoted** into the real merchant
 accounting database. It contains synthetic financial history and must not
@@ -70,8 +73,13 @@ named evidence existing in the manifest.
     run (all seven jobs including Quality Gate). Expected revision for the
     first execution: `c4896ff31b283d165a5180ca210cb981a93b3588`
     (tree `8104cf6824e473e92cc4c184c04525cd160ba95f`; main CI run
-    33394909451, seven jobs green). A later revision may be used only when
-    its own required CI is green and the operator records the new exact SHA.
+    33394909451, seven jobs green). A later reviewed `main` revision with
+    green required CI may be **selected here, before a new rehearsal
+    begins** — that selected revision then becomes the subject of this
+    runbook's G1 and G2, and the operator records the new exact SHA. This
+    selection rule never transfers a PRIOR G1/G2 verdict forward: the
+    merchant cutover (§Q) must deploy the exact revision pack that passed
+    the gates.
   - Evidence to retain (`revision/`): commit SHA, tree SHA, CI run id and
     conclusion, deployment/image identifier, deployment timestamp, operator,
     database identifier (host/name only — no credentials), hosting region,
@@ -553,6 +561,74 @@ For each row: run → verify the durable outcome and its operator surface →
 verify `/_health/alerts` (or `python manage.py alert_check`) reflects it →
 verify recovery where the contract heals.
 
+- [ ] **J0. A1 live Shopify embedded-authentication proof —
+  independently signed, BEFORE the financial scenarios.** Uses only the
+  synthetic development store, the synthetic founder/operator identity,
+  and the rehearsal environment. The endpoints below are the live code's
+  canonical A1 surfaces: `POST /api/auth/shopify-session-login/`
+  (embedded session login; 403 `not_bound` for an unbound Shopify user),
+  `POST /api/shopify/linking-nonce/` (authenticated standalone
+  OWNER/ADMIN with `settings.edit` mints a single-use nonce,
+  `expires_in_seconds: 600`), and
+  `POST /api/shopify/redeem-linking-nonce/` (public by design — the
+  nonce plus the signed App Bridge session token ARE the credentials;
+  success `{"status": "linked"}`). Prove, in order:
+  1. **Browser posture** — clean browser profile; third-party cookies
+     disabled/blocked; record browser name, exact version, OS, and the
+     cookie setting; remove any pre-existing standalone Nxentra
+     authentication state from the embedded context. The G1 sign-off
+     applies only to the recorded posture; repeat for any additional
+     browser the first pilot will support.
+  2. **Unbound embedded launch** — launch Nxentra from the synthetic
+     store's Shopify Admin app surface inside the embedded iframe;
+     obtain and use an App Bridge session token; with no active binding
+     for that exact Shopify user/store pair, reach the explicit 403
+     `not_bound` state; prove the system does not silently select the
+     first OWNER/ADMIN and does not authenticate via a third-party
+     Nxentra cookie.
+  3. **Standalone owner link initiation** — in a top-level Nxentra
+     context, authenticate the exact founder OWNER and create the
+     single-use linking nonce through the canonical path. Do not record
+     or attach the nonce value itself; retain only the redacted status,
+     timestamp, company/store identity proof, and operator identity.
+  4. **Embedded redemption** — back in the iframe, redeem the nonce with
+     the valid session token; the token's Shopify shop must match the
+     synthetic store; verify the resulting active `ShopifyUserBinding`
+     points to the exact synthetic store, the exact Shopify `sub`, the
+     exact active OWNER membership, and the same company — no
+     first-owner or cross-company fallback.
+  5. **Single-use proof** — attempt to redeem the same nonce again;
+     require the loud "nonce already used" refusal; no second binding or
+     mutation may be created.
+  6. **Bound session login** — reload/relaunch from Shopify Admin;
+     obtain a fresh session token; the session-login path now resolves
+     the exact active binding and reaches the intended Nxentra company
+     without third-party cookies or a standalone-cookie fallback; the
+     displayed actor/company identity matches the bound membership.
+  7. **STOP if:** the initial embedded launch skips `not_bound`; an
+     OWNER is selected merely because one exists; third-party cookies
+     are required; no App Bridge session token is used; the nonce can
+     bind a different company, store, user, or membership; nonce replay
+     succeeds; post-binding session login fails; the embedded actor
+     resolves to the wrong company; or any real merchant store or
+     identity is used.
+
+  **J0 evidence** (all raw authentication evidence PRIVATE): retain
+  privately the browser/version/OS + cookie posture; timestamped
+  screenshots of the initial embedded launch, `not_bound`, successful
+  link, and successful post-link embedded login; a redacted network
+  sequence (session-token request present; not-bound result; nonce
+  creation status; nonce redemption status; successful session login);
+  proof of the binding's same-company/store/membership relationship; the
+  nonce-replay refusal; operator sign-off. **Never retain or upload
+  raw:** App Bridge session tokens, linking nonce values, cookies,
+  Authorization headers, Shopify access tokens, raw HAR files, customer
+  or merchant data. Any GitHub evidence is a manually sanitized summary
+  containing only: browser/version, third-party-cookie posture, the
+  `not_bound → linked → authenticated` state transition, endpoint/result
+  categories, final PASS/FAIL, timestamps.
+
+  Sign-off (J0 alone): operator ______ date ______
 - [ ] **J1. Shopify paid order:** successful order; exact
   redelivery/idempotent retry (no duplicate journal); mapping failure →
   visible failure → correction → retry heals exactly once.
@@ -587,6 +663,10 @@ STOP if any scenario yields: a silent missing financial effect, a duplicate
 financial effect, a false success, terminal evidence loss, a false
 all-clear, or an unhealable corrected retry.
 
+**G1 cannot close unless J0 passes.** The financial J1–J7 matrix alone is
+insufficient — the tracker's A1 row remains operationally open until J0
+evidence exists. This documentation PR marks neither A1 nor G1 complete.
+
 Sign-off: operator ______ date ______
 
 ---
@@ -614,6 +694,7 @@ Minimum schema:
 | Traced-adjustment count and value | journal list (pilot adjustments) |
 | Per-source-row financial-effect classification and linked JE/value | source files vs system |
 | Per-source-row durable review/reconciliation state(s) | source files vs system |
+| Shopify embedded-authentication configuration | binding state (private) |
 | Trial-balance control total | trial balance report |
 | Every unexplained variance | — must be zero — |
 
@@ -629,6 +710,13 @@ dimensions — they are **not mutually exclusive**:
    [closure artifact](../audits/2026-08-30-a5-final-closure-review.md)),
    or `HEALED / SUPERSEDED` where historical failure evidence remains
    relevant.
+
+For the **Shopify embedded-authentication configuration** control, record
+privately: active `ShopifyUserBinding` count; store identifier; company
+identifier; membership identifier; active/revoked status; a one-way hash
+of the Shopify `sub` (for comparison); linking proof timestamp; browser
+posture tested. Never put a raw Shopify `sub`, nonce, token, email, or
+store domain into public evidence.
 
 The required `ORPHAN_ORDER_ID` settlement representation is
 **`POSTED_EXACTLY_ONCE` + `QUARANTINED`**: the committed journal is the
@@ -785,8 +873,14 @@ result itself must reproduce the control pack.
   reconciliation state and totals; trial balance; traced-adjustment
   provenance; persisted alert inputs (store status, `needs_reauth`,
   `created_at`, `last_sync_at`, bookmark state, paused/error state,
-  unresolved evidence counts); stored backup hash, restored application
-  revision, and schema/migration revision.
+  unresolved evidence counts); the durable Shopify binding state —
+  `ShopifyUserBinding` row count, store/company/membership relationships,
+  active/revoked state, and the privately computed hash of the Shopify
+  `sub`; stored backup hash, restored application revision, and
+  schema/migration revision. A live Shopify iframe launch is NOT required
+  inside the isolated G2 restore environment unless it is deliberately
+  configured to receive Shopify traffic — the restore proof verifies the
+  durable binding state; J0 carries the live browser/session-token proof.
 
   The pre-backup `/_health/alerts` JSON is **not** required to match
   byte-for-byte where fields are derived from the current clock. Record:
@@ -804,6 +898,20 @@ result itself must reproduce the control pack.
   restored state merely to recreate the pre-backup alert response.
 - [ ] N4. Evidence to retain (`restore/`): the comparison table, restored
   revision, hashes.
+- [ ] N5. **Issue the gate-tested revision pack.** On successful G1 + G2
+  closure, record one immutable revision pack in `signoff/`:
+
+  ```
+  GATE_TESTED_COMMIT_SHA
+  GATE_TESTED_GIT_TREE_SHA
+  GATE_TESTED_IMAGE_OR_ARTIFACT_DIGEST
+  GATE_TESTED_MIGRATION_MANIFEST
+  G1_EVIDENCE_MANIFEST_HASH
+  G2_EVIDENCE_MANIFEST_HASH
+  G2_BACKUP_HASH
+  ```
+
+  This pack is the ONLY revision authority for the merchant cutover (§Q).
 
 STOP if: any control differs, or the restore requires manual database
 repair of any kind.
@@ -912,8 +1020,18 @@ This phase is procedural only and is **not executed by this PR**. Only
 after G1 and G2 are recorded complete in the
 [live tracker](../status/constrained_pilot_status.md) may the founder:
 
-1. provision a **NEW empty isolated merchant database**;
-2. pin the reviewed application revision and its green CI (§B);
+1. **load the completed gate-tested revision pack (§N5)** and verify the
+   intended merchant deployment uses it exactly:
+   deployed commit SHA == `GATE_TESTED_COMMIT_SHA`; deployed
+   image/artifact digest == `GATE_TESTED_IMAGE_OR_ARTIFACT_DIGEST`;
+   deployed migration manifest == `GATE_TESTED_MIGRATION_MANIFEST`.
+   If ANY differs: STOP — perform a fresh G1 and G2 cycle on the desired
+   revision, issue a new revision pack, and use only that newer completed
+   pack. Equivalence is NEVER inferred from a same branch name, a version
+   label, green CI, a small diff, "docs only", or developer judgment.
+   (If `main` advanced but the deployment uses the exact already-tested
+   commit and artifact, the existing G1/G2 proof remains applicable.)
+2. provision a **NEW empty isolated merchant database**;
 3. repeat, against the new database: the revision proof (§B); the
    fresh-database zero-count proof (§C); the environment-safety proof
    (§E); base onboarding (§H); activation-aware validation (§I1); pilot
@@ -925,15 +1043,27 @@ after G1 and G2 are recorded complete in the
    every product NON_STOCK; no inventory/COGS mappings or residue;
    provider/posting-profile configuration; bank account; go-live
    preflight (§I10) clean; `/_health/alerts` healthy;
-7. keep historical order import set to `skip` until the founder
+7. **merchant cutover authentication smoke proof** — after the real
+   store is connected and before any merchant financial item is
+   admitted: a real-store `ShopifyUserBinding` exists for the intended
+   merchant operator; one successful embedded launch using the
+   designated pilot browser posture with third-party cookies disabled;
+   session-token authentication resolving to the correct merchant
+   company and membership; clean go-live preflight including the
+   expected OWNER/store binding. This is a merchant-specific smoke
+   proof, not a substitute for the synthetic J0 rehearsal. STOP before
+   merchant data if the real operator cannot authenticate in the
+   embedded app through the explicit binding;
+8. keep historical order import set to `skip` until the founder
    separately authorizes the intake window;
-8. sign a dated GO decision before the first real
+9. sign a dated GO decision before the first real
    order/refund/settlement/bank item is admitted.
 
-STOP if: the rehearsal database or its backup is reused; synthetic
-financial history appears in the merchant database; both synthetic and
-real stores coexist; the real store is connected before G1/G2 closure; or
-go-live preflight is not clean.
+STOP if: the intended merchant deployment uses a revision or image not
+named by the completed revision pack; the rehearsal database or its
+backup is reused; synthetic financial history appears in the merchant
+database; both synthetic and real stores coexist; the real store is
+connected before G1/G2 closure; or go-live preflight is not clean.
 
 No in-place synthetic-store-to-real-store replacement procedure exists or
 is permitted: the exactly-one-ACTIVE-store constraint and the rehearsal
