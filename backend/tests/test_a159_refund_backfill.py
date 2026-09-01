@@ -139,20 +139,19 @@ def test_get_order_refunds_shapes_graphql_payload_and_lowercases_enums():
     client = ShopifyAdminClient(SHOP_DOMAIN, "token")
 
     def scripted_execute(query, variables=None, allow_partial=False):
-        if "OrderRefundIds" in query:
+        if "OrderRefundSummaries" in query:
+            # Order.refunds is a plain list field in 2026-04 — the client
+            # queries it uncapped, no pageInfo/nodes.
             return {
                 "order": {
-                    "refunds": {
-                        "pageInfo": {"hasNextPage": False, "endCursor": None},
-                        "nodes": [
-                            {
-                                "id": "gid://shopify/Refund/777001",
-                                "legacyResourceId": "777001",
-                                "createdAt": "2026-04-29T10:00:00Z",
-                                "note": "damaged item",
-                            }
-                        ],
-                    }
+                    "refunds": [
+                        {
+                            "id": "gid://shopify/Refund/777001",
+                            "legacyResourceId": "777001",
+                            "createdAt": "2026-04-29T10:00:00Z",
+                            "note": "damaged item",
+                        }
+                    ]
                 }
             }
         assert "RefundDetail" in query

@@ -1,6 +1,7 @@
 # tests/test_a5_refund_pagination.py
 """
-A5 refund-catch-up completeness — complete pagination, loud truncation.
+A5 refund-catch-up completeness — complete fetch, loud truncation, exact
+2026-04 schema shapes.
 
 Before the fix, get_order_refunds fetched only the first GraphQL page:
 first 10 refunds per order, first 10 transactions per refund, first 50
@@ -8,12 +9,18 @@ refund line items per refund — no pagination, no truncation detection. A
 refund component past the first page silently vanished from the refund
 aggregate, and a failed fetch read as "status ok, refunds_created 0".
 
-After the fix:
-- get_order_refunds paginates Order.refunds, Refund.transactions and
-  Refund.refundLineItems to exhaustion (page-size constants are page
-  sizes, not completeness caps) and raises ShopifyGraphQLIncomplete on a
-  failed page, an invalid shape, a repeated cursor, or hasNextPage
-  without endCursor — a partial payload is never returned as complete.
+After the fix (pinned to the official Admin GraphQL 2026-04 schema):
+- Order.refunds is a plain LIST field (`[Refund!]!`) whose optional
+  `first` argument TRUNCATES the array — it is queried UNCAPPED with no
+  first/after/pageInfo/nodes, so the summary list is complete by the
+  field's own contract.
+- Refund.transactions (`OrderTransactionConnection!`) and
+  Refund.refundLineItems (`RefundLineItemConnection!`) are cursor-
+  paginated connections drained to exhaustion; page-size constants are
+  page sizes, not completeness caps.
+- ShopifyGraphQLIncomplete is raised on a failed page, an invalid shape,
+  a repeated cursor, hasNextPage without endCursor, or a refund
+  vanishing mid-fetch — a partial payload is never returned as complete.
 - _backfill_order_refunds reports {"booked", "fetch_failed",
   "process_errors"}; a fetch failure books nothing for that order.
 - _sync_refunds returns a structured non-success (status "error",
@@ -106,23 +113,24 @@ def _line_node(subtotal="1.00"):
 
 
 class _ScriptedClient(ShopifyAdminClient):
-    """Real client with `execute` served from scripted pages.
+    """Real client with `execute` served from scripted responses.
 
     script keys:
-      "OrderRefundIds"        -> list of refunds-connection pages (in cursor order)
-      "OrderRefundIdsList"    -> list-form response value for order.refunds
+      "OrderRefundSummaries"  -> plain refund list (2026-04 list field) or Exception
       "RefundDetail"          -> {gid: {"transactions": page, "refundLineItems": page}}
       "RefundTransactionsPage"-> {(gid, cursor): page-or-Exception}
       "RefundLineItemsPage"   -> {(gid, cursor): page-or-Exception}
     Any value may be an Exception instance — it is raised on serve.
+    calls records (query_name, key); queries records the full query text
+    so tests can pin the exact field shapes sent to Shopify.
     """
 
     def __init__(self, script, refunded_orders=None):
         super().__init__(SHOP_DOMAIN, "test-token")
         self._script = script
         self._refunded_orders = refunded_orders or []
-        self._id_page_cursor_calls = 0
         self.calls = []
+        self.queries = []
         self.execute_depths = []
 
     def iter_refunded_orders(self, updated_at_min, updated_at_max):
@@ -130,6 +138,7 @@ class _ScriptedClient(ShopifyAdminClient):
 
     def execute(self, query, variables=None, allow_partial=False):
         variables = variables or {}
+        self.queries.append(query)
         self.execute_depths.append(len(db_connection.savepoint_ids))
 
         def serve(value):
@@ -137,17 +146,9 @@ class _ScriptedClient(ShopifyAdminClient):
                 raise value
             return value
 
-        if "OrderRefundIdsList" in query:
-            self.calls.append(("OrderRefundIdsList", None))
-            return {"order": {"refunds": serve(self._script["OrderRefundIdsList"])}}
-        if "OrderRefundIds" in query:
-            pages = self._script["OrderRefundIds"]
-            idx = self._id_page_cursor_calls
-            self._id_page_cursor_calls += 1
-            self.calls.append(("OrderRefundIds", variables.get("cursor")))
-            if idx >= len(pages):
-                raise AssertionError("OrderRefundIds requested past the scripted pages")
-            return {"order": {"refunds": serve(pages[idx])}}
+        if "OrderRefundSummaries" in query:
+            self.calls.append(("OrderRefundSummaries", None))
+            return {"order": {"refunds": serve(self._script["OrderRefundSummaries"])}}
         if "RefundTransactionsPage" in query:
             key = (variables["id"], variables.get("cursor"))
             self.calls.append(("RefundTransactionsPage", key))
@@ -160,13 +161,15 @@ class _ScriptedClient(ShopifyAdminClient):
         gid = variables["id"]
         self.calls.append(("RefundDetail", gid))
         detail = serve(self._script["RefundDetail"][gid])
+        if detail is None:
+            return {"refund": None}
         return {"refund": detail}
 
 
 def _single_refund_script(refund_id=777101, txn_page=None, line_page=None):
     gid = f"gid://shopify/Refund/{refund_id}"
     return {
-        "OrderRefundIds": [_page([_id_node(refund_id)])],
+        "OrderRefundSummaries": [_id_node(refund_id)],
         "RefundDetail": {
             gid: {
                 "transactions": txn_page or _page([_txn_node("50.00")]),
@@ -178,18 +181,9 @@ def _single_refund_script(refund_id=777101, txn_page=None, line_page=None):
     }
 
 
-# ---------------------------------------------------------------------------
-# D1 — 11 refunds: all returned and processed
-# ---------------------------------------------------------------------------
-
-
-def test_eleven_refunds_all_returned_and_processed(shopify_store):
-    refund_ids = [777200 + i for i in range(11)]
-    script = {
-        "OrderRefundIds": [
-            _page([_id_node(r) for r in refund_ids[:10]], has_next=True, end_cursor="idcur1"),
-            _page([_id_node(refund_ids[10])]),
-        ],
+def _multi_refund_script(refund_ids):
+    return {
+        "OrderRefundSummaries": [_id_node(r) for r in refund_ids],
         "RefundDetail": {
             f"gid://shopify/Refund/{r}": {
                 "transactions": _page([_txn_node("10.00")]),
@@ -200,26 +194,34 @@ def test_eleven_refunds_all_returned_and_processed(shopify_store):
         "RefundTransactionsPage": {},
         "RefundLineItemsPage": {},
     }
-    client = _ScriptedClient(script)
+
+
+# ---------------------------------------------------------------------------
+# Query-shape pins — the exact 2026-04 field forms
+# ---------------------------------------------------------------------------
+
+
+def test_order_refunds_queried_as_uncapped_list():
+    """Order.refunds is a plain list field in 2026-04: `first` TRUNCATES,
+    and pageInfo/nodes/after do not exist on it. The query must be the
+    direct uncapped list selection, with no speculative connection query
+    attempted first — and a 12-refund response returns all 12."""
+    refund_ids = [777110 + i for i in range(12)]
+    client = _ScriptedClient(_multi_refund_script(refund_ids))
 
     out = client.get_order_refunds(ORDER_ID)
-    assert [r["id"] for r in out] == refund_ids, "all 11 refunds must be returned, not the first 10"
+    assert [r["id"] for r in out] == refund_ids
 
-    assert commands.process_order_paid(shopify_store, _order_payload()).success
-    from shopify_connector import tasks
-
-    client._id_page_cursor_calls = 0
-    result = tasks._backfill_order_refunds(shopify_store, client, ORDER_ID)
-    assert result == {"booked": 11, "fetch_failed": False, "process_errors": 0}
-    assert ShopifyRefund.objects.filter(company=shopify_store.company).count() == 11
+    assert client.calls[0][0] == "OrderRefundSummaries", "no speculative query may precede the list query"
+    summaries_query = client.queries[0]
+    assert "OrderRefundSummaries" in summaries_query
+    for forbidden in ("refunds(first:", "after:", "pageInfo", "nodes"):
+        assert forbidden not in summaries_query, f"Order.refunds selection must not contain {forbidden!r}"
 
 
-# ---------------------------------------------------------------------------
-# D2 — 11 successful transactions: complete aggregate, not first-10
-# ---------------------------------------------------------------------------
-
-
-def test_eleven_transactions_complete_aggregate():
+def test_refund_transactions_queried_as_connection():
+    """Refund.transactions is OrderTransactionConnection! in 2026-04:
+    first/pageInfo/nodes on the initial page, after: $cursor on page 2."""
     gid = "gid://shopify/Refund/777301"
     script = _single_refund_script(
         777301,
@@ -229,16 +231,22 @@ def test_eleven_transactions_complete_aggregate():
     client = _ScriptedClient(script)
 
     out = client.get_order_refunds(ORDER_ID)
+
+    detail_query = next(q for q in client.queries if "RefundDetail" in q)
+    for required in ("transactions(first:", "pageInfo", "nodes"):
+        assert required in detail_query
+    page_query = next(q for q in client.queries if "RefundTransactionsPage" in q)
+    assert "after: $cursor" in page_query
+
+    # D2: the complete aggregate includes page-2 transactions.
     assert len(out[0]["transactions"]) == 11
     assert refund_aggregate_amount(out[0]) == Decimal("110.00"), "aggregate must include page-2 transactions"
 
 
-# ---------------------------------------------------------------------------
-# D3 — zero successful transactions + 51 refund line items: complete fallback
-# ---------------------------------------------------------------------------
-
-
-def test_fifty_one_line_items_complete_fallback_aggregate():
+def test_refund_line_items_queried_as_connection():
+    """Refund.refundLineItems is RefundLineItemConnection! in 2026-04 —
+    and the zero-successful-transaction fallback aggregate must include
+    all 51 line items across pages."""
     gid = "gid://shopify/Refund/777401"
     script = _single_refund_script(
         777401,
@@ -249,12 +257,39 @@ def test_fifty_one_line_items_complete_fallback_aggregate():
     client = _ScriptedClient(script)
 
     out = client.get_order_refunds(ORDER_ID)
+
+    detail_query = next(q for q in client.queries if "RefundDetail" in q)
+    for required in ("refundLineItems(first:", "pageInfo", "nodes"):
+        assert required in detail_query
+    page_query = next(q for q in client.queries if "RefundLineItemsPage" in q)
+    assert "after: $cursor" in page_query
+
     assert len(out[0]["refund_line_items"]) == 51
     assert refund_aggregate_amount(out[0]) == Decimal("51.00"), "fallback aggregate must include page-2 line items"
 
 
 # ---------------------------------------------------------------------------
-# D4 + D5 — old parent order booked with full history; exact re-run idempotent
+# High-cardinality processing — 11 refunds all booked
+# ---------------------------------------------------------------------------
+
+
+def test_eleven_refunds_all_returned_and_processed(shopify_store):
+    refund_ids = [777200 + i for i in range(11)]
+    client = _ScriptedClient(_multi_refund_script(refund_ids))
+
+    out = client.get_order_refunds(ORDER_ID)
+    assert [r["id"] for r in out] == refund_ids, "all 11 refunds must be returned, not a truncated prefix"
+
+    assert commands.process_order_paid(shopify_store, _order_payload()).success
+    from shopify_connector import tasks
+
+    result = tasks._backfill_order_refunds(shopify_store, client, ORDER_ID)
+    assert result == {"booked": 11, "fetch_failed": False, "process_errors": 0}
+    assert ShopifyRefund.objects.filter(company=shopify_store.company).count() == 11
+
+
+# ---------------------------------------------------------------------------
+# Old parent order booked with full history; exact re-run idempotent
 # ---------------------------------------------------------------------------
 
 
@@ -262,22 +297,10 @@ def test_old_parent_order_full_history_and_idempotent_retry(shopify_store, monke
     from shopify_connector import tasks
 
     refund_ids = [777500 + i for i in range(11)]
-    script = {
-        "OrderRefundIds": [
-            _page([_id_node(r) for r in refund_ids[:10]], has_next=True, end_cursor="idcur1"),
-            _page([_id_node(refund_ids[10])]),
-        ],
-        "RefundDetail": {
-            f"gid://shopify/Refund/{r}": {
-                "transactions": _page([_txn_node("10.00")]),
-                "refundLineItems": _page([]),
-            }
-            for r in refund_ids
-        },
-        "RefundTransactionsPage": {},
-        "RefundLineItemsPage": {},
-    }
-    client = _ScriptedClient(script, refunded_orders=[_order_payload(created_at="2025-11-03T08:30:00Z")])
+    client = _ScriptedClient(
+        _multi_refund_script(refund_ids),
+        refunded_orders=[_order_payload(created_at="2025-11-03T08:30:00Z")],
+    )
     monkeypatch.setattr(commands, "_admin_client", lambda store: client)
 
     first = tasks._sync_refunds(shopify_store, "2026-04-25T00:00:00Z", "2026-05-02T00:00:00Z")
@@ -294,8 +317,6 @@ def test_old_parent_order_full_history_and_idempotent_retry(shopify_store, monke
     events_before = BusinessEvent.objects.count()
     journals_before = JournalEntry.objects.count()
 
-    # D5: reset the scripted id-page cursor and run the exact catch-up again.
-    client._id_page_cursor_calls = 0
     calls_before_second_run = len(client.calls)
     second = tasks._sync_refunds(shopify_store, "2026-04-25T00:00:00Z", "2026-05-02T00:00:00Z")
     assert len(client.calls) > calls_before_second_run, (
@@ -311,18 +332,15 @@ def test_old_parent_order_full_history_and_idempotent_retry(shopify_store, monke
 
 
 # ---------------------------------------------------------------------------
-# D6 — failure on refund page 2: nothing partial is processed
+# Failure behavior — nothing partial, always loud, leg-visible
 # ---------------------------------------------------------------------------
 
 
-def test_refund_page_two_failure_returns_no_partial(shopify_store):
+def test_summaries_fetch_failure_books_nothing(shopify_store):
     from shopify_connector import tasks
 
     script = {
-        "OrderRefundIds": [
-            _page([_id_node(777600 + i) for i in range(10)], has_next=True, end_cursor="idcur1"),
-            ShopifyGraphQLError("boom on page 2"),
-        ],
+        "OrderRefundSummaries": ShopifyGraphQLError("summaries fetch failed"),
         "RefundDetail": {},
         "RefundTransactionsPage": {},
         "RefundLineItemsPage": {},
@@ -333,18 +351,43 @@ def test_refund_page_two_failure_returns_no_partial(shopify_store):
         client.get_order_refunds(ORDER_ID)
 
     assert commands.process_order_paid(shopify_store, _order_payload()).success
-    client._id_page_cursor_calls = 0
+    result = tasks._backfill_order_refunds(shopify_store, client, ORDER_ID)
+    assert result["fetch_failed"] is True
+    assert result["booked"] == 0
+    assert ShopifyRefund.objects.filter(company=shopify_store.company).count() == 0
+
+
+def test_detail_page_failure_returns_no_partial(shopify_store):
+    """A transactions page-2 failure must fail the WHOLE order fetch —
+    the refunds already collected are never processed as complete."""
+    from shopify_connector import tasks
+
+    gid_ok = "gid://shopify/Refund/777601"
+    gid_bad = "gid://shopify/Refund/777602"
+    script = {
+        "OrderRefundSummaries": [_id_node(777601), _id_node(777602)],
+        "RefundDetail": {
+            gid_ok: {"transactions": _page([_txn_node("10.00")]), "refundLineItems": _page([])},
+            gid_bad: {
+                "transactions": _page([_txn_node("10.00")], has_next=True, end_cursor="tcur1"),
+                "refundLineItems": _page([]),
+            },
+        },
+        "RefundTransactionsPage": {(gid_bad, "tcur1"): ShopifyGraphQLError("boom on page 2")},
+        "RefundLineItemsPage": {},
+    }
+    client = _ScriptedClient(script)
+
+    with pytest.raises(ShopifyGraphQLError):
+        client.get_order_refunds(ORDER_ID)
+
+    assert commands.process_order_paid(shopify_store, _order_payload()).success
     result = tasks._backfill_order_refunds(shopify_store, client, ORDER_ID)
     assert result["fetch_failed"] is True
     assert result["booked"] == 0
     assert ShopifyRefund.objects.filter(company=shopify_store.company).count() == 0, (
         "a partial refund list must never be processed as complete"
     )
-
-
-# ---------------------------------------------------------------------------
-# D7 — failure on a transactions page is visible in the leg result
-# ---------------------------------------------------------------------------
 
 
 def test_transaction_page_failure_makes_leg_nonsuccess(shopify_store, monkeypatch):
@@ -365,11 +408,6 @@ def test_transaction_page_failure_makes_leg_nonsuccess(shopify_store, monkeypatc
     assert ShopifyRefund.objects.filter(company=shopify_store.company).count() == 0
 
 
-# ---------------------------------------------------------------------------
-# D8 — a repeated cursor fails loudly instead of looping
-# ---------------------------------------------------------------------------
-
-
 def test_repeated_cursor_fails_loudly():
     gid = "gid://shopify/Refund/777801"
     script = _single_refund_script(
@@ -383,78 +421,40 @@ def test_repeated_cursor_fails_loudly():
         client.get_order_refunds(ORDER_ID)
 
 
-def test_order_vanishing_mid_pagination_fails_loudly():
-    """An order that answered refunds page 1 but nulls on page 2 must not
-    silently return the collected prefix as complete."""
-    script = {
-        "OrderRefundIds": [
-            _page([_id_node(777950 + i) for i in range(10)], has_next=True, end_cursor="idcur1"),
-            None,  # order: null on page 2
-        ],
-        "RefundDetail": {},
-        "RefundTransactionsPage": {},
-        "RefundLineItemsPage": {},
-    }
-    client = _ScriptedClient(script)
-
-    def execute_with_null_order(query, variables=None, allow_partial=False):
-        variables = variables or {}
-        if "OrderRefundIds" in query and variables.get("cursor") == "idcur1":
-            return {"order": None}
-        return _ScriptedClient.execute(client, query, variables, allow_partial)
-
-    client.execute = execute_with_null_order
-    with pytest.raises(ShopifyGraphQLIncomplete, match="vanished mid-pagination"):
-        client.get_order_refunds(ORDER_ID)
-
-
 def test_has_next_without_end_cursor_fails_loudly():
-    script = {
-        "OrderRefundIds": [_page([_id_node(777901)], has_next=True, end_cursor=None)],
-        "RefundDetail": {},
-        "RefundTransactionsPage": {},
-        "RefundLineItemsPage": {},
-    }
+    script = _single_refund_script(
+        777901,
+        txn_page=_page([_txn_node("10.00")], has_next=True, end_cursor=None),
+    )
     client = _ScriptedClient(script)
     with pytest.raises(ShopifyGraphQLIncomplete, match="hasNextPage without endCursor"):
         client.get_order_refunds(ORDER_ID)
 
 
-# ---------------------------------------------------------------------------
-# Schema-form tolerance — list-form fallback stays complete
-# ---------------------------------------------------------------------------
+def test_refund_vanishing_mid_fetch_fails_loudly():
+    """A refund present in the summary list but null on its detail query
+    must not be silently dropped from the result."""
+    script = _single_refund_script(777951)
+    script["RefundDetail"]["gid://shopify/Refund/777951"] = None
+    client = _ScriptedClient(script)
+    with pytest.raises(ShopifyGraphQLIncomplete, match="vanished mid-fetch"):
+        client.get_order_refunds(ORDER_ID)
 
 
-def test_list_form_fallback_is_complete_and_cached():
-    refund_ids = [778001 + i for i in range(12)]
+def test_invalid_summary_shape_fails_loudly():
     script = {
-        "OrderRefundIds": [ShopifyGraphQLError("Field 'pageInfo' doesn't exist")],
-        "OrderRefundIdsList": [_id_node(r) for r in refund_ids],
-        "RefundDetail": {
-            f"gid://shopify/Refund/{r}": {
-                "transactions": _page([_txn_node("1.00")]),
-                "refundLineItems": _page([]),
-            }
-            for r in refund_ids
-        },
+        "OrderRefundSummaries": {"unexpected": "dict"},
+        "RefundDetail": {},
         "RefundTransactionsPage": {},
         "RefundLineItemsPage": {},
     }
     client = _ScriptedClient(script)
-
-    out = client.get_order_refunds(ORDER_ID)
-    assert [r["id"] for r in out] == refund_ids, "list-form fallback must return the complete uncapped list"
-    assert client._refunds_list_form is True
-
-    # Second order skips the failed connection attempt entirely.
-    calls_before = len([c for c in client.calls if c[0] == "OrderRefundIds"])
-    client.get_order_refunds(ORDER_ID)
-    calls_after = len([c for c in client.calls if c[0] == "OrderRefundIds"])
-    assert calls_after == calls_before, "the discovered list form must be cached on the client"
+    with pytest.raises(ShopifyGraphQLIncomplete, match="Invalid refund list shape"):
+        client.get_order_refunds(ORDER_ID)
 
 
 # ---------------------------------------------------------------------------
-# D9 — network reads stay outside any lock-holding transaction scope
+# Network reads stay outside any lock-holding transaction scope
 # ---------------------------------------------------------------------------
 
 
@@ -477,7 +477,7 @@ def test_network_reads_outside_transactional_scope(shopify_store):
 
 
 # ---------------------------------------------------------------------------
-# D10 — normal one-page behavior unchanged (exact query count)
+# Normal one-page behavior unchanged (exact query count + REST shape)
 # ---------------------------------------------------------------------------
 
 
@@ -485,7 +485,7 @@ def test_single_page_order_uses_two_queries_and_same_shape(shopify_store):
     client = _ScriptedClient(_single_refund_script(778201, line_page=_page([_line_node("50.00")])))
 
     out = client.get_order_refunds(ORDER_ID)
-    assert [c[0] for c in client.calls] == ["OrderRefundIds", "RefundDetail"]
+    assert [c[0] for c in client.calls] == ["OrderRefundSummaries", "RefundDetail"]
     assert out == [
         {
             "id": 778201,
