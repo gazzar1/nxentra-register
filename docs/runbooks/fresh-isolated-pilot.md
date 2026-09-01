@@ -378,8 +378,10 @@ Sign-off: operator ______ date ______
 
 One chronological sequence — do not jump backward into §H: activation-aware
 validation-only check → activation → pilot-aware Shopify provisioning →
-store connect and sync → configuration proofs → go-live preflight →
-drift-verification cadence. For every run record: exact command, company
+standalone OAuth store connection (deliberately unbound) → the I5/J0
+`not_bound` → link → authenticated ceremony (which CREATES the canonical
+binding) → product sync → configuration and refusal proofs → the first
+go-live preflight that can legitimately pass → drift-verification cadence. For every run record: exact command, company
 identifier, phase, exit code, complete output, timestamp, operator
 (`preflight/`).
 
@@ -472,97 +474,42 @@ pre-activation check:
     unsupported module is enabled; any INVENTORY/COGS module mapping
     exists; fiscal settings change; COA-template metadata changes;
     Arabic-field configuration changes; or an import task is queued.
-- [ ] **I4. Connect exactly one SYNTHETIC development store.**
-  - Command / action: from `/shopify/settings`:
+- [ ] **I4. Connect exactly one SYNTHETIC development store —
+  deliberately UNBOUND.**
+  - Command / action: initiate the connection through the **top-level
+    standalone Nxentra OAuth path**: `/shopify/settings` →
     `POST /api/shopify/install/` → complete OAuth for
-    `<SYNTHETIC_DEV_SHOP_DOMAIN>`. The store MUST be a non-production
-    Shopify development/test store containing only synthetic catalog and
-    transaction data — no copied real customer/order/refund data — while
-    still exercising real OAuth, App Bridge/session-token behavior,
-    signed webhook delivery, and API synchronization.
-  - Expected result: exactly one ACTIVE synthetic development store in
-    the rehearsal database; the OWNER's Shopify user binding exists
-    (go-live preflight checks `store_count` and `binding_missing`).
-  - STOP if: the domain is the first merchant's live store; the store
-    contains real merchant catalog, customers, orders, or financial
-    history; or data was copied from the merchant merely to make the
-    test realistic.
-- [ ] **I5. Product sync and EGP currency proof (synthetic catalog
-  only).**
-  - Command / action: run the initial **product sync** only now — after
-    activation — so every synchronized item is forced NON_STOCK. The
-    sync imports only the synthetic development-store catalog. The
-    product sync is the path that persists the durable `shop_currency`
-    snapshot (an order sync alone does not persist it; the go-live
-    preflight then falls back to a read-only live probe). The go-live
-    preflight (`store_currency_unknown` / `store_currency_not_egp`) is
-    the proof. Historical import stays `skip` throughout bootstrap and
-    G1 preparation — no live historical merchant-order import occurs
-    before G1 and G2 close.
-  - Expected result: durable `shop_currency` = EGP; every synchronized
-    item is NON_STOCK; zero item inventory/COGS account links; zero
-    inventory ledger/FIFO residue.
-  - STOP if: preflight reports either store-currency violation, or any
-    INVENTORY item / inventory residue appears.
-- [ ] **I6. Settlement providers and posting profiles.**
-  - Command / action: the Shopify setup bootstraps the provider rows and
-    `PG-*` posting profiles; review at `/shopify/settings`
-    (`PATCH /api/accounting/settlement-providers/<pk>/`) so that at least
-    one of **paymob** / **bosta** is ACTIVE — and note the preflight
-    checks **every** ACTIVE supported provider, so each provider left
-    ACTIVE must route to an ACTIVE posting profile with a postable
-    control account (preflight codes `provider_missing`,
-    `provider_posting_profile`).
-- [ ] **I7. Cash/Bank account.**
-  - Command / action: confirm an ACTIVE, non-header LIQUIDITY account
-    exists (template account `11000 Cash and Bank`, or create one at
-    `/accounting/chart-of-accounts/new`). Preflight code:
-    `bank_account_missing`.
-- [ ] **I8. Single-company / single-owner proof.**
-  - Command / action: re-run the §C2 count for `Company` (expect exactly
-    1) and confirm in the UI there is exactly one active OWNER membership
-    and no other members. (After activation, `deployment_has_pilot()`
-    blocks all further signup/company creation deployment-wide.)
-  - STOP if: more than one company or active membership exists.
-- [ ] **I9. Excluded-capability refusal checks.**
-  - Command / action: confirm purchases/clinic/properties are not enabled
-    and their enable doors refuse under the active pilot (spot-check one
-    refusal; the rehearsal in §J exercises more).
-- [ ] **I10. Go-live preflight.**
-  - Command / action:
-    `python manage.py pilot_preflight --company <PILOT_COMPANY_ID> --phase go-live --json`
-  - Expected result: `ok: true`, exit 0 — this is the full agreed-workflow
-    proof (EGP store, OWNER↔store binding, postable clearing/EBD mappings,
-    active provider + posting profile, canonical bank account).
-  - STOP if: any violation.
-- [ ] **I11. Drift verification cadence.** Re-run I10 after every
-  sync/import during the rehearsal (§J) and before every sign-off in this
-  runbook. Any new violation is a STOP.
-
-Sign-off: operator ______ date ______
-
----
-
-## J. Phase 7 — G1 rehearsal matrix
-
-One controlled, current-head rehearsal using **synthetic data generated
-solely for the rehearsal environment** — merchant approval does not
-convert real merchant data into non-merchant data. The Shopify test cases
-must run through the real deployed Shopify integration using the synthetic
-development store, not merely direct fake command calls; settlement and
-bank files must also be synthetic and contain no real merchant identifiers
-or amounts. Where the supported workflow is user-facing,
-run it through the real deployed application surfaces (frontend pages and
-HTTP APIs), not test harnesses. Existing test fixtures and documented APIs
-are references only. Record every scenario's evidence in
-`failure-injection/` and `reconciliation/`.
-
-For each row: run → verify the durable outcome and its operator surface →
-verify `/_health/alerts` (or `python manage.py alert_check`) reflects it →
-verify recovery where the contract heals.
-
-- [ ] **J0. A1 live Shopify embedded-authentication proof —
-  independently signed, BEFORE the financial scenarios.** Uses only the
+    `<SYNTHETIC_DEV_SHOP_DOMAIN>`. Do **not** use the embedded
+    token-exchange installation path for this step — it automatically
+    creates a `ShopifyUserBinding` when it holds a Shopify `sub`, which
+    would make the required unbound-state proof impossible. The store
+    MUST be a non-production Shopify development/test store containing
+    only synthetic catalog and transaction data — no copied real
+    customer/order/refund data — while still exercising real OAuth,
+    App Bridge/session-token behavior, signed webhook delivery, and API
+    synchronization.
+  - Expected result: exactly one ACTIVE synthetic Shopify development
+    store exists. **No active `ShopifyUserBinding` exists yet** for the
+    synthetic Shopify user and store — this is deliberate: the
+    immediately following I5/J0 ceremony must first prove the
+    fail-closed `not_bound` state and then create the canonical binding.
+    (The standalone OAuth path creates/activates the store but never a
+    binding; only the embedded token-exchange path and the linking-nonce
+    redemption create bindings.)
+  - STOP if: any active `ShopifyUserBinding` already exists before J0;
+    the connect path automatically authenticates the embedded user; the
+    store was connected through a path that bypasses the intended
+    unbound state; more than one ACTIVE store exists; the domain is the
+    first merchant's live store; the store contains real merchant
+    catalog, customers, orders, or financial history; or data was copied
+    from the merchant merely to make the test realistic.
+- [ ] **I5 / J0. A1 live Shopify embedded-authentication proof —
+  independently signed; executed HERE, before product sync and before
+  go-live preflight.** This is the named J0 criterion of the G1 matrix
+  (§J), placed at its only executable point in the chronology: the store
+  is ACTIVE and no binding exists yet, so the fail-closed `not_bound`
+  state is genuinely observable, and this ceremony is what CREATES the
+  canonical binding the go-live preflight requires. Uses only the
   synthetic development store, the synthetic founder/operator identity,
   and the rehearsal environment. The endpoints below are the live code's
   canonical A1 surfaces: `POST /api/auth/shopify-session-login/`
@@ -628,7 +575,95 @@ verify recovery where the contract heals.
   `not_bound → linked → authenticated` state transition, endpoint/result
   categories, final PASS/FAIL, timestamps.
 
-  Sign-off (J0 alone): operator ______ date ______
+  Sign-off (I5/J0 alone): operator ______ date ______
+- [ ] **I6. Product sync and EGP currency proof (synthetic catalog
+  only).**
+  - Command / action: run the initial **product sync** only now — after
+    activation — so every synchronized item is forced NON_STOCK. The
+    sync imports only the synthetic development-store catalog. The
+    product sync is the path that persists the durable `shop_currency`
+    snapshot (an order sync alone does not persist it; the go-live
+    preflight then falls back to a read-only live probe). The go-live
+    preflight (`store_currency_unknown` / `store_currency_not_egp`) is
+    the proof. Historical import stays `skip` throughout bootstrap and
+    G1 preparation — no live historical merchant-order import occurs
+    before G1 and G2 close.
+  - Expected result: durable `shop_currency` = EGP; every synchronized
+    item is NON_STOCK; zero item inventory/COGS account links; zero
+    inventory ledger/FIFO residue.
+  - STOP if: preflight reports either store-currency violation, or any
+    INVENTORY item / inventory residue appears.
+- [ ] **I7. Settlement providers and posting profiles.**
+  - Command / action: the Shopify setup bootstraps the provider rows and
+    `PG-*` posting profiles; review at `/shopify/settings`
+    (`PATCH /api/accounting/settlement-providers/<pk>/`) so that at least
+    one of **paymob** / **bosta** is ACTIVE — and note the preflight
+    checks **every** ACTIVE supported provider, so each provider left
+    ACTIVE must route to an ACTIVE posting profile with a postable
+    control account (preflight codes `provider_missing`,
+    `provider_posting_profile`).
+- [ ] **I8. Cash/Bank account.**
+  - Command / action: confirm an ACTIVE, non-header LIQUIDITY account
+    exists (template account `11000 Cash and Bank`, or create one at
+    `/accounting/chart-of-accounts/new`). Preflight code:
+    `bank_account_missing`.
+- [ ] **I9. Single-company / single-owner proof.**
+  - Command / action: re-run the §C2 count for `Company` (expect exactly
+    1) and confirm in the UI there is exactly one active OWNER membership
+    and no other members. (After activation, `deployment_has_pilot()`
+    blocks all further signup/company creation deployment-wide.)
+  - STOP if: more than one company or active membership exists.
+- [ ] **I10. Excluded-capability refusal checks.**
+  - Command / action: confirm purchases/clinic/properties are not enabled
+    and their enable doors refuse under the active pilot (spot-check one
+    refusal; the rehearsal in §J exercises more).
+- [ ] **I11. Go-live preflight.**
+  - Command / action:
+    `python manage.py pilot_preflight --company <PILOT_COMPANY_ID> --phase go-live --json`
+  - Expected result: `ok: true`, exit 0 — this is the full agreed-workflow
+    proof (EGP store, OWNER↔store binding, postable clearing/EBD mappings,
+    active provider + posting profile, canonical bank account).
+  - STOP if: any violation.
+- [ ] **I12. Drift verification cadence.** I11 is the FIRST go-live
+  preflight that can legitimately pass, because I5/J0 has now created the
+  required binding. **After the first successful I11 go-live preflight**,
+  rerun it after every subsequent sync/import or supported configuration
+  action and before every later phase sign-off. If any post-J0 operation
+  causes `binding_missing` or another violation: STOP, investigate the
+  state change — do not recreate or bypass the binding casually.
+
+Sign-off: operator ______ date ______
+
+---
+
+## J. Phase 7 — G1 rehearsal matrix
+
+One controlled, current-head rehearsal using **synthetic data generated
+solely for the rehearsal environment** — merchant approval does not
+convert real merchant data into non-merchant data. The Shopify test cases
+must run through the real deployed Shopify integration using the synthetic
+development store, not merely direct fake command calls; settlement and
+bank files must also be synthetic and contain no real merchant identifiers
+or amounts. Where the supported workflow is user-facing,
+run it through the real deployed application surfaces (frontend pages and
+HTTP APIs), not test harnesses. Existing test fixtures and documented APIs
+are references only. Record every scenario's evidence in
+`failure-injection/` and `reconciliation/`.
+
+**J0 was executed and independently signed at I5, before go-live
+preflight.** It is a G1 prerequisite but is not repeated here, because
+repeating its initial unbound state would require destroying or revoking
+the binding that I11 correctly requires. Do not remove the binding to
+replay J0. A second-browser J0 proof, if required for the pilot's
+supported browser posture, must use a controlled fresh Shopify
+user/binding setup or another fresh rehearsal environment — it must not
+destructively alter the already signed primary proof without restarting
+the affected proof sequence.
+
+For each row: run → verify the durable outcome and its operator surface →
+verify `/_health/alerts` (or `python manage.py alert_check`) reflects it →
+verify recovery where the contract heals.
+
 - [ ] **J1. Shopify paid order:** successful order; exact
   redelivery/idempotent retry (no duplicate journal); mapping failure →
   visible failure → correction → retry heals exactly once.
@@ -663,9 +698,10 @@ STOP if any scenario yields: a silent missing financial effect, a duplicate
 financial effect, a false success, terminal evidence loss, a false
 all-clear, or an unhealable corrected retry.
 
-**G1 cannot close unless J0 passes.** The financial J1–J7 matrix alone is
-insufficient — the tracker's A1 row remains operationally open until J0
-evidence exists. This documentation PR marks neither A1 nor G1 complete.
+**G1 cannot close unless I5/J0 and J1–J7 all pass.** The financial J1–J7
+matrix alone is insufficient — the tracker's A1 row remains operationally
+open until J0 evidence exists. This documentation PR marks neither A1 nor
+G1 complete.
 
 Sign-off: operator ______ date ______
 
@@ -1037,33 +1073,43 @@ after G1 and G2 are recorded complete in the
    (§E); base onboarding (§H); activation-aware validation (§I1); pilot
    activation (§I2); pilot-aware Shopify provisioning (§I3);
 4. connect the **real merchant Shopify store** — for the first time
-   anywhere in this process;
-5. run the real-store product sync only after the gates have closed;
-6. verify: exactly one ACTIVE store; OWNER binding; EGP store currency;
-   every product NON_STOCK; no inventory/COGS mappings or residue;
-   provider/posting-profile configuration; bank account; go-live
-   preflight (§I10) clean; `/_health/alerts` healthy;
-7. **merchant cutover authentication smoke proof** — after the real
-   store is connected and before any merchant financial item is
-   admitted: a real-store `ShopifyUserBinding` exists for the intended
-   merchant operator; one successful embedded launch using the
-   designated pilot browser posture with third-party cookies disabled;
-   session-token authentication resolving to the correct merchant
-   company and membership; clean go-live preflight including the
-   expected OWNER/store binding. This is a merchant-specific smoke
-   proof, not a substitute for the synthetic J0 rehearsal. STOP before
-   merchant data if the real operator cannot authenticate in the
-   embedded app through the explicit binding;
-8. keep historical order import set to `skip` until the founder
+   anywhere in this process — through the controlled **standalone OAuth
+   path**. Expected interim state: exactly one ACTIVE real store and
+   **no active `ShopifyUserBinding` yet**;
+5. perform the **merchant-specific embedded-authentication cutover
+   proof** (the same ceremony class the synthetic I5/J0 rehearsal
+   proved, now applied to the real operator and store): third-party
+   cookies disabled under the designated pilot browser posture →
+   session token → `not_bound` → the standalone intended merchant OWNER
+   creates the linking nonce → embedded redemption → exact real
+   store/`sub`/membership/company binding → nonce replay refusal →
+   bound embedded session login resolving the correct merchant company
+   and membership. This does not replace G1 — it applies the
+   already-proven ceremony to the new merchant environment;
+6. run the real-store product sync;
+7. verify: exactly one ACTIVE store; EGP store currency; every product
+   NON_STOCK; no inventory/COGS mappings or residue;
+   provider/posting-profile configuration; bank account;
+8. run the **binding-dependent go-live preflight (§I11 form)** — now
+   legitimately able to pass — and require it clean, including the
+   expected OWNER/store binding;
+9. verify `/_health/alerts` healthy and the remaining cutover controls;
+   keep historical order import set to `skip` until the founder
    separately authorizes the intake window;
-9. sign a dated GO decision before the first real
-   order/refund/settlement/bank item is admitted.
+10. sign a dated GO decision before the first real
+    order/refund/settlement/bank item is admitted.
 
 STOP if: the intended merchant deployment uses a revision or image not
 named by the completed revision pack; the rehearsal database or its
 backup is reused; synthetic financial history appears in the merchant
 database; both synthetic and real stores coexist; the real store is
-connected before G1/G2 closure; or go-live preflight is not clean.
+connected before G1/G2 closure; the real-store go-live preflight is run
+before the binding ceremony; the connect path silently creates or
+selects an unrelated binding; the intended merchant OWNER is not the
+bound membership; a first-owner fallback occurs; the real embedded user
+reaches Nxentra before the explicit binding; merchant financial data
+arrives before the final go-live preflight and GO sign-off; or go-live
+preflight is not clean.
 
 No in-place synthetic-store-to-real-store replacement procedure exists or
 is permitted: the exactly-one-ACTIVE-store constraint and the rehearsal
