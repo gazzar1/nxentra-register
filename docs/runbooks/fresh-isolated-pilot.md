@@ -70,16 +70,27 @@ named evidence existing in the manifest.
     `git rev-parse HEAD` and `git rev-parse HEAD^{tree}` and
     `git status --porcelain` (must be empty).
   - Expected result: HEAD is a commit on `main` that has a fully green CI
-    run (all seven jobs including Quality Gate). Expected revision for the
-    first execution: `c4896ff31b283d165a5180ca210cb981a93b3588`
-    (tree `8104cf6824e473e92cc4c184c04525cd160ba95f`; main CI run
-    33394909451, seven jobs green). A later reviewed `main` revision with
-    green required CI may be **selected here, before a new rehearsal
-    begins** — that selected revision then becomes the subject of this
-    runbook's G1 and G2, and the operator records the new exact SHA. This
-    selection rule never transfers a PRIOR G1/G2 verdict forward: the
-    merchant cutover (§Q) must deploy the exact revision pack that passed
-    the gates.
+    run (all seven jobs including Quality Gate). **Minimum
+    application-code baseline:**
+    `3fc79de4a4371ea3e45ff09eded369a44aa6c747`
+    (code tree `16249dd0362642fb77d4eddd7e291579d03a4bd2`; green main CI
+    run 33571139879, seven jobs) — the merge of the PR #139
+    refund-completeness correction. **No earlier commit lacking PR #139
+    is eligible** for G1/G2 (the previously named `c4896ff3` revision
+    predates that correction and may no longer be used). Because this
+    runbook document itself merges after that baseline, the exact
+    revision selected at execution must be a `main` commit containing
+    BOTH PR #139 and this merged runbook, with its own green required
+    CI; the operator records that exact selected SHA, and the runbook
+    document revision is recorded separately from the deployed
+    application revision. A later reviewed `main` revision with green
+    required CI may be **selected here, before a new rehearsal begins**
+    — that selected revision and its immutable artifact then become the
+    subject of this runbook's G1 and G2, and the operator records the
+    new exact SHA. This selection rule never transfers a PRIOR G1/G2
+    verdict forward — green CI is a selection precondition, not an
+    operational proof: the merchant cutover (§Q) must deploy the exact
+    revision pack that passed the gates.
   - Evidence to retain (`revision/`): commit SHA, tree SHA, CI run id and
     conclusion, deployment/image identifier, deployment timestamp, operator,
     database identifier (host/name only — no credentials), hosting region,
@@ -480,14 +491,18 @@ pre-activation check:
     Arabic-field configuration changes; or an import task is queued.
 - [ ] **I4. Establish the CONTROLLED SHOPIFY INTAKE HOLD.**
   - Why: `complete_oauth()` automatically schedules `initial_store_sync`
-    the moment the store becomes ACTIVE, and that task pulls an
-    execution-time seven-day order/refund window plus products and
-    payouts as soon as a worker consumes it; declarative Shopify
+    the moment the store becomes ACTIVE, and as soon as a worker
+    consumes it that task pulls the full initial-intake contract
+    (defined before I13): orders selected by the execution-time
+    seven-day `created_at` window, refund candidates selected by the
+    execution-time seven-day order-`updated_at` window — each booked
+    with its complete parent order and complete refund history
+    regardless of age — plus products and payouts; declarative Shopify
     webhooks can also begin delivering immediately after connection.
     Store connection is therefore NOT inert — ingestion must be held
     until deliberately released. (`import_mode="skip"` suppresses only
     the onboarding historical-import request; it does NOT suppress the
-    OAuth-triggered initial sync.)
+    OAuth-triggered initial sync or its refund catch-up leg.)
   - Command / action, in order: (1) keep the web process available for
     exactly: Shopify OAuth install/callback, embedded session login,
     linking-nonce creation/redemption, authenticated configuration
@@ -669,26 +684,161 @@ pre-activation check:
   `ShopifyUserBinding`, the Shopify warehouse/Customer/PostingProfile
   setup records, the module-account mappings, the non-financial
   `SHOPIFY_STORE_CONNECTED` event, and account/provider configuration.
+
+**Initial-intake contract — reusable definition** (used by I13, I14, the
+§K controls, and §Q; every window is computed at EXECUTION time, when
+the worker starts the task — never at OAuth time):
+
+```
+INITIAL_SYNC_STARTED_AT = the actual worker start timestamp of the
+                          initial_store_sync task
+
+ORDER_CREATED_WINDOW =
+    [INITIAL_SYNC_STARTED_AT − 7 days, INITIAL_SYNC_STARTED_AT]
+
+REFUND_CANDIDATE_UPDATED_WINDOW =
+    [INITIAL_SYNC_STARTED_AT − 7 days, INITIAL_SYNC_STARTED_AT]
+
+A = eligible Shopify orders whose created_at is in ORDER_CREATED_WINDOW
+
+B = orders currently refunded or partially_refunded whose Shopify
+    order.updated_at is in REFUND_CANDIDATE_UPDATED_WINDOW
+
+AUTHORIZED_PARENT_ORDER_SET = A union B, deduplicated by Shopify order id
+```
+
+(The live B selection is the refund catch-up's search — the
+`updated_at` window AND `financial_status:refunded OR
+financial_status:partially_refunded`. Cancelled candidates are skipped
+by the refund leg with no financial effect; only a cancelled order
+whose `created_at` also falls in the order window routes through the
+cancellation path — an older cancelled candidate is deliberately not
+ingested at all and appears only inside the refund leg's `scanned`
+count.)
+
+For every B candidate, the catch-up may: book the full parent order if
+it is absent locally, **even when that order was created months or
+years before the seven-day window**; fetch and process the complete
+refund history returned by Shopify for that order; and process refunds
+whose individual `created_at` values fall outside the seven-day window.
+The seven-day period is a candidate-SELECTION window — it is NOT a
+guarantee that every imported order or refund source timestamp is at
+most seven days old.
+
+A and B may overlap. A parent order appearing in both is counted and
+posted only once. Existing idempotency (`process_order_paid` /
+`process_refund`) remains load-bearing.
+
+**Refund-completeness fix on record (PR #139):** merge
+`3fc79de4a4371ea3e45ff09eded369a44aa6c747`; reviewed head
+`a3f1f44bcaffec78760982d5afadf0a99a5d4e10`; main CI 33571139879 —
+success. `Order.refunds` is queried directly as its exact uncapped
+2026-04 list shape; `Refund.transactions` and `Refund.refundLineItems`
+are cursor-paginated to exhaustion; incomplete pages fail loudly
+through `ShopifyGraphQLIncomplete`; the refund leg reports structured
+non-success (`status`, `fetch_failures`) and a fetch failure books NO
+REFUNDS for that order — a parent order booked earlier in the same
+pass stays committed (a newly booked parent with zero refunds after a
+fetch failure is an EXPECTED intermediate state, not an unexplained
+variance), and the idempotent retry completes the refund history with
+no duplicate financial effect. Refund evidence is complete or the
+refund leg fails loudly — no partial refund page may masquerade as
+complete.
+
+**Mechanical side effects of the authorized intake** (expected and
+named here so they are never read as "unexplained" rows): for every
+booked paid order the initial task also fetches the order's
+fulfillments and records `ShopifyFulfillment` source rows — under the
+pilot's NON_STOCK-only catalog these carry no COGS lines and may
+legitimately carry status ERROR "No SKUs matched inventory items",
+an expected and explained non-financial state; the task's
+deferred-COGS sweep leg also runs and must report 0 booked under the
+profile. The task result's top-level `status` field is unconditionally
+`"ok"` and proves nothing — evaluate each leg's own status (`orders`,
+`payouts`, `products`, `refunds`, `deferred_cogs`) individually.
+
 - [ ] **I13. Synthetic-rehearsal intake authorization.** A dated
   sign-off authorizing release of the queued initial sync for the
-  SYNTHETIC store (the rehearsal twin of the §Q GO decision).
+  SYNTHETIC store (the rehearsal twin of the §Q GO decision). The
+  synthetic sign-off explicitly authorizes, per the intake-contract
+  definition above:
+  1. set A — synthetic orders created during the seven-day
+     `ORDER_CREATED_WINDOW`;
+  2. set B — synthetic refunded/partially-refunded orders whose
+     order.`updated_at` falls in the seven-day
+     `REFUND_CANDIDATE_UPDATED_WINDOW`, regardless of parent-order age;
+  3. for every B candidate, the complete parent order and complete
+     refund history as returned by Shopify, regardless of individual
+     refund dates;
+  4. the complete synthetic product catalog;
+  5. execution of the payout sync leg, with payout accounting expected
+     to remain blocked/skipped under `ISOLATED_SHADOW_LEDGER_V1`.
+  The sign-off must acknowledge: an imported parent order or refund may
+  have a Shopify source date older than seven days even though the
+  change that selected the parent order occurred inside the
+  refund-candidate `updated_at` window.
   Sign-off: operator ______ date ______
-- [ ] **I14. Controlled initial-sync release — worker only.** Start the
-  Celery worker ONLY; keep beat stopped and webhooks blocked. Observe
-  the queued `shopify.initial_store_sync` task: record its task id from
+- [ ] **I14. Controlled initial-sync release — worker only. Verify the
+  authorized intake CONTRACT, not a simple window.** Start the Celery
+  worker ONLY; keep beat stopped and webhooks blocked. Observe the
+  queued `shopify.initial_store_sync` task: record its task id from
   the worker receive/start log, its start/finish timestamps, and its
   complete result (privately); require exactly one accounted initial
-  task for this connection. Verify the task's effective order/refund
-  window is `INITIAL_SYNC_STARTED_AT − 7 days` through
-  `INITIAL_SYNC_STARTED_AT` (the window is computed at EXECUTION time,
-  not at OAuth time). Then verify: synthetic products synchronized and
-  every product NON_STOCK with zero inventory/COGS account links and
-  zero inventory ledger/FIFO residue; the durable `shop_currency`
-  snapshot now exists and is EGP; synthetic orders/refunds carry
-  truthful outcomes with no duplicate journal; the payout leg's result
-  is recorded and payout ACCOUNTING remains blocked/skipped under the
-  constrained profile; no unexplained source or financial row appears.
-  Rerun the go-live preflight and `/_health/alerts`.
+  task for this connection. Record: `INITIAL_SYNC_STARTED_AT`,
+  `ORDER_CREATED_WINDOW_START`, `ORDER_CREATED_WINDOW_END`,
+  `REFUND_CANDIDATE_UPDATED_WINDOW_START`, and
+  `REFUND_CANDIDATE_UPDATED_WINDOW_END` (all execution-time, per the
+  intake-contract definition). Require the task result to show, PER
+  LEG (the top-level `status` is unconditionally `"ok"` and proves
+  nothing — §I definition):
+  - the order-created leg completed or failed loudly;
+  - the refund catch-up leg completed with `status = "ok"` and
+    `fetch_failures = 0` — the five-field refund-leg shape
+    (`status`/`scanned`/`refunds_created`/`errors`/`fetch_failures`)
+    is guaranteed only on the `ok` and complete-history-failure
+    shapes; any other error shape carries only `status`/`error` and
+    is equally a STOP;
+  - every process error is zero or individually explained, corrected,
+    and retried.
+  Then verify against the database and the §K control pack (the task
+  result cannot show these):
+  - every candidate parent order has complete refund evidence, and no
+    partial refund list or refund-connection page was accepted —
+    proven by the refund leg's `status = "ok"` with
+    `fetch_failures = 0` (order-page partial responses are separately
+    visible only as the private worker-log warning "Shopify GraphQL
+    partial response" and must be inspected if present);
+  - the A union B parent-order set is deduplicated by Shopify order
+    id — reconcile the union from order ids in the §K control pack,
+    NEVER by summing leg counters: an overlapping A/B order
+    legitimately appears in both legs' counters (`fetched` and
+    `scanned`);
+  - all source and financial effects reconcile to the authorized
+    intake contract — not merely to source timestamps within seven
+    days.
+  Record: `OLDEST_IMPORTED_PARENT_ORDER_CREATED_AT`,
+  `OLDEST_IMPORTED_REFUND_CREATED_AT`,
+  `NEWEST_IMPORTED_REFUND_CREATED_AT`, `CANDIDATE_ORDER_COUNT_A`,
+  `CANDIDATE_ORDER_COUNT_B`, `CANDIDATE_ORDER_UNION_COUNT`,
+  `COMPLETE_REFUND_COUNT`, `REFUND_FETCH_FAILURES`. An older
+  parent-order date or refund date is NOT a violation when the order
+  was legitimately selected through B. Then verify: synthetic products
+  synchronized and every product NON_STOCK with zero inventory/COGS
+  account links and zero inventory ledger/FIFO residue; the durable
+  `shop_currency` snapshot now exists and is EGP; synthetic
+  orders/refunds carry truthful outcomes with no duplicate journal;
+  the payout leg's result is recorded and payout ACCOUNTING remains
+  blocked/skipped under the constrained profile; the fulfillment
+  backfill's `ShopifyFulfillment` rows appear only in their expected
+  non-financial state and the `deferred_cogs` leg reports 0 booked
+  (the §I definition's mechanical side effects); no unexplained source
+  or financial row appears. Rerun the go-live preflight and
+  `/_health/alerts`.
+  STOP if: `fetch_failures` is nonzero; the refund leg reports error
+  or incomplete evidence; a candidate order's full refund history
+  cannot be assembled; counts across A, B, and their union cannot be
+  reconciled; or an older imported parent/refund is omitted merely to
+  preserve a seven-day timestamp narrative.
 - [ ] **I15. Webhook release and retry reconciliation.** Unblock the
   Shopify webhook route while beat remains stopped. Allow queued
   Shopify retries to arrive; verify idempotency — duplicate deliveries
@@ -789,6 +939,14 @@ Minimum schema:
 | Control | Source of truth |
 |---|---|
 | Shopify order/refund IDs, counts, gross totals | Shopify admin/exports |
+| Initial-intake set A: order count, ids, totals (`created_at` window) | Shopify admin/exports |
+| Initial-intake set B: refund-candidate order count and ids (order-`updated_at` window) | Shopify admin/exports |
+| A union B order count after deduplication + A/B overlap count | Shopify admin/exports vs system |
+| Complete refund count and totals per B candidate | Shopify admin/exports vs system |
+| Oldest and newest imported parent-order dates | system (read-only) vs Shopify |
+| Oldest and newest imported refund dates | system (read-only) vs Shopify |
+| Refund fetch-failure count (must be 0) | `initial_store_sync` task result |
+| The complete `initial_store_sync` task result | worker log / task result (private) |
 | Settlement row count, gross, fee, net totals | the CSV files |
 | Bank line count, debit total, credit total | the CSV files |
 | Event counts by relevant type | system (read-only) |
@@ -832,6 +990,14 @@ Financial totals count the amount once, from the financial-effect
 dimension; exception/review totals independently count the quarantine
 evidence. Never double-count a value merely because it carries two
 truthful classifications.
+
+The initial-intake controls follow the intake-contract definition (§I,
+before I13): **financial totals must count an overlapping A/B parent
+order exactly once**; review/evidence totals may independently count
+rejection, failure, or quarantine records without duplicating the
+financial amount. An old parent-order or refund date visible in these
+controls is not a variance when the order was legitimately selected
+through set B.
 
 STOP on any unexplained difference — **even when Nxentra reports healthy.**
 
@@ -1066,8 +1232,21 @@ Sign-off: operator ______ date ______
   GO;
 - a blanket zero-event assertion treating the non-financial
   `SHOPIFY_STORE_CONNECTED` event as financial ingestion;
-- a GO decision that does not explicitly authorize the seven-day
-  lookback;
+- a GO decision that does not explicitly authorize the full intake
+  contract (§I definition: sets A and B, any-age complete parent orders
+  and refund histories, catalog, payout leg), or GO wording that
+  authorizes only source dates up to seven days old;
+- founder or merchant refusal of the any-age parent-order reach, or of
+  the complete refund-history intake (the §Q step-11 STOP governs the
+  disposition: no worker or webhook release, no queue purge);
+- the refund catch-up leg reporting status `error` or incomplete
+  evidence;
+- `fetch_failures > 0`;
+- the A/B candidate-set overlap double counted;
+- a B candidate missing its complete refund evidence;
+- an older parent order or refund excluded merely because its date
+  predates the seven-day window;
+- any claim that `import_mode="skip"` suppresses the refund catch-up;
 - an initial-sync result not observed and retained;
 - webhook release before initial-task reconciliation;
 - beat restarted before initial-task and webhook-retry reconciliation;
@@ -1202,36 +1381,68 @@ after G1 and G2 are recorded complete in the
     `PRE_GO_TIMESTAMP`. If merchant source or financial data has
     already been ingested: STOP and recreate the fresh merchant
     environment — never delete it manually to recover the proof;
-11. sign the **dated GO decision**, which must state: "I authorize
-    release of Shopify financial/source intake for this merchant. I
-    explicitly authorize the queued `initial_store_sync` task to import
-    its execution-time seven-day Shopify order/refund window, together
-    with the merchant product catalog. I understand this can include
-    source transactions whose Shopify timestamps predate this GO
-    decision by up to seven days." Record: `GO_TIMESTAMP`,
-    `GO_OPERATOR`, the redacted store identity,
+11. sign the **dated GO decision**, using the intake-contract
+    definition (§I, before I13), which must state: "I authorize release
+    of Shopify financial and source intake for this merchant. I
+    authorize the queued `initial_store_sync` task, beginning at the
+    recorded `INITIAL_SYNC_STARTED_AT`, to ingest: (1) eligible orders
+    created during the execution-time seven-day `ORDER_CREATED_WINDOW`;
+    (2) refunded or partially refunded orders whose Shopify
+    order.`updated_at` falls during the execution-time seven-day
+    `REFUND_CANDIDATE_UPDATED_WINDOW`, regardless of the parent
+    order's age; (3) for every order selected by item 2, the complete
+    parent order and its complete refund history as available when the
+    catch-up executes, regardless of the individual refund dates;
+    (4) the merchant product catalog; (5) the payout synchronization
+    leg, while payout accounting remains blocked under
+    `ISOLATED_SHADOW_LEDGER_V1`. I understand that an order created
+    months or years before this GO decision may be imported and booked
+    in full when its refund state changed during the seven-day
+    refund-candidate window. I understand that refunds attached to
+    that selected order may have dates outside the seven-day window. I
+    authorize this as shadow-ledger intake, subject to the documented
+    controls and stop conditions." Record: `GO_TIMESTAMP`,
+    `GO_OPERATOR`, the redacted Shopify store identity,
     `INITIAL_LOOKBACK_DAYS = 7`, `PRE_GO_INGESTION_BASELINE_HASH`, the
-    authorized shadow-ledger intake period, and merchant
-    acknowledgement/approval where required. Clarify in the record:
-    `import_mode="skip"` suppresses the onboarding historical-import
-    request; it does NOT suppress the OAuth-triggered seven-day initial
-    sync. **If the merchant or founder does not approve that
-    retrospective window: STOP before releasing any worker or webhook
-    ingress — do not attempt a queue purge, and do not claim a
+    authorized intake-contract version, and merchant
+    acknowledgement/approval where required. The GO record must NOT
+    claim that all imported source timestamps are at most seven days
+    old, must not promise post-GO-only source dates, and must not
+    describe the reach as a simple seven-day historical window.
+    Clarify in the record: `import_mode="skip"` suppresses the
+    onboarding historical-import request; it does NOT suppress the
+    OAuth-triggered initial sync or its refund catch-up. **If the
+    founder or merchant does not accept the any-age parent-order and
+    complete refund-history reach: STOP before releasing any worker or
+    webhook ingress — do not purge the queued task, and do not claim a
     post-GO-only source-date cutover under the current code. A
-    code-level ingestion-hold or suppress-initial-sync mechanism must
-    be implemented and reviewed before connecting that merchant
-    store;**
+    code-level intake-selection control must be designed, implemented,
+    reviewed, and proven before connecting that merchant store;**
 12. release intake — **worker only**: keep webhooks blocked and beat
     stopped; start the Celery worker; observe the queued
     `shopify.initial_store_sync` task; record its task id, start/end
-    timestamps, and complete result; verify its execution-time
-    seven-day window; require completion or a fully explained loud
-    failure. Verify: source rows and financial effects reconcile to the
-    authorized window; every expected financial effect posts once;
-    rejected/failed/quarantined outcomes appear in their operator
-    surfaces; no unsupported payout-accounting effect occurs; every
-    product remains NON_STOCK; no inventory/COGS residue appears;
+    timestamps, and complete result; record the execution-time
+    `INITIAL_SYNC_STARTED_AT` and both windows (`ORDER_CREATED_WINDOW`,
+    `REFUND_CANDIDATE_UPDATED_WINDOW`); require completion or a fully
+    explained loud failure, evaluated PER LEG (the top-level `status`
+    is unconditionally `"ok"` and proves nothing — §I definition).
+    **Reconcile to the authorized intake contract** (§I definition),
+    not merely to source timestamps within seven days: record the A
+    and B candidate sets and their overlap; reconcile their union
+    from order ids without double counting (never by summing leg
+    counters); require every B candidate's complete refund history to
+    be present or the leg to fail loudly; require the refund leg's
+    `status = "ok"` and `fetch_failures == 0`; require every refund
+    amount to use the complete transaction/line evidence; make old
+    parent orders and old refund dates visible in the control pack
+    (they are NOT violations when selected through B); verify every
+    posted financial effect occurs exactly once; keep task-level
+    errors visible and dispositioned; rejected/failed/quarantined
+    outcomes appear in their operator surfaces; no unsupported
+    payout-accounting effect occurs; every product remains NON_STOCK;
+    no inventory/COGS residue appears; the fulfillment backfill and
+    `deferred_cogs` leg appear only in their expected non-financial
+    state (§I definition's mechanical side effects);
 13. rerun `pilot_preflight --phase go-live`, `/_health/alerts`, and the
     source/control totals;
 14. only after the initial task is accounted for, unblock Shopify
@@ -1239,7 +1450,11 @@ after G1 and G2 are recorded complete in the
     webhook delivery does not duplicate financial effects;
 15. start Celery beat **LAST**;
 16. rerun the go-live preflight and alerts after beat starts;
-17. sign the final **intake-complete checkpoint**.
+17. sign the final **intake-complete checkpoint**. Do NOT sign while:
+    the refund catch-up leg's status is not `ok`; `fetch_failures > 0`;
+    an old candidate parent's complete history is unexplained; the A/B
+    overlap is double counted; or a partial fetch is treated as
+    success.
 
 The GO decision precedes the first merchant product/order/refund source
 write.
@@ -1253,8 +1468,8 @@ before the binding ceremony; the connect path silently creates or
 selects an unrelated binding; the intended merchant OWNER is not the
 bound membership; a first-owner fallback occurs; the real embedded user
 reaches Nxentra before the explicit binding; the initial task runs
-before GO; its effective window differs from the authorized seven-day
-contract; more than one unexplained initial task runs; webhooks are
+before GO; its intake differs from the authorized intake contract (§I
+definition); more than one unexplained initial task runs; webhooks are
 unblocked before the initial task is accounted for; beat starts before
 initial intake and retries are reconciled; any unsupported
 payout/COGS/inventory financial effect appears; any source row lacks a
