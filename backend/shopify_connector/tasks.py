@@ -20,6 +20,7 @@ from django.db import connections, transaction
 from django.utils import timezone as tz
 
 from accounts import rls
+from accounts.pilot_policy import SKIPPED_PILOT_SCOPE
 from accounts.rls import rls_bypass
 
 logger = logging.getLogger(__name__)
@@ -440,13 +441,49 @@ def _sweep_deferred_cogs(store) -> int:
     return booked
 
 
+def _is_pilot_scope_skip(result) -> bool:
+    """True when a canonical writer answered with the A4 structured
+    pilot-scope skip (``skip_pilot_currency`` / ``skip_if_unsupported``): a
+    SUCCESSFUL result whose data carries ``status == SKIPPED_PILOT_SCOPE``.
+    That is the deliberate no-mutation / no-retry disposition — no row, no
+    event — and is distinct from the idempotent ``{"skipped": True}``
+    already-booked answer. A sync leg must stop processing such an order
+    right there: any follow-up read against the (non-existent) local row
+    would only turn the disposition into a recurring processing error."""
+    return bool(result.success and result.data and result.data.get("status") == SKIPPED_PILOT_SCOPE)
+
+
 def _sync_refunds(store, updated_at_min: str, updated_at_max: str) -> dict:
     """A159: durable refund recovery. Finds orders whose refund state
     changed in the window (updated_at search — catches refunds on orders
     created long before the lookback), books the parent order first if it
     was never seen (refund-before-order), then backfills its refunds via
-    the idempotent process_refund."""
-    from .commands import _admin_client, process_order_paid
+    the idempotent process_refund.
+
+    Every candidate here is REFUNDED or PARTIALLY_REFUNDED by selection —
+    captured money — so a populated cancelled_at is cancellation
+    provenance, never a no-financial-effect predicate: a cancelled
+    refunded order books its parent invoice and its refunds exactly like
+    an open one, then records the cancellation through the canonical
+    process_order_cancelled (posted-order branch: raw_payload stamp). The
+    blanket cancelled skip that used to live here silently dropped both
+    the parent and its refunds while the leg still reported ok.
+
+    A candidate the canonical paid writer dispositions OUT of the pilot's
+    scope (A4 EGP-only admission: structured skip, no row, no event, no
+    retry) is counted in ``pilot_scope_skipped`` and left there — it is
+    neither processed nor an error, and no provenance stamp or refund
+    backfill runs against the row it deliberately does not have. Every
+    cancelled candidate lands in exactly one of three outcomes: processed
+    (``cancelled_financial_processed``), errored (it contributed one or
+    more ``cancelled_processing_errors`` entries — that counter is
+    per-error, so one candidate can add several), or dispositioned out of
+    scope (``pilot_scope_skipped``, which counts open candidates too). The
+    checkable inequality is therefore ``candidates - processed <=
+    cancelled_processing_errors + pilot_scope_skipped``; on a correctly
+    scoped EGP store ``pilot_scope_skipped`` is zero.
+    """
+    from .commands import _admin_client, process_order_cancelled, process_order_paid
 
     client = _admin_client(store)
     if not client:
@@ -456,14 +493,25 @@ def _sync_refunds(store, updated_at_min: str, updated_at_max: str) -> dict:
     refunds_created = 0
     errors = 0
     fetch_failures = 0
+    pilot_scope_skipped = 0  # A4 structured out-of-scope disposition (cancelled or not)
+    cancelled_financial_candidates = 0
+    cancelled_financial_processed = 0
+    cancelled_processing_errors = 0
     for order_payload in client.iter_refunded_orders(updated_at_min, updated_at_max):
         scanned += 1
         shopify_order_id = order_payload.get("id")
+        is_cancelled = bool(order_payload.get("cancelled_at"))
+        candidate_errors = 0
+        if is_cancelled:
+            cancelled_financial_candidates += 1
         if not shopify_order_id:
-            continue
-        # Cancelled orders route through process_order_cancelled in step 1;
-        # booking revenue for them here would be wrong.
-        if order_payload.get("cancelled_at"):
+            # Defense in depth: the client fails loudly on a malformed node
+            # today, but every candidate here is captured money by the leg's
+            # selector — an id-less payload must never vanish with only
+            # `scanned` as its trace.
+            errors += 1
+            if is_cancelled:
+                cancelled_processing_errors += 1
             continue
 
         # Ensure the parent order is booked BEFORE the refund events emit —
@@ -476,6 +524,8 @@ def _sync_refunds(store, updated_at_min: str, updated_at_max: str) -> dict:
                 order_result = process_order_paid(store, order_payload)
             if not order_result.success:
                 errors += 1
+                if is_cancelled:
+                    cancelled_processing_errors += 1
                 logger.warning(
                     "[A159] Could not book parent order %s on %s before refund backfill: %s",
                     shopify_order_id,
@@ -485,6 +535,8 @@ def _sync_refunds(store, updated_at_min: str, updated_at_max: str) -> dict:
                 continue
         except Exception as e:
             errors += 1
+            if is_cancelled:
+                cancelled_processing_errors += 1
             logger.warning(
                 "[A159] Parent-order booking failed for %s on %s: %s",
                 shopify_order_id,
@@ -497,12 +549,67 @@ def _sync_refunds(store, updated_at_min: str, updated_at_max: str) -> dict:
                 connection.rollback()
             continue
 
+        if _is_pilot_scope_skip(order_result):
+            # A4 EGP-only admission dispositioned this candidate out of the
+            # pilot's scope: no row, no event, no mutation, no retry. Stop
+            # here — the provenance stamp would only answer not_captured for
+            # the missing row, and every refund backfill would fail "Order
+            # not found", turning a deliberate disposition into a recurring
+            # processing error on every poll (and a network read per poll
+            # for an order the pilot refuses).
+            pilot_scope_skipped += 1
+            continue
+
+        if is_cancelled:
+            # Cancellation provenance through the canonical cancellation
+            # writer: the parent is booked (or already existed), so the
+            # writer takes its posted-order branch and stamps cancelled_at
+            # on raw_payload. Audit metadata: a stamp failure never blocks
+            # the refund backfill, but is counted loudly.
+            try:
+                _reassert_shopify_rls()
+                with transaction.atomic():
+                    cancel_result = process_order_cancelled(store, order_payload)
+                if not cancel_result.success:
+                    errors += 1
+                    cancelled_processing_errors += 1
+                    candidate_errors += 1
+                    logger.warning(
+                        "[A159] Cancellation provenance stamp failed for order %s on %s: %s",
+                        shopify_order_id,
+                        store.shop_domain,
+                        cancel_result.error,
+                    )
+            except Exception as e:
+                errors += 1
+                cancelled_processing_errors += 1
+                candidate_errors += 1
+                logger.warning(
+                    "[A159] Cancellation provenance stamp failed for order %s on %s: %s",
+                    shopify_order_id,
+                    store.shop_domain,
+                    e,
+                )
+                from django.db import connection
+
+                if connection.needs_rollback:
+                    connection.rollback()
+
         backfill = _backfill_order_refunds(store, client, shopify_order_id)
         refunds_created += backfill["booked"]
         if backfill["fetch_failed"]:
             fetch_failures += 1
             errors += 1
         errors += backfill["process_errors"]
+        if is_cancelled:
+            if backfill["fetch_failed"]:
+                cancelled_processing_errors += 1
+                candidate_errors += 1
+            if backfill["process_errors"]:
+                cancelled_processing_errors += backfill["process_errors"]
+                candidate_errors += backfill["process_errors"]
+            if candidate_errors == 0:
+                cancelled_financial_processed += 1
 
     if fetch_failures:
         # A refund history that could not be fetched COMPLETELY must never
@@ -515,6 +622,10 @@ def _sync_refunds(store, updated_at_min: str, updated_at_max: str) -> dict:
             "refunds_created": refunds_created,
             "errors": errors,
             "fetch_failures": fetch_failures,
+            "pilot_scope_skipped": pilot_scope_skipped,
+            "cancelled_financial_candidates": cancelled_financial_candidates,
+            "cancelled_financial_processed": cancelled_financial_processed,
+            "cancelled_processing_errors": cancelled_processing_errors,
         }
     return {
         "status": "ok",
@@ -522,6 +633,10 @@ def _sync_refunds(store, updated_at_min: str, updated_at_max: str) -> dict:
         "refunds_created": refunds_created,
         "errors": errors,
         "fetch_failures": 0,
+        "pilot_scope_skipped": pilot_scope_skipped,
+        "cancelled_financial_candidates": cancelled_financial_candidates,
+        "cancelled_financial_processed": cancelled_financial_processed,
+        "cancelled_processing_errors": cancelled_processing_errors,
     }
 
 
@@ -595,11 +710,25 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
     Fetch orders from Shopify REST Admin API and process any that are missing locally.
 
     Uses the orders.json endpoint with date filtering to catch missed webhooks.
-    Orders are routed by financial_status / cancelled_at:
+    Orders are routed by financial_status / cancelled_at (see
+    _pick_order_handler):
       - paid / authorized / partially_paid -> process_order_paid (books invoice)
+      - refunded / partially_refunded       -> process_order_paid, then the
+        refund backfill books the offsetting refunds
+      - cancelled + captured money (paid / partially_paid / refunded /
+        partially_refunded)                 -> process_order_paid FIRST, then
+        the canonical process_order_cancelled stamps cancellation provenance
+        (cancellation alone is not a no-financial-effect predicate)
+      - cancelled, money never captured     -> process_order_cancelled, counted
+        as an explicit intentional no-effect disposition
       - pending                             -> process_order_pending (metadata only)
-      - cancelled (with cancelled_at set)   -> process_order_cancelled
       - anything else                       -> skipped
+
+    A structured A4 pilot-scope skip from a handler (EGP-only admission: no
+    row, no event, no retry) is counted in ``pilot_scope_skipped`` — not in
+    created / skipped / errors — and ends that order's processing: no
+    provenance stamp, no fulfillment or refund backfill runs against the
+    row the pilot deliberately refused to create.
 
     All downstream handlers are idempotent.
     """
@@ -620,6 +749,15 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
     errors = 0
     cogs_fulfillments = 0  # A125: COGS booked from backfilled fulfillments
     refunds_backfilled = 0  # A159: refunds booked for first-seen-refunded orders
+    pilot_scope_skipped = 0  # A4 structured out-of-scope disposition (any handler)
+    cancelled_financial_candidates = 0  # cancelled_at + captured money
+    # ...dispositioned without error through the canonical writers (a
+    # pilot-scope skip is counted in pilot_scope_skipped instead, never
+    # here); the best-effort COGS fulfillment backfill is outside this
+    # counter (same contract as the generic errors field).
+    cancelled_financial_processed = 0
+    cancelled_no_effect_skipped = 0  # cancelled, never captured: explicit intentional no-effect
+    cancelled_processing_errors = 0
 
     # A52 (2026-05-15): diagnostic logging while we hunt down why re-sync(7d)
     # returns 0 orders despite orders existing in the store. Root cause found
@@ -675,12 +813,23 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
                 "fetched": fetched,
                 "created": created,
                 "skipped": skipped,
+                "errors": errors,
                 "error": str(e),
+                "pilot_scope_skipped": pilot_scope_skipped,
+                "cancelled_financial_candidates": cancelled_financial_candidates,
+                "cancelled_financial_processed": cancelled_financial_processed,
+                "cancelled_no_effect_skipped": cancelled_no_effect_skipped,
+                "cancelled_processing_errors": cancelled_processing_errors,
             }
 
         fetched += 1
         shopify_order_id = order_payload.get("id")
         if not shopify_order_id:
+            # Defense in depth: an id-less payload must never vanish with no
+            # trace at all — count it, loudly for a cancelled one.
+            errors += 1
+            if order_payload.get("cancelled_at"):
+                cancelled_processing_errors += 1
             continue
 
         # Route to the right handler based on current order state.
@@ -694,25 +843,54 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
             skipped += 1
             continue
 
+        is_cancelled = bool(order_payload.get("cancelled_at"))
+        # A cancelled order routed to the paid writer means Shopify says money
+        # was captured (and possibly refunded) — a financially relevant
+        # candidate that must never disappear into a generic skip.
+        cancelled_financial = is_cancelled and handler is process_order_paid
+        if cancelled_financial:
+            cancelled_financial_candidates += 1
+        candidate_errors = 0
+
         # Process each order in its own savepoint so one failure
         # doesn't break the entire batch
         booked_paid = False
+        pilot_skipped = False
         try:
             _reassert_shopify_rls()
             with transaction.atomic():
                 result = handler(store, order_payload)
                 if result.success:
-                    if result.data and result.data.get("skipped"):
+                    if _is_pilot_scope_skip(result):
+                        # A4 EGP-only admission dispositioned the order out
+                        # of the pilot's scope — no row, no event, no retry.
+                        # Its own bucket: not "created" (nothing was), not
+                        # "skipped" (the benign idempotent bucket: already
+                        # booked, not_captured, or an unrouted status), not
+                        # an error (nothing failed). Nothing below may run
+                        # against the row it deliberately does not have.
+                        pilot_scope_skipped += 1
+                        pilot_skipped = True
+                    elif result.data and result.data.get("skipped"):
                         skipped += 1
                     else:
                         created += 1
+                    if is_cancelled and handler is process_order_cancelled:
+                        # Never-captured cancellation dispositioned through
+                        # the canonical cancellation writer — an intentional,
+                        # explicitly counted no-financial-effect outcome, not
+                        # a silent fold into the generic skip total.
+                        cancelled_no_effect_skipped += 1
                     # Only paid orders book revenue + a SalesInvoice; their
                     # fulfillments are what carry COGS. "Skipped" here means
                     # already-booked — those still backfill so historical
                     # orders booked before fulfillment processing get COGS.
-                    booked_paid = handler is process_order_paid
+                    booked_paid = handler is process_order_paid and not pilot_skipped
                 else:
                     errors += 1
+                    if is_cancelled:
+                        cancelled_processing_errors += 1
+                        candidate_errors += 1
                     logger.warning(
                         "Failed to process order %s from %s: %s",
                         shopify_order_id,
@@ -721,6 +899,9 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
                     )
         except Exception as e:
             errors += 1
+            if is_cancelled:
+                cancelled_processing_errors += 1
+                candidate_errors += 1
             logger.error(
                 "Error processing order %s from %s [%s]: %s",
                 shopify_order_id,
@@ -733,6 +914,42 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
 
             if connection.needs_rollback:
                 connection.rollback()
+
+        if booked_paid and is_cancelled:
+            # Captured-money cancellation: the parent booked (or already
+            # existed) through the canonical paid writer above; stamp the
+            # cancellation through the canonical cancellation writer, which
+            # takes its posted-order branch (cancelled_at on raw_payload).
+            # Audit metadata: a stamp failure never rolls back the booked
+            # order, but is counted loudly.
+            try:
+                _reassert_shopify_rls()
+                with transaction.atomic():
+                    cancel_result = process_order_cancelled(store, order_payload)
+                if not cancel_result.success:
+                    errors += 1
+                    cancelled_processing_errors += 1
+                    candidate_errors += 1
+                    logger.warning(
+                        "Cancellation provenance stamp failed for order %s from %s: %s",
+                        shopify_order_id,
+                        store.shop_domain,
+                        cancel_result.error,
+                    )
+            except Exception as e:
+                errors += 1
+                cancelled_processing_errors += 1
+                candidate_errors += 1
+                logger.warning(
+                    "Cancellation provenance stamp failed for order %s from %s: %s",
+                    shopify_order_id,
+                    store.shop_domain,
+                    e,
+                )
+                from django.db import connection
+
+                if connection.needs_rollback:
+                    connection.rollback()
 
         # A125: book COGS for the order's fulfillments. Runs AFTER the order's
         # transaction committed and is best-effort — a fulfillment failure must
@@ -752,6 +969,15 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
                     # _sync_refunds, additionally hard-fails its status).
                     errors += 1
                 errors += refund_backfill["process_errors"]
+                if cancelled_financial:
+                    if refund_backfill["fetch_failed"]:
+                        cancelled_processing_errors += 1
+                        candidate_errors += 1
+                    if refund_backfill["process_errors"]:
+                        cancelled_processing_errors += refund_backfill["process_errors"]
+                        candidate_errors += refund_backfill["process_errors"]
+        if cancelled_financial and not pilot_skipped and candidate_errors == 0:
+            cancelled_financial_processed += 1
 
     # A52: warning when fetch returns nothing — likely indicates token/date/
     # API-version issue rather than a "genuinely zero orders" situation.
@@ -766,12 +992,13 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
         )
     else:
         logger.info(
-            "[A52] _sync_orders done shop=%s fetched=%d created=%d skipped=%d errors=%d",
+            "[A52] _sync_orders done shop=%s fetched=%d created=%d skipped=%d errors=%d pilot_scope_skipped=%d",
             store.shop_domain,
             fetched,
             created,
             skipped,
             errors,
+            pilot_scope_skipped,
         )
 
     # Sync-UX (2026-06-04): refresh last_sync_at on every successful pull
@@ -796,6 +1023,11 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
         "errors": errors,
         "cogs_fulfillments": cogs_fulfillments,
         "refunds_backfilled": refunds_backfilled,
+        "pilot_scope_skipped": pilot_scope_skipped,
+        "cancelled_financial_candidates": cancelled_financial_candidates,
+        "cancelled_financial_processed": cancelled_financial_processed,
+        "cancelled_no_effect_skipped": cancelled_no_effect_skipped,
+        "cancelled_processing_errors": cancelled_processing_errors,
     }
 
 
@@ -850,11 +1082,23 @@ def _pick_order_handler(order_payload, paid_handler, pending_handler, cancelled_
     Decide which handler to call for a Shopify order based on its state.
 
     Returns None for orders we deliberately skip (e.g. voided).
+
+    cancelled_at alone is NOT a no-financial-effect predicate: REFUNDED /
+    PARTIALLY_REFUNDED mean captured money was returned in full or in part,
+    and PAID / PARTIALLY_PAID mean captured money the merchant kept — a
+    cancelled order in any of these states books its parent through the
+    canonical paid writer, exactly the durable state the webhook sequence
+    (orders/paid, then orders/cancelled, then any refunds/create) produces:
+    revenue stays booked until a refund reverses it. Only a cancellation
+    whose money was never captured (authorized / voided / pending /
+    expired / unknown) routes to the cancellation writer.
     """
+    financial_status = (order_payload.get("financial_status") or "").lower()
     if order_payload.get("cancelled_at"):
+        if financial_status in ("paid", "partially_paid", "refunded", "partially_refunded"):
+            return paid_handler
         return cancelled_handler
 
-    financial_status = (order_payload.get("financial_status") or "").lower()
     # A159: an order first seen already-refunded must still book its revenue
     # invoice (process_order_paid is idempotent) — the refund backfill then
     # books the offsetting credit note. Previously these were skipped
