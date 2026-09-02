@@ -20,6 +20,7 @@ from django.db import connections, transaction
 from django.utils import timezone as tz
 
 from accounts import rls
+from accounts.pilot_policy import SKIPPED_PILOT_SCOPE
 from accounts.rls import rls_bypass
 
 logger = logging.getLogger(__name__)
@@ -440,6 +441,18 @@ def _sweep_deferred_cogs(store) -> int:
     return booked
 
 
+def _is_pilot_scope_skip(result) -> bool:
+    """True when a canonical writer answered with the A4 structured
+    pilot-scope skip (``skip_pilot_currency`` / ``skip_if_unsupported``): a
+    SUCCESSFUL result whose data carries ``status == SKIPPED_PILOT_SCOPE``.
+    That is the deliberate no-mutation / no-retry disposition — no row, no
+    event — and is distinct from the idempotent ``{"skipped": True}``
+    already-booked answer. A sync leg must stop processing such an order
+    right there: any follow-up read against the (non-existent) local row
+    would only turn the disposition into a recurring processing error."""
+    return bool(result.success and result.data and result.data.get("status") == SKIPPED_PILOT_SCOPE)
+
+
 def _sync_refunds(store, updated_at_min: str, updated_at_max: str) -> dict:
     """A159: durable refund recovery. Finds orders whose refund state
     changed in the window (updated_at search — catches refunds on orders
@@ -455,6 +468,20 @@ def _sync_refunds(store, updated_at_min: str, updated_at_max: str) -> dict:
     process_order_cancelled (posted-order branch: raw_payload stamp). The
     blanket cancelled skip that used to live here silently dropped both
     the parent and its refunds while the leg still reported ok.
+
+    A candidate the canonical paid writer dispositions OUT of the pilot's
+    scope (A4 EGP-only admission: structured skip, no row, no event, no
+    retry) is counted in ``pilot_scope_skipped`` and left there — it is
+    neither processed nor an error, and no provenance stamp or refund
+    backfill runs against the row it deliberately does not have. Every
+    cancelled candidate lands in exactly one of three outcomes: processed
+    (``cancelled_financial_processed``), errored (it contributed one or
+    more ``cancelled_processing_errors`` entries — that counter is
+    per-error, so one candidate can add several), or dispositioned out of
+    scope (``pilot_scope_skipped``, which counts open candidates too). The
+    checkable inequality is therefore ``candidates - processed <=
+    cancelled_processing_errors + pilot_scope_skipped``; on a correctly
+    scoped EGP store ``pilot_scope_skipped`` is zero.
     """
     from .commands import _admin_client, process_order_cancelled, process_order_paid
 
@@ -466,6 +493,7 @@ def _sync_refunds(store, updated_at_min: str, updated_at_max: str) -> dict:
     refunds_created = 0
     errors = 0
     fetch_failures = 0
+    pilot_scope_skipped = 0  # A4 structured out-of-scope disposition (cancelled or not)
     cancelled_financial_candidates = 0
     cancelled_financial_processed = 0
     cancelled_processing_errors = 0
@@ -521,14 +549,23 @@ def _sync_refunds(store, updated_at_min: str, updated_at_max: str) -> dict:
                 connection.rollback()
             continue
 
+        if _is_pilot_scope_skip(order_result):
+            # A4 EGP-only admission dispositioned this candidate out of the
+            # pilot's scope: no row, no event, no mutation, no retry. Stop
+            # here — the provenance stamp would only answer not_captured for
+            # the missing row, and every refund backfill would fail "Order
+            # not found", turning a deliberate disposition into a recurring
+            # processing error on every poll (and a network read per poll
+            # for an order the pilot refuses).
+            pilot_scope_skipped += 1
+            continue
+
         if is_cancelled:
             # Cancellation provenance through the canonical cancellation
-            # writer. A booked parent takes its posted-order branch (stamps
-            # cancelled_at on raw_payload); a pilot-scope-skipped parent has
-            # no local row, so the writer answers with its benign
-            # not_captured skip — itself the canonical disposition. Audit
-            # metadata: a stamp failure never blocks the refund backfill,
-            # but is counted loudly.
+            # writer: the parent is booked (or already existed), so the
+            # writer takes its posted-order branch and stamps cancelled_at
+            # on raw_payload. Audit metadata: a stamp failure never blocks
+            # the refund backfill, but is counted loudly.
             try:
                 _reassert_shopify_rls()
                 with transaction.atomic():
@@ -585,6 +622,7 @@ def _sync_refunds(store, updated_at_min: str, updated_at_max: str) -> dict:
             "refunds_created": refunds_created,
             "errors": errors,
             "fetch_failures": fetch_failures,
+            "pilot_scope_skipped": pilot_scope_skipped,
             "cancelled_financial_candidates": cancelled_financial_candidates,
             "cancelled_financial_processed": cancelled_financial_processed,
             "cancelled_processing_errors": cancelled_processing_errors,
@@ -595,6 +633,7 @@ def _sync_refunds(store, updated_at_min: str, updated_at_max: str) -> dict:
         "refunds_created": refunds_created,
         "errors": errors,
         "fetch_failures": 0,
+        "pilot_scope_skipped": pilot_scope_skipped,
         "cancelled_financial_candidates": cancelled_financial_candidates,
         "cancelled_financial_processed": cancelled_financial_processed,
         "cancelled_processing_errors": cancelled_processing_errors,
@@ -685,6 +724,12 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
       - pending                             -> process_order_pending (metadata only)
       - anything else                       -> skipped
 
+    A structured A4 pilot-scope skip from a handler (EGP-only admission: no
+    row, no event, no retry) is counted in ``pilot_scope_skipped`` — not in
+    created / skipped / errors — and ends that order's processing: no
+    provenance stamp, no fulfillment or refund backfill runs against the
+    row the pilot deliberately refused to create.
+
     All downstream handlers are idempotent.
     """
     from .commands import (
@@ -704,11 +749,12 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
     errors = 0
     cogs_fulfillments = 0  # A125: COGS booked from backfilled fulfillments
     refunds_backfilled = 0  # A159: refunds booked for first-seen-refunded orders
+    pilot_scope_skipped = 0  # A4 structured out-of-scope disposition (any handler)
     cancelled_financial_candidates = 0  # cancelled_at + captured money
-    # ...dispositioned without error through the canonical writers. A
-    # deliberate A4 pilot-scope skip IS a disposition; the best-effort COGS
-    # fulfillment backfill is outside this counter (same contract as the
-    # generic errors field).
+    # ...dispositioned without error through the canonical writers (a
+    # pilot-scope skip is counted in pilot_scope_skipped instead, never
+    # here); the best-effort COGS fulfillment backfill is outside this
+    # counter (same contract as the generic errors field).
     cancelled_financial_processed = 0
     cancelled_no_effect_skipped = 0  # cancelled, never captured: explicit intentional no-effect
     cancelled_processing_errors = 0
@@ -769,6 +815,7 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
                 "skipped": skipped,
                 "errors": errors,
                 "error": str(e),
+                "pilot_scope_skipped": pilot_scope_skipped,
                 "cancelled_financial_candidates": cancelled_financial_candidates,
                 "cancelled_financial_processed": cancelled_financial_processed,
                 "cancelled_no_effect_skipped": cancelled_no_effect_skipped,
@@ -808,12 +855,23 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
         # Process each order in its own savepoint so one failure
         # doesn't break the entire batch
         booked_paid = False
+        pilot_skipped = False
         try:
             _reassert_shopify_rls()
             with transaction.atomic():
                 result = handler(store, order_payload)
                 if result.success:
-                    if result.data and result.data.get("skipped"):
+                    if _is_pilot_scope_skip(result):
+                        # A4 EGP-only admission dispositioned the order out
+                        # of the pilot's scope — no row, no event, no retry.
+                        # Its own bucket: not "created" (nothing was), not
+                        # "skipped" (the benign idempotent bucket: already
+                        # booked, not_captured, or an unrouted status), not
+                        # an error (nothing failed). Nothing below may run
+                        # against the row it deliberately does not have.
+                        pilot_scope_skipped += 1
+                        pilot_skipped = True
+                    elif result.data and result.data.get("skipped"):
                         skipped += 1
                     else:
                         created += 1
@@ -827,7 +885,7 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
                     # fulfillments are what carry COGS. "Skipped" here means
                     # already-booked — those still backfill so historical
                     # orders booked before fulfillment processing get COGS.
-                    booked_paid = handler is process_order_paid
+                    booked_paid = handler is process_order_paid and not pilot_skipped
                 else:
                     errors += 1
                     if is_cancelled:
@@ -860,12 +918,10 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
         if booked_paid and is_cancelled:
             # Captured-money cancellation: the parent booked (or already
             # existed) through the canonical paid writer above; stamp the
-            # cancellation through the canonical cancellation writer — a
-            # booked parent takes its posted-order branch (cancelled_at on
-            # raw_payload), while a pilot-scope-skipped parent has no local
-            # row and gets the writer's benign not_captured skip. Audit
-            # metadata: a stamp failure never rolls back the booked order,
-            # but is counted loudly.
+            # cancellation through the canonical cancellation writer, which
+            # takes its posted-order branch (cancelled_at on raw_payload).
+            # Audit metadata: a stamp failure never rolls back the booked
+            # order, but is counted loudly.
             try:
                 _reassert_shopify_rls()
                 with transaction.atomic():
@@ -920,7 +976,7 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
                     if refund_backfill["process_errors"]:
                         cancelled_processing_errors += refund_backfill["process_errors"]
                         candidate_errors += refund_backfill["process_errors"]
-        if cancelled_financial and candidate_errors == 0:
+        if cancelled_financial and not pilot_skipped and candidate_errors == 0:
             cancelled_financial_processed += 1
 
     # A52: warning when fetch returns nothing — likely indicates token/date/
@@ -936,12 +992,13 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
         )
     else:
         logger.info(
-            "[A52] _sync_orders done shop=%s fetched=%d created=%d skipped=%d errors=%d",
+            "[A52] _sync_orders done shop=%s fetched=%d created=%d skipped=%d errors=%d pilot_scope_skipped=%d",
             store.shop_domain,
             fetched,
             created,
             skipped,
             errors,
+            pilot_scope_skipped,
         )
 
     # Sync-UX (2026-06-04): refresh last_sync_at on every successful pull
@@ -966,6 +1023,7 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
         "errors": errors,
         "cogs_fulfillments": cogs_fulfillments,
         "refunds_backfilled": refunds_backfilled,
+        "pilot_scope_skipped": pilot_scope_skipped,
         "cancelled_financial_candidates": cancelled_financial_candidates,
         "cancelled_financial_processed": cancelled_financial_processed,
         "cancelled_no_effect_skipped": cancelled_no_effect_skipped,

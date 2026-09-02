@@ -32,6 +32,11 @@ After the fix:
   results (cancelled_financial_candidates / _processed /
   cancelled_processing_errors) and can never disappear into a bare
   "scanned".
+- a candidate the A4 EGP-only admission dispositions out of the pilot's
+  scope stops right there (pilot_scope_skipped): no provenance stamp and
+  no fulfillment / refund backfill runs against the row the pilot refused
+  to create, so the documented disposition never degrades into recurring
+  "Order not found" processing errors.
 """
 
 from datetime import date
@@ -228,6 +233,7 @@ def test_sync_refunds_books_cancelled_refunded_old_order(shopify_store, monkeypa
     assert result["cancelled_financial_candidates"] == 1
     assert result["cancelled_financial_processed"] == 1
     assert result["cancelled_processing_errors"] == 0
+    assert result["pilot_scope_skipped"] == 0, "an in-scope EGP candidate must never read as a pilot skip"
 
     order = _order_row(shopify_store)
     assert order is not None, "a cancelled REFUNDED candidate must book its parent invoice"
@@ -450,6 +456,7 @@ def test_sync_orders_cancelled_paid_books_parent_with_provenance(shopify_store, 
     assert result["cancelled_financial_candidates"] == 1
     assert result["cancelled_financial_processed"] == 1
     assert result["cancelled_no_effect_skipped"] == 0
+    assert result["pilot_scope_skipped"] == 0
     order = _order_row(shopify_store)
     assert order is not None, "captured money on a cancelled order must not disappear"
     assert (order.raw_payload or {}).get("cancelled_at") == CANCELLED_AT
@@ -496,6 +503,10 @@ def test_sync_orders_cancelled_uncaptured_is_explicit_no_effect(shopify_store, m
     assert result["errors"] == 0
     assert result["cancelled_no_effect_skipped"] == 1
     assert result["cancelled_financial_candidates"] == 0
+    # The not_captured answer is the benign idempotent skip, never the A4
+    # pilot-scope disposition — the two buckets must not bleed into each other.
+    assert result["skipped"] == 1
+    assert result["pilot_scope_skipped"] == 0
     assert _order_row(shopify_store) is None, "never-captured cancellation must not invent revenue"
     assert BusinessEvent.objects.filter(company=shopify_store.company).count() == 0
     assert JournalEntry.objects.filter(company=shopify_store.company).count() == journals_before
@@ -717,39 +728,180 @@ def test_cancelled_path_uses_complete_pagination(shopify_store, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Pilot parity — no new pilot semantics; EGP admission unchanged
+# Pilot parity — no new pilot semantics; EGP admission unchanged. A candidate
+# the A4 EGP-only admission dispositions out of scope (structured
+# skipped_pilot_scope: no row, no event, no retry) is counted in its own
+# pilot_scope_skipped bucket and processing STOPS there — the review-round
+# finding was that both legs fell through to the fulfillment / refund
+# backfills against the row the pilot deliberately refused to create, so a
+# refunded out-of-scope order raised "Order not found" per refund on EVERY
+# poll, turning a documented disposition into a recurring processing error.
 # ---------------------------------------------------------------------------
 
 
-def test_pilot_non_egp_cancelled_candidate_books_nothing(shopify_store, monkeypatch):
-    """E11: under the active pilot the EGP-only admission is unchanged — a
-    non-EGP cancelled refunded candidate books no order, no refund, no
-    event, and the correction adds no pilot-specific financial semantics
-    (the candidate is dispositioned, not crashed on)."""
-    from accounts.models import Company
-    from shopify_connector import tasks
+class _RecordingClient(_FakeClient):
+    """Fake client that records every per-order read so a test can prove a
+    dispositioned order triggered NO follow-up network reads."""
 
-    company = shopify_store.company
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.fulfillment_reads = []
+        self.refund_reads = []
+
+    def get_order_fulfillments(self, order_id):
+        self.fulfillment_reads.append(order_id)
+        return super().get_order_fulfillments(order_id)
+
+    def get_order_refunds(self, order_id):
+        self.refund_reads.append(order_id)
+        return super().get_order_refunds(order_id)
+
+
+def _activate_pilot(company):
+    from accounts.models import Company
+
     company.pilot_profile = Company.PilotProfile.ISOLATED_SHADOW_LEDGER_V1
     company.default_currency = "EGP"
     company.functional_currency = "EGP"
     company.fiscal_year_start_month = 1
     company.save()
 
-    fake = _FakeClient(refunded_orders=[_order_payload(currency="USD")])
-    monkeypatch.setattr(commands, "_admin_client", lambda store: fake)
 
-    result = tasks._sync_refunds(shopify_store, "2026-04-25T00:00:00Z", "2026-05-02T00:00:00Z")
-
-    assert result["status"] == "ok", result
-    assert result["cancelled_financial_candidates"] == 1
-    # The deliberate A4 pilot-scope skip is a logged canonical disposition —
-    # counted as processed, never as an error and never as a crash.
-    assert result["cancelled_financial_processed"] == 1
-    assert result["cancelled_processing_errors"] == 0
-    assert result["errors"] == 0
+def _assert_nothing_booked(company):
     assert ShopifyOrder.objects.filter(company=company).count() == 0, (
         "the EGP-only pilot admission must keep refusing non-EGP orders"
     )
     assert ShopifyRefund.objects.filter(company=company).count() == 0
     assert BusinessEvent.objects.filter(company=company).count() == 0
+
+
+def test_pilot_non_egp_cancelled_candidate_is_dispositioned_not_errored(shopify_store, monkeypatch):
+    """E11 (B leg): under the active pilot a non-EGP cancelled REFUNDED
+    candidate WITH refunds in its history books nothing, triggers no refund
+    read, and is reported in pilot_scope_skipped — never as processed and
+    never as a recurring "Order not found" processing error."""
+    from shopify_connector import tasks
+
+    company = shopify_store.company
+    _activate_pilot(company)
+    fake = _RecordingClient(
+        refunded_orders=[_order_payload(currency="USD")],
+        refunds_by_order={ORDER_ID: [_refund_payload()]},
+    )
+    monkeypatch.setattr(commands, "_admin_client", lambda store: fake)
+
+    result = tasks._sync_refunds(shopify_store, "2026-04-25T00:00:00Z", "2026-05-02T00:00:00Z")
+
+    # Behavioral claims first, so a regression that drops the counter still
+    # fails on the disposition itself rather than on a missing key.
+    assert result["status"] == "ok", result
+    assert result["scanned"] == 1
+    assert result["errors"] == 0, "a deliberate out-of-scope disposition is not a processing error"
+    assert fake.refund_reads == [], "no refund backfill may run against the row the pilot refused to create"
+    assert result["refunds_created"] == 0
+    assert result["cancelled_financial_candidates"] == 1
+    assert result["cancelled_financial_processed"] == 0, "dispositioned out of scope is not 'processed'"
+    assert result["cancelled_processing_errors"] == 0
+    assert result["pilot_scope_skipped"] == 1
+    _assert_nothing_booked(company)
+
+
+def test_pilot_non_egp_disposition_is_stable_across_polls(shopify_store, monkeypatch):
+    """E11b: the disposition is idempotent and QUIET on retry — the second
+    poll reports the identical counters with zero errors (before the fix
+    every poll re-raised the per-refund "Order not found" errors)."""
+    from shopify_connector import tasks
+
+    company = shopify_store.company
+    _activate_pilot(company)
+    fake = _RecordingClient(
+        refunded_orders=[_order_payload(currency="USD")],
+        refunds_by_order={ORDER_ID: [_refund_payload()]},
+    )
+    monkeypatch.setattr(commands, "_admin_client", lambda store: fake)
+
+    first = tasks._sync_refunds(shopify_store, "2026-04-25T00:00:00Z", "2026-05-02T00:00:00Z")
+    second = tasks._sync_refunds(shopify_store, "2026-04-25T00:00:00Z", "2026-05-02T00:00:00Z")
+
+    assert first == second, (first, second)
+    assert second["errors"] == 0
+    assert second["pilot_scope_skipped"] == 1
+    assert fake.refund_reads == []
+    _assert_nothing_booked(company)
+
+
+@pytest.mark.parametrize(
+    ("financial_status", "cancelled_at"),
+    [("refunded", CANCELLED_AT), ("refunded", None), ("pending", None)],
+    ids=["refunded-cancelled", "refunded-open", "pending-open"],
+)
+def test_sync_orders_pilot_non_egp_order_is_dispositioned(shopify_store, monkeypatch, financial_status, cancelled_at):
+    """E11c (A leg): a non-EGP order — REFUNDED cancelled or open (the paid
+    writer's path is shared), or PENDING (the pending writer's own
+    structured skip) — is dispositioned out of scope with NO fulfillment
+    read, NO refund read, no provenance stamp, and lands in
+    pilot_scope_skipped: not created (nothing was — the old code reported
+    every one of these as created), not skipped (the benign idempotent
+    bucket), not an error (nothing failed)."""
+    from shopify_connector import tasks
+
+    company = shopify_store.company
+    _activate_pilot(company)
+    fake = _RecordingClient(
+        orders=[
+            _order_payload(
+                financial_status=financial_status,
+                currency="USD",
+                cancelled_at=cancelled_at,
+                created_at="2026-04-27T09:00:00Z",
+            )
+        ],
+        refunds_by_order={ORDER_ID: [_refund_payload()]},
+    )
+    monkeypatch.setattr(commands, "_admin_client", lambda store: fake)
+
+    result = tasks._sync_orders(shopify_store, "2026-04-25T00:00:00Z", "2026-05-02T00:00:00Z")
+
+    # Behavioral claims first, so a regression that drops the counter still
+    # fails on the disposition itself rather than on a missing key.
+    assert result["status"] == "ok", result
+    assert result["fetched"] == 1
+    assert result["errors"] == 0
+    assert result["created"] == 0, "a pilot-scope skip creates nothing and must not be reported as created"
+    assert result["skipped"] == 0
+    assert fake.fulfillment_reads == [], "no COGS backfill may run for a row the pilot refused to create"
+    assert fake.refund_reads == [], "no refund backfill may run for a row the pilot refused to create"
+    assert result["refunds_backfilled"] == 0
+    assert result["cogs_fulfillments"] == 0
+    expected_candidates = 1 if cancelled_at else 0
+    assert result["cancelled_financial_candidates"] == expected_candidates
+    assert result["cancelled_financial_processed"] == 0
+    assert result["cancelled_processing_errors"] == 0
+    assert result["cancelled_no_effect_skipped"] == 0
+    assert result["pilot_scope_skipped"] == 1
+    _assert_nothing_booked(company)
+
+
+def test_pilot_scope_skip_is_distinct_from_already_booked_skip(shopify_store, monkeypatch):
+    """E11d: the detector keys on the structured status, not on "skipped" —
+    an already-booked EGP order re-seen by the A leg still takes the
+    idempotent 'skipped' path (and still backfills) with pilot_scope_skipped
+    at zero, so the new bucket can never absorb the existing semantics."""
+    from shopify_connector import tasks
+
+    company = shopify_store.company
+    _activate_pilot(company)
+    payload = _order_payload(financial_status="paid", cancelled_at=None, created_at="2026-04-27T09:00:00Z")
+    assert commands.process_order_paid(shopify_store, payload).success
+    fake = _RecordingClient(orders=[payload])
+    monkeypatch.setattr(commands, "_admin_client", lambda store: fake)
+
+    result = tasks._sync_orders(shopify_store, "2026-04-25T00:00:00Z", "2026-05-02T00:00:00Z")
+
+    assert result["status"] == "ok", result
+    assert result["skipped"] == 1
+    assert result["created"] == 0
+    assert result["pilot_scope_skipped"] == 0
+    assert result["errors"] == 0
+    assert fake.fulfillment_reads == [ORDER_ID], "an already-booked EGP order keeps its COGS backfill"
+    assert ShopifyOrder.objects.filter(company=company).count() == 1
