@@ -72,15 +72,18 @@ named evidence existing in the manifest.
   - Expected result: HEAD is a commit on `main` that has a fully green CI
     run (all seven jobs including Quality Gate). **Minimum
     application-code baseline:**
-    `3fc79de4a4371ea3e45ff09eded369a44aa6c747`
-    (code tree `16249dd0362642fb77d4eddd7e291579d03a4bd2`; green main CI
-    run 33571139879, seven jobs) — the merge of the PR #139
-    refund-completeness correction. **No earlier commit lacking PR #139
-    is eligible** for G1/G2 (the previously named `c4896ff3` revision
-    predates that correction and may no longer be used). Because this
-    runbook document itself merges after that baseline, the exact
-    revision selected at execution must be a `main` commit containing
-    BOTH PR #139 and this merged runbook, with its own green required
+    `cd8bc9df12407cbcab473f9f6c2a1f2336967ae5`
+    (code tree `c32efc3013de914e302dbc871e044a4601d63b15`; green main CI
+    run 33684519108, seven jobs) — the merge of the PR #140
+    cancelled-order refund-recovery correction, which contains the
+    PR #139 refund-completeness correction (`3fc79de`). **No earlier
+    commit lacking PR #140 is eligible** for G1/G2: the previously
+    named `3fc79de` (PR #139 without PR #140) and `c4896ff3` (neither)
+    revisions predate the cancelled-order correction and may no longer
+    be used — no verdict transfers from them. Because this runbook
+    document itself merges after that baseline, the exact revision
+    selected at execution must be a `main` commit containing PR #139
+    AND PR #140 AND this merged runbook, with its own green required
     CI; the operator records that exact selected SHA, and the runbook
     document revision is recorded separately from the deployed
     application revision. A later reviewed `main` revision with green
@@ -94,7 +97,9 @@ named evidence existing in the manifest.
   - Evidence to retain (`revision/`): commit SHA, tree SHA, CI run id and
     conclusion, deployment/image identifier, deployment timestamp, operator,
     database identifier (host/name only — no credentials), hosting region,
-    and this runbook's revision.
+    and this runbook's revision (the SHA that the §I definition names
+    `INTAKE_CONTRACT_VERSION` — the "version <n>" every intake
+    authorization cites).
   - STOP if: the working tree is dirty, the SHA is not on `main`, the branch
     is unreviewed, or the pinned revision's CI is not green. **An
     uncommitted local tree or an unreviewed branch must never be deployed.**
@@ -217,7 +222,10 @@ never values for secrets.
     defaults: `ALERT_UNRESOLVED_FAILURES_MAX` (0),
     `ALERT_PROJECTION_LAG_THRESHOLD` (50),
     `ALERT_PROJECTION_STALENESS_SECONDS` (21600),
-    `SHOPIFY_SOURCE_STALE_SECONDS` (28800).
+    `SHOPIFY_SOURCE_STALE_SECONDS` (28800); `LOG_LEVEL` absent or
+    `INFO` (never stricter — the §I intake-contract capture reads the
+    worker's INFO-level `[A52] _sync_orders start` line and the Celery
+    task lines).
   - STOP if: a required value is missing, or the process would start
     against the wrong database.
 
@@ -494,10 +502,13 @@ pre-activation check:
     the moment the store becomes ACTIVE, and as soon as a worker
     consumes it that task pulls the full initial-intake contract
     (defined before I13): orders selected by the execution-time
-    seven-day `created_at` window, refund candidates selected by the
-    execution-time seven-day order-`updated_at` window — each booked
-    with its complete parent order and complete refund history
-    regardless of age — plus products and payouts; declarative Shopify
+    seven-day `created_at` window (cancelled captured-money orders
+    included; never-captured cancellations dispositioned with no
+    financial effect), and refund candidates selected by the
+    execution-time seven-day order-`updated_at` window — each refund
+    candidate, cancelled or not, booked with its complete parent order
+    and complete refund history regardless of age — plus products and
+    payouts; declarative Shopify
     webhooks can also begin delivering immediately after connection.
     Store connection is therefore NOT inert — ingestion must be held
     until deliberately released. (`import_mode="skip"` suppresses only
@@ -690,14 +701,38 @@ pre-activation check:
 the worker starts the task — never at OAuth time):
 
 ```
-INITIAL_SYNC_STARTED_AT = the actual worker start timestamp of the
-                          initial_store_sync task
+INITIAL_SYNC_STARTED_AT = the execution-time `now` the initial_store_sync
+                          task computes when its store sync begins
+                          (`_sync_store`: `now = tz.now()`) — the value
+                          the code uses as BOTH window ends. It is
+                          observable ONLY as the `created_at_max` value
+                          of the worker's private INFO log line
+                          `[A52] _sync_orders start … created_at_min=…
+                          created_at_max=…`; it is NOT in the task
+                          result, and it is NOT the Celery task
+                          received/started timestamp, which precedes it
+                          by the task's store lookup, tenant-context
+                          entry and store refetch (seconds).
+
+TASK_RECEIVED_AT        = the task's start timestamp from its durable
+                          `django_celery_results` TaskResult row, keyed
+                          by task id (the result backend is django-db
+                          and STARTED tracking is on, so the row's
+                          date_created is the STARTED time and
+                          date_done the finish), corroborated by the
+                          worker's received/started log lines where
+                          present (recorded separately; used only for
+                          ordering)
 
 ORDER_CREATED_WINDOW =
     [INITIAL_SYNC_STARTED_AT − 7 days, INITIAL_SYNC_STARTED_AT]
+    = the [created_at_min, created_at_max] pair of that log line
 
 REFUND_CANDIDATE_UPDATED_WINDOW =
     [INITIAL_SYNC_STARTED_AT − 7 days, INITIAL_SYNC_STARTED_AT]
+    = the SAME pair by construction (`_sync_store` passes one
+      min_date/max_date to both legs; the refund leg logs no window
+      of its own)
 
 A = eligible Shopify orders whose created_at is in ORDER_CREATED_WINDOW
 
@@ -705,16 +740,65 @@ B = orders currently refunded or partially_refunded whose Shopify
     order.updated_at is in REFUND_CANDIDATE_UPDATED_WINDOW
 
 AUTHORIZED_PARENT_ORDER_SET = A union B, deduplicated by Shopify order id
+
+INTAKE_CONTRACT_VERSION = the runbook document revision SHA recorded in
+                          §B (`revision/`, "this runbook's revision";
+                          repeated for the merchant database by §Q
+                          step 3). The definition text at that revision
+                          IS the intake contract; the GO record's
+                          "version <n>" and the step-12 reconciliation
+                          cite this SHA. The executed application
+                          revision is recorded separately (the §B
+                          selected SHA; for §Q the §N5
+                          GATE_TESTED_COMMIT_SHA), which §B requires to
+                          contain PR #139 and PR #140.
 ```
+
+When transcribing the `[A52] _sync_orders start` line into the record,
+copy ONLY the two timestamps — the line also carries the shop domain
+and store id, which must not enter any evidence that may be attached.
+The line is emitted at INFO on the application logger, so the worker's
+effective log level must be INFO (the `-l INFO` startup command in §G
+and a `LOG_LEVEL` environment value no stricter than INFO, recorded in
+the §E report). The reconciliation that these fields must satisfy is
+ONE rule, stated identically wherever it is applied:
+`created_at_max − created_at_min` = exactly 7 days
+(`INITIAL_LOOKBACK_DAYS`); authorization sign-off timestamp
+(`GO_TIMESTAMP` in §Q, `I13_SIGNOFF_TIMESTAMP` in the rehearsal)
+`< TASK_RECEIVED_AT ≤ INITIAL_SYNC_STARTED_AT` — the inequality failing
+is a STOP; the last two are normally seconds apart, and a larger gap is
+not a STOP by itself but must be explained in the record; an absent
+A52 start line is itself a STOP.
+
+If the runbook revision recorded for the merchant run (§Q step 3)
+differs from the revision rehearsed at G1, the §I definition block at
+the two revisions must be textually identical — record both SHAs and
+the diff result; a changed definition is a new contract that has not
+been rehearsed: STOP and re-run I13/I14 under it before any merchant
+GO.
 
 (The live B selection is the refund catch-up's search — the
 `updated_at` window AND `financial_status:refunded OR
-financial_status:partially_refunded`. Cancelled candidates are skipped
-by the refund leg with no financial effect; only a cancelled order
-whose `created_at` also falls in the order window routes through the
-cancellation path — an older cancelled candidate is deliberately not
-ingested at all and appears only inside the refund leg's `scanned`
-count.)
+financial_status:partially_refunded`. A populated `cancelled_at` is
+NOT a selection or exclusion criterion and is NOT a no-financial-effect
+predicate: every B candidate is captured money by selection, so a
+**cancelled refunded candidate — of any age, inside or outside A — is
+recovered exactly like an open one**, through the canonical writers
+only: the parent via the idempotent `process_order_paid`; cancellation
+provenance via the canonical `process_order_cancelled` posted-order
+branch, which stamps `cancelled_at` on the stored raw payload; its
+complete refund history via the PR #139 pagination and the idempotent
+`process_refund`. Since PR #140 (`cd8bc9d`) the refund leg skips NO
+cancelled candidate; the earlier blanket skip — which dropped both the
+parent and its refunds while the leg still reported `ok` — does not
+exist in any eligible revision. In the A leg, a first-seen cancelled
+order whose money was captured (financial status `paid`,
+`partially_paid`, `refunded`, or `partially_refunded`) likewise books
+through the paid writer and receives the provenance stamp — webhook
+parity: captured revenue stays booked until a refund reverses it —
+while a cancelled order whose money was never captured (`authorized`,
+`voided`, `pending`, `expired`, unknown) routes to the cancellation
+writer as an explicit, counted no-financial-effect disposition.)
 
 For every B candidate, the catch-up may: book the full parent order if
 it is absent locally, **even when that order was created months or
@@ -728,6 +812,189 @@ most seven days old.
 A and B may overlap. A parent order appearing in both is counted and
 posted only once. Existing idempotency (`process_order_paid` /
 `process_refund`) remains load-bearing.
+
+**Per-leg result fields required for reconciliation** (PR #140,
+`cd8bc9d`; PII-free counters read from the retained task result):
+
+- Refund catch-up leg (`refunds`) — on its `ok` shape and on its
+  complete-history-failure shape: `status`, `scanned`,
+  `refunds_created`, `errors`, `fetch_failures`, `pilot_scope_skipped`,
+  `cancelled_financial_candidates`, `cancelled_financial_processed`,
+  `cancelled_processing_errors` (the failure shape adds `error`). Any
+  other shape — token missing/revoked, or an exception caught by the
+  task wrapper — carries only `status`/`error` and NO counters, and is
+  equally a STOP.
+- Order-created leg (`orders`) — on its `ok` shape: `status`,
+  `fetched`, `created`, `skipped`, `errors`, `cogs_fulfillments`,
+  `refunds_backfilled`, `pilot_scope_skipped`,
+  `cancelled_financial_candidates`, `cancelled_financial_processed`,
+  `cancelled_no_effect_skipped`, `cancelled_processing_errors`. Its
+  mid-fetch `partial`/`error` shape carries `fetched`/`created`/
+  `skipped`/`errors`/`error` plus the five pilot/cancelled counters;
+  its `unavailable` shape (read scope denied before any order was
+  fetched) carries only zeroed `fetched`/`created`/`skipped`/`errors`
+  and a message — no pilot/cancelled counters. Like the refund leg, it
+  also has bare shapes with NO counters — token missing/revoked before
+  any fetch, or an exception caught by the task wrapper — carrying only
+  `status`/`error`. An orders-leg `status = "error"` is the
+  counter-bearing mid-fetch shape only when the five pilot/cancelled
+  counters are present; with or without them it is equally a STOP.
+
+Counter semantics (both legs unless stated): `cancelled_financial_candidates`
+counts every candidate with a populated `cancelled_at` that is routed
+to the paid writer (in the B leg that is every cancelled candidate —
+all are captured money by selection); `cancelled_financial_processed`
+counts those dispositioned end-to-end without error (parent booked or
+already present, provenance stamped, complete refund history
+processed); `cancelled_processing_errors` is PER ERROR ENTRY, not per
+candidate — a parent-booking failure, a provenance-stamp failure, a
+refund-history fetch failure, each individual refund processing
+failure, an id-less payload carrying `cancelled_at` (either leg; in
+the A leg that entry has no matching `cancelled_financial_candidates`
+increment), and — A leg only — a never-captured cancellation whose
+cancellation writer failed or raised (likewise not a candidate) add
+one each, so a single candidate can contribute several and the A-leg
+counter can exceed its candidates; `cancelled_no_effect_skipped` (A
+leg only) counts never-captured cancellations that the cancellation
+writer dispositioned SUCCESSFULLY — a never-captured cancellation whose
+writer failed lands in `errors`/`cancelled_processing_errors` instead
+and must be dispositioned there, never silently; `pilot_scope_skipped`
+counts every order — cancelled or not, from any handler — that a
+canonical writer dispositioned OUT of the pilot's scope with the
+structured `SKIPPED_PILOT_SCOPE` answer (the A4 EGP-only admission: no
+row, no event, no journal, no retry); such an order leaves its leg
+BEFORE the provenance stamp and before any backfill (both the
+fulfillment and refund backfills in the A leg; the single refund
+backfill in the B leg) and is counted in none of `created`, `skipped`,
+or `errors`.
+
+**Checkable inequality, per leg:**
+`cancelled_financial_candidates − cancelled_financial_processed ≤
+cancelled_processing_errors + pilot_scope_skipped`
+(the pilot bucket also counts open candidates, the error counter is
+per entry, and in the A leg it also counts id-less and never-captured
+cancellation errors that are not candidates — which is why this is an
+inequality). On a correctly scoped EGP store `pilot_scope_skipped`
+MUST be 0 — the synthetic rehearsal store and the real merchant store
+are both EGP by precondition, so a nonzero bucket is a scope finding to
+STOP on, not a tolerance.
+
+**The ONLY legitimate outcomes in which a B candidate yields no local
+parent order or no refund evidence** — every other gap is unexplained
+and a STOP:
+
+1. **Pilot-dispositioned** — the paid writer answered
+   `SKIPPED_PILOT_SCOPE` (a non-EGP order under the active profile):
+   no row, no event, no journal, counted once in `pilot_scope_skipped`
+   — explicit and counted, never silent. Expected count on an EGP
+   store: 0.
+2. **Counted loud failure** — the parent could not be booked
+   (`errors` +1, plus `cancelled_processing_errors` +1 when cancelled;
+   the leg moves to the next candidate without stamping or backfilling
+   that one), or the complete refund history could not be fetched
+   (`fetch_failures` +1, `errors` +1; the leg's `status` becomes
+   `"error"` and `error` names the number of affected candidates; the
+   parent STAYS COMMITTED and books NO REFUNDS), or an individual
+   refund failed to process (`errors` +1 per refund). Each is visible
+   in the counters and in the private worker log, must be
+   dispositioned, and — this is the load-bearing part — **must be
+   CLOSED before any merchant-facing checkpoint**: the parent, its
+   provenance stamp where `cancelled_at` is populated, and its complete
+   refund history must be present in the database. A counted loud
+   error is a legitimate INTERMEDIATE state, never a terminal one. A
+   TRANSIENT failure (database, network, lock, a refund that raced its
+   parent) is closed by a recorded, explained re-execution that
+   RE-SELECTS the candidate; a successful re-execution is idempotent
+   and duplicates no `ShopifyOrder`, `ShopifyRefund`, `BusinessEvent`,
+   or `JournalEntry`. There is NO explicit-window refund-leg re-run in
+   the code: `initial_store_sync` never auto-retries and every
+   re-execution of it, and every periodic `sync_shopify_all` pass
+   (48-hour lookback, only once beat runs), recomputes both windows
+   from its OWN start time, so a B candidate is re-selected only while
+   its `updated_at` still falls inside that later window — and this
+   runbook names no enqueue door for a second `initial_store_sync`
+   (the I5 enqueue-recovery rule applies: any such command must be
+   verified against live code, return a recorded task id, and be
+   proven on the synthetic rehearsal before it may appear here). The
+   A-leg re-execution that DOES take an explicit `created_at` window
+   is `python manage.py resync_shopify_orders --company <slug>
+   --from <ISO> --to <ISO>` (or the worker task
+   `shopify.sync_store_orders` with explicit `created_at_min` /
+   `created_at_max`); with any window the order leg routes a cancelled
+   or refunded order through the paid writer, the stamp and the refund
+   backfill, so it can close a candidate whose creation date the
+   operator names. It books EVERY order created in the named window,
+   so the window MUST be the narrowest that re-selects the candidate,
+   the re-execution is recorded as an explained second execution (its
+   own task id or CLI invocation, its own `[A52] _sync_orders start`
+   line, counters and inequality, in the §K pack), and any order it
+   books outside AUTHORIZED_PARENT_ORDER_SET is an intake-contract
+   variance and a STOP. The interactive resync endpoint is NOT a
+   closure path: it accepts only a `days` lookback ending at its own
+   request time, runs in-request as the merchant session, and stays
+   blocked under the intake hold. A candidate that no re-execution can
+   re-select is a STOP, never a signed disposition. A never-captured
+   cancellation error (A leg) is CLOSED when a recorded re-execution
+   re-selects the order and the cancellation writer disposes it
+   successfully (it then appears in that run's
+   `cancelled_no_effect_skipped`) with no financial row, event, or
+   journal for the order — that is the no-financial-effect closure. A
+   PERMANENT structural rejection of the parent-order or refund payload
+   is different in kind: it is counted in the same `errors` (and
+   `cancelled_processing_errors`) bucket but is durable
+   `ShopifyRejectedEvidence` on the exceptions queue (no row, no event,
+   no journal); a re-execution re-sights the same evidence row when the
+   payload is identical (occurrence count bumps, the queue item
+   reopens) or opens a further row when the still-malformed payload
+   changed — either way it closes nothing; only a corrected payload
+   (supersession) does, and until then it is a STOP.
+
+A cancelled B candidate is NOT a third category: it is processed
+(`cancelled_financial_processed`), pilot-dispositioned
+(`pilot_scope_skipped`), or errored (`cancelled_processing_errors`),
+and the inequality above binds those three outcomes together.
+
+**Stamp verification is a result/log check, not a row check.** The
+paid writer stores the WHOLE poller payload as the order's raw payload,
+and the poller payload already carries `cancelled_at`, so a
+poller-booked cancelled parent shows `cancelled_at` on its stored raw
+payload even if the canonical `process_order_cancelled` stamp then
+FAILED (the stamp rewrites the same key with the same value). The
+stamp is therefore verified from the task result and the private
+worker log — no stamp-failure entry in `cancelled_processing_errors`
+and no "Cancellation provenance stamp failed" warning for that order —
+with the raw-payload field as corroboration only; for a parent that
+already existed locally (booked earlier by a webhook) the stamp is what
+adds the value.
+
+**Leg-status truth — a worker-log/result check, not a claim of
+safety:** among the refund leg's counter-bearing shapes, `status`
+flips to `"error"` ONLY when `fetch_failures > 0` (its bare
+token-missing / caught-exception shapes are separate `"error"` shapes
+with no counters). A parent-booking failure, a provenance-stamp
+failure, or a refund processing failure leaves the leg at
+`status = "ok"` while incrementing `errors` (and
+`cancelled_processing_errors` for a cancelled candidate) — so
+`status = "ok"` is NOT evidence of zero errors; `errors` and
+`cancelled_processing_errors` must be read directly. When the legs
+run, the top-level `initial_store_sync` result's `status` is set to
+`"ok"` after all five legs regardless of any leg's outcome (a leg that
+raises is recorded as that leg's own `{"status": "error", ...}`), so it
+can mask any leg error and proves nothing — evaluate every leg's own
+result individually: its `status` where present (the `deferred_cogs`
+success shape is `{"booked": n}` with no `status` key; the `payouts`
+and `products` success shapes are the commands' own data) and its
+counters. The task can also return BEFORE any leg runs, with NO leg
+keys at all: `status = "skipped"` with reason "Store not active" or
+"tenant not writable (migrating / read-only / suspended)", or
+`status = "error"` with "Store not found". Each of those returns
+without raising, so the queued task is CONSUMED without executing the
+authorized intake; the task can also RAISE before any leg (the tenant
+lookup or the tenant-context store refetch failing) and, having no
+auto-retry, is consumed as a Celery FAILURE with a traceback and no
+result dict at all. Either is the same STOP: do not re-enqueue until
+the cause is explained and the pre-release no-ingestion proof is
+re-established.
 
 **Refund-completeness fix on record (PR #139):** merge
 `3fc79de4a4371ea3e45ff09eded369a44aa6c747`; reviewed head
@@ -745,6 +1012,24 @@ no duplicate financial effect. Refund evidence is complete or the
 refund leg fails loudly — no partial refund page may masquerade as
 complete.
 
+**Cancelled-order refund-recovery fix on record (PR #140):** merge
+`cd8bc9df12407cbcab473f9f6c2a1f2336967ae5`; reviewed head
+`a963556d4b6bceeed796811ab0d10742566ed34b`; main CI 33684519108 —
+success. Production change confined to
+`backend/shopify_connector/tasks.py` (tests:
+`backend/tests/test_a5_cancelled_refund_recovery.py`). `cancelled_at`
+is no longer a no-financial-effect predicate in either sync leg; the
+refund leg's blanket cancelled skip is removed; the per-leg
+pilot/cancelled counters defined above are added to both legs'
+results; a pilot-dispositioned order leaves its leg before the
+provenance stamp and before any backfill (both A-leg backfills; the B
+leg's single refund backfill — the previous code mis-counted the A-leg
+pilot skip as `created`). A re-execution that re-selects a candidate
+is idempotent — no duplicate `ShopifyOrder`, `ShopifyRefund`,
+`BusinessEvent`, or `JournalEntry` (see the closure rule above for
+what a re-execution can and cannot re-select). No migration, model,
+event-schema, A3, or A4 change.
+
 **Mechanical side effects of the authorized intake** (expected and
 named here so they are never read as "unexplained" rows): for every
 booked paid order the initial task also fetches the order's
@@ -754,8 +1039,12 @@ legitimately carry status ERROR "No SKUs matched inventory items",
 an expected and explained non-financial state; the task's
 deferred-COGS sweep leg also runs and must report 0 booked under the
 profile. The task result's top-level `status` field is unconditionally
-`"ok"` and proves nothing — evaluate each leg's own status (`orders`,
-`payouts`, `products`, `refunds`, `deferred_cogs`) individually.
+`"ok"` when the legs run (a no-leg-keys `skipped`/`error` return, or a
+raised Celery FAILURE, is the consumed-without-executing STOP) and
+proves nothing — evaluate each leg's own result (`orders`,
+`payouts`, `products`, `refunds`, `deferred_cogs`) individually, per
+the leg-status truth above (status where the shape carries one, and
+counters).
 
 - [ ] **I13. Synthetic-rehearsal intake authorization.** A dated
   sign-off authorizing release of the queued initial sync for the
@@ -767,52 +1056,139 @@ profile. The task result's top-level `status` field is unconditionally
   2. set B — synthetic refunded/partially-refunded orders whose
      order.`updated_at` falls in the seven-day
      `REFUND_CANDIDATE_UPDATED_WINDOW`, regardless of parent-order age;
-  3. for every B candidate, the complete parent order and complete
-     refund history as returned by Shopify, regardless of individual
-     refund dates;
+  3. for every B candidate — cancelled or not — the complete parent
+     order, the cancellation provenance stamp where `cancelled_at` is
+     populated, and the complete refund history as returned by
+     Shopify, regardless of individual refund dates;
   4. the complete synthetic product catalog;
   5. execution of the payout sync leg, with payout accounting expected
      to remain blocked/skipped under `ISOLATED_SHADOW_LEDGER_V1`.
   The sign-off must acknowledge: an imported parent order or refund may
   have a Shopify source date older than seven days even though the
   change that selected the parent order occurred inside the
-  refund-candidate `updated_at` window.
-  Sign-off: operator ______ date ______
+  refund-candidate `updated_at` window; and a cancelled refunded
+  candidate is recovered and booked (parent, provenance stamp, complete
+  refunds), never skipped. This sign-off authorizes the contract at
+  `INTAKE_CONTRACT_VERSION` = <the §B runbook revision SHA> (the
+  rehearsal twin of the GO record's "version <n>"). Like the §Q GO
+  record, it authorizes the FUTURE execution-relative contract: the
+  worker is stopped at signing, so `INITIAL_SYNC_STARTED_AT` and the
+  effective window boundaries do not exist yet and no VALUE for them
+  may be recorded here — they are captured at I14 and reconciled to
+  this authorization there.
+  Sign-off: operator ______ `I13_SIGNOFF_TIMESTAMP` (UTC, to the
+  second — the rehearsal twin of `GO_TIMESTAMP`, ordered against
+  `TASK_RECEIVED_AT` at I14) ______
 - [ ] **I14. Controlled initial-sync release — worker only. Verify the
   authorized intake CONTRACT, not a simple window.** Start the Celery
   worker ONLY; keep beat stopped and webhooks blocked. Observe the
-  queued `shopify.initial_store_sync` task: record its task id from
-  the worker receive/start log, its start/finish timestamps, and its
-  complete result (privately); require exactly one accounted initial
-  task for this connection. Record: `INITIAL_SYNC_STARTED_AT`,
-  `ORDER_CREATED_WINDOW_START`, `ORDER_CREATED_WINDOW_END`,
-  `REFUND_CANDIDATE_UPDATED_WINDOW_START`, and
-  `REFUND_CANDIDATE_UPDATED_WINDOW_END` (all execution-time, per the
-  intake-contract definition). Require the task result to show, PER
-  LEG (the top-level `status` is unconditionally `"ok"` and proves
-  nothing — §I definition):
-  - the order-created leg completed or failed loudly;
+  queued `shopify.initial_store_sync` task: record its task id (from
+  the worker receive/start log and its durable `django_celery_results`
+  TaskResult row), its start/finish timestamps, and its complete result
+  (privately); require exactly one initial task consumed on release —
+  any later re-execution used for §I closure is a separately recorded,
+  explained execution with its own task id or CLI invocation, A52 line
+  and counters, and more than one UNEXPLAINED initial task is a STOP.
+  Record, from the worker's private `[A52] _sync_orders start …
+  created_at_min=… created_at_max=…` INFO line (transcribe ONLY the two
+  timestamps — the line also carries the shop domain and store id; the
+  windows are NOT in the task result):
+  `INITIAL_SYNC_STARTED_AT` = `created_at_max`,
+  `ORDER_CREATED_WINDOW_START` = `created_at_min`,
+  `ORDER_CREATED_WINDOW_END` = `created_at_max`,
+  `REFUND_CANDIDATE_UPDATED_WINDOW_START` / `_END` = the same pair
+  (the refund leg is passed the identical values and logs no window of
+  its own); and, separately, `TASK_RECEIVED_AT` from the TaskResult
+  row's start time, corroborated by the Celery received/started log
+  line. This is the FIRST point at which these values exist (they never
+  appear in the I13 sign-off). Reconcile them to the I13 authorization
+  — `INTAKE_CONTRACT_VERSION` and `INITIAL_LOOKBACK_DAYS = 7` — by the
+  §I rule: `created_at_max − created_at_min` = exactly 7 days;
+  `I13_SIGNOFF_TIMESTAMP < TASK_RECEIVED_AT ≤ INITIAL_SYNC_STARTED_AT`
+  (the inequality failing is a STOP; the last two are normally seconds
+  apart — a larger gap is not a STOP by itself but must be explained in
+  the record); an absent A52 start line is a STOP. A task result with
+  NO leg keys (`skipped` "Store not active" / "tenant not writable", or
+  `error` "Store not found"), or a raised Celery FAILURE with no result
+  dict, means the task was consumed without executing the intake — STOP
+  (§I leg-status truth). Require the task result to show, PER LEG (the
+  top-level `status` is unconditionally `"ok"` when the legs run and
+  proves nothing — §I definition):
+  - the order-created leg completed on its `ok` shape with its full
+    counter set recorded (`fetched`, `created`, `skipped`, `errors`,
+    `cogs_fulfillments`, `refunds_backfilled`, `pilot_scope_skipped`,
+    `cancelled_financial_candidates`, `cancelled_financial_processed`,
+    `cancelled_no_effect_skipped`, `cancelled_processing_errors`), OR
+    failed loudly — on its mid-fetch `partial`/`error` shape (which
+    carries only `fetched`/`created`/`skipped`/`errors`/`error` plus the
+    five pilot/cancelled counters, never `cogs_fulfillments` or
+    `refunds_backfilled`), on its `unavailable` shape (zeroed
+    `fetched`/`created`/`skipped`/`errors` and a message, no
+    pilot/cancelled counters), or on a bare `status`/`error` shape —
+    every failure shape is a STOP;
   - the refund catch-up leg completed with `status = "ok"` and
-    `fetch_failures = 0` — the five-field refund-leg shape
-    (`status`/`scanned`/`refunds_created`/`errors`/`fetch_failures`)
-    is guaranteed only on the `ok` and complete-history-failure
-    shapes; any other error shape carries only `status`/`error` and
-    is equally a STOP;
-  - every process error is zero or individually explained, corrected,
-    and retried.
-  Then verify against the database and the §K control pack (the task
-  result cannot show these):
-  - every candidate parent order has complete refund evidence, and no
-    partial refund list or refund-connection page was accepted —
-    proven by the refund leg's `status = "ok"` with
+    `fetch_failures = 0`, with its full counter set recorded
+    (`scanned`, `refunds_created`, `errors`, `fetch_failures`,
+    `pilot_scope_skipped`, `cancelled_financial_candidates`,
+    `cancelled_financial_processed`, `cancelled_processing_errors`) —
+    those fields are guaranteed only on the `ok` and
+    complete-history-failure shapes; any other error shape carries
+    only `status`/`error` and is equally a STOP. A fetch failure on the
+    release execution (`status = "error"`, `fetch_failures > 0`) is a
+    STOP at that moment; it is CLOSED only per the §I closure rule — a
+    recorded re-execution whose refund leg is `ok` with
+    `fetch_failures = 0` and the affected candidate's complete refund
+    history present — with BOTH results retained in the §K pack, and
+    the latest accounted execution's refund leg must be `ok` with
+    `fetch_failures = 0`;
+  - `status = "ok"` on the refund leg is NOT read as zero errors (it
+    flips only on fetch failures — §I leg-status truth): `errors` and
+    `cancelled_processing_errors` are read directly and every entry is
+    zero or individually explained, corrected, and CLOSED per the §I
+    closure rule (a re-selecting re-execution that leaves the gap open
+    closes nothing);
+  - `pilot_scope_skipped = 0` in BOTH legs (the synthetic store is EGP
+    by precondition — a nonzero bucket is a scope finding);
+  - the per-leg inequality holds in BOTH legs:
+    `cancelled_financial_candidates − cancelled_financial_processed ≤
+    cancelled_processing_errors + pilot_scope_skipped`.
+  Then verify against the database and the §K control pack:
+  - every B candidate — cancelled or not — has a local parent order
+    and complete refund evidence (the task result cannot show these),
+    and — where Shopify shows `cancelled_at` — the cancellation
+    provenance stamp, verified per the §I definition from the task
+    result and worker log (no stamp-failure entry in
+    `cancelled_processing_errors`, no "Cancellation provenance stamp
+    failed" warning for that order; the raw-payload `cancelled_at`
+    field is corroboration only, because the poller-booked parent
+    already carries it); no partial refund list or refund-connection
+    page was accepted — proven by the refund leg's `status = "ok"` with
     `fetch_failures = 0` (order-page partial responses are separately
     visible only as the private worker-log warning "Shopify GraphQL
-    partial response" and must be inspected if present);
+    partial response" and must be inspected if present). The ONLY B
+    candidates permitted to lack a parent or evidence at this
+    checkpoint are those accounted for by the §I definition's two
+    legitimate outcomes: `pilot_scope_skipped` (expected 0 here), or a
+    counted loud error (`cancelled_processing_errors` /
+    `fetch_failures` / `errors`) that has been dispositioned AND whose
+    recorded, explained re-execution has CLOSED the gap — parent,
+    stamp, and complete refunds now present; a gap that is only
+    counted, dispositioned, or retried without closure, a candidate no
+    re-execution can re-select, or a permanent malformed-payload
+    rejection is NOT accounted for and remains a STOP;
+  - every first-seen cancelled captured-money order in A is booked
+    and stamped (`cancelled_financial_processed`), and every
+    never-captured cancellation in A is counted in
+    `cancelled_no_effect_skipped` with no financial effect — or, if its
+    cancellation writer failed, appears in
+    `errors`/`cancelled_processing_errors` and is dispositioned and
+    closed there (§I no-financial-effect closure), never silently;
   - the A union B parent-order set is deduplicated by Shopify order
     id — reconcile the union from order ids in the §K control pack,
     NEVER by summing leg counters: an overlapping A/B order
     legitimately appears in both legs' counters (`fetched` and
-    `scanned`);
+    `scanned`, and — when cancelled — in both legs'
+    `cancelled_financial_candidates`);
   - all source and financial effects reconcile to the authorized
     intake contract — not merely to source timestamps within seven
     days.
@@ -820,9 +1196,15 @@ profile. The task result's top-level `status` field is unconditionally
   `OLDEST_IMPORTED_REFUND_CREATED_AT`,
   `NEWEST_IMPORTED_REFUND_CREATED_AT`, `CANDIDATE_ORDER_COUNT_A`,
   `CANDIDATE_ORDER_COUNT_B`, `CANDIDATE_ORDER_UNION_COUNT`,
-  `COMPLETE_REFUND_COUNT`, `REFUND_FETCH_FAILURES`. An older
-  parent-order date or refund date is NOT a violation when the order
-  was legitimately selected through B. Then verify: synthetic products
+  `COMPLETE_REFUND_COUNT`, `REFUND_FETCH_FAILURES`, and the per-leg
+  counters `PILOT_SCOPE_SKIPPED_A` / `_B` (must be 0),
+  `CANCELLED_FINANCIAL_CANDIDATES_A` / `_B`,
+  `CANCELLED_FINANCIAL_PROCESSED_A` / `_B`,
+  `CANCELLED_NO_EFFECT_SKIPPED_A`, `CANCELLED_PROCESSING_ERRORS_A` /
+  `_B`. An older parent-order date or refund date is NOT a violation
+  when the order was legitimately selected through B; a cancelled
+  refunded candidate's booked parent and refunds are NOT a violation —
+  they are the required outcome. Then verify: synthetic products
   synchronized and every product NON_STOCK with zero inventory/COGS
   account links and zero inventory ledger/FIFO residue; the durable
   `shop_currency` snapshot now exists and is EGP; synthetic
@@ -834,11 +1216,30 @@ profile. The task result's top-level `status` field is unconditionally
   (the §I definition's mechanical side effects); no unexplained source
   or financial row appears. Rerun the go-live preflight and
   `/_health/alerts`.
-  STOP if: `fetch_failures` is nonzero; the refund leg reports error
-  or incomplete evidence; a candidate order's full refund history
-  cannot be assembled; counts across A, B, and their union cannot be
-  reconciled; or an older imported parent/refund is omitted merely to
-  preserve a seven-day timestamp narrative.
+  STOP if: `fetch_failures` is nonzero on the latest accounted
+  execution, or on any earlier execution whose affected candidate's
+  complete refund history is still not present; the refund leg reports
+  error or incomplete evidence on that same basis; a candidate order's
+  full refund history cannot be assembled; a B candidate lacks a local
+  parent, its provenance stamp, or complete refund evidence and is not
+  accounted for by `pilot_scope_skipped` or a counted loud error that
+  has been CLOSED (a retry that leaves the gap open, a candidate no
+  re-execution can re-select, or a permanent malformed-payload
+  rejection is not accounted for); `pilot_scope_skipped` is nonzero in
+  either leg; `cancelled_processing_errors` or `errors` is nonzero and
+  not individually dispositioned and closed; the per-leg inequality
+  fails; a cancelled B candidate is classified as harmless, skipped,
+  or outside the required parent/evidence set; the refund leg's
+  `status = "ok"` is read as proof of zero errors; the task result has
+  no leg keys or the task raised before any leg; the A52 start line is
+  absent, or the recorded windows do not match its
+  `created_at_min`/`created_at_max`, or
+  `created_at_max − created_at_min ≠ 7 days`, or
+  `I13_SIGNOFF_TIMESTAMP < TASK_RECEIVED_AT ≤ INITIAL_SYNC_STARTED_AT`
+  fails; a closure re-execution booked an order outside
+  AUTHORIZED_PARENT_ORDER_SET; counts across A, B, and their union
+  cannot be reconciled; or an older imported parent/refund is omitted
+  merely to preserve a seven-day timestamp narrative.
 - [ ] **I15. Webhook release and retry reconciliation.** Unblock the
   Shopify webhook route while beat remains stopped. Allow queued
   Shopify retries to arrive; verify idempotency — duplicate deliveries
@@ -945,8 +1346,13 @@ Minimum schema:
 | Complete refund count and totals per B candidate | Shopify admin/exports vs system |
 | Oldest and newest imported parent-order dates | system (read-only) vs Shopify |
 | Oldest and newest imported refund dates | system (read-only) vs Shopify |
-| Refund fetch-failure count (must be 0) | `initial_store_sync` task result |
-| The complete `initial_store_sync` task result | worker log / task result (private) |
+| Refund fetch-failure count (must be 0 on the latest accounted execution; any earlier execution's fetch failure recorded with its §I closure) | `initial_store_sync` task result(s) — the release execution AND every recorded closure re-execution |
+| Cancelled B candidates: count and ids; for each — local parent present, complete refund count/totals, and the cancellation provenance stamp verified per §I (no stamp-failure entry in `cancelled_processing_errors` and no "Cancellation provenance stamp failed" warning for that order; raw-payload `cancelled_at` corroboration only) | Shopify admin/exports vs system (read-only) + task result / worker log (private) |
+| Cancelled A orders: captured-money (booked + stamped) vs never-captured (no financial effect) split | Shopify admin/exports vs `cancelled_financial_processed` (booked + stamped) / `cancelled_no_effect_skipped` (never captured, writer succeeded); any `cancelled_financial_candidates` − `cancelled_financial_processed` gap must be accounted for by `cancelled_processing_errors` + `pilot_scope_skipped` per the §I inequality (row below) |
+| Per-leg pilot/cancelled counters (`pilot_scope_skipped`, `cancelled_financial_candidates`, `cancelled_financial_processed`, `cancelled_no_effect_skipped` (orders leg only), `cancelled_processing_errors`) and the inequality check per leg | `initial_store_sync` task result |
+| `pilot_scope_skipped` per leg (must be 0 on the EGP store) | `initial_store_sync` task result |
+| `INITIAL_SYNC_STARTED_AT`, effective window boundaries (timestamps only), `TASK_RECEIVED_AT`, `INTAKE_CONTRACT_VERSION` | worker log `[A52] _sync_orders start` line + Celery task log (private) vs the §B runbook revision |
+| The complete `initial_store_sync` task result, plus the complete result of every recorded closure re-execution (each with its own task id or CLI invocation, A52 line, counters, and inequality) | worker log / task result / TaskResult rows (private) |
 | Settlement row count, gross, fee, net totals | the CSV files |
 | Bank line count, debit total, credit total | the CSV files |
 | Event counts by relevant type | system (read-only) |
@@ -997,7 +1403,20 @@ order exactly once**; review/evidence totals may independently count
 rejection, failure, or quarantine records without duplicating the
 financial amount. An old parent-order or refund date visible in these
 controls is not a variance when the order was legitimately selected
-through set B.
+through set B. A cancelled refunded B candidate is recorded exactly
+like an open one: its parent carries `POSTED_EXACTLY_ONCE` (with the
+journal identifier), each of its refunds carries its own financial
+effect, and the cancellation provenance stamp is review/evidence
+metadata — never a reason to omit the row, and never a financial effect
+of its own. A never-captured cancelled A order is `NO_FINANCIAL_EFFECT`
+and must reconcile to `cancelled_no_effect_skipped` — or, where its
+cancellation writer failed, to an `errors`/`cancelled_processing_errors`
+entry that is dispositioned and closed (§I no-financial-effect
+closure). Every B candidate lacking a parent or
+refund evidence must reconcile to exactly one of the §I definition's
+two legitimate outcomes (`pilot_scope_skipped` — expected 0 — or a
+counted loud error that has been CLOSED before the checkpoint); any
+other absence is a variance.
 
 STOP on any unexplained difference — **even when Nxentra reports healthy.**
 
@@ -1239,11 +1658,66 @@ Sign-off: operator ______ date ______
 - founder or merchant refusal of the any-age parent-order reach, or of
   the complete refund-history intake (the §Q step-11 STOP governs the
   disposition: no worker or webhook release, no queue purge);
-- the refund catch-up leg reporting status `error` or incomplete
-  evidence;
-- `fetch_failures > 0`;
+- the refund catch-up leg of the latest accounted execution reporting
+  status `error` or incomplete evidence, or an earlier execution's
+  refund-leg failure that has not been closed per the §I closure rule;
+- `fetch_failures > 0` on the latest accounted execution, or on any
+  earlier execution whose affected candidate's complete refund history
+  is still not present;
 - the A/B candidate-set overlap double counted;
-- a B candidate missing its complete refund evidence;
+- a B candidate missing its local parent, its cancellation provenance
+  stamp (where Shopify shows `cancelled_at`), or its complete refund
+  evidence at a checkpoint, unless the gap is `pilot_scope_skipped`
+  (expected 0 on the EGP store) or a counted loud error
+  (`cancelled_processing_errors` / `fetch_failures` / `errors`) that
+  has been dispositioned AND CLOSED by a recorded, explained
+  re-execution (parent, stamp, and complete refunds now present) — a
+  retry that leaves any of them absent, a candidate no re-execution
+  can re-select, or a permanent malformed-payload rejection is NOT
+  accounted for; the §I intermediate-state allowance covers only the
+  period between the initial run and the completed closure;
+- a cancelled B candidate classified as harmless, skipped, or outside
+  the required parent/evidence set;
+- a first-seen cancelled captured-money order in A left unbooked, or
+  carrying a stamp-failure entry in `cancelled_processing_errors` that
+  is not closed;
+- `pilot_scope_skipped` nonzero in either leg on the EGP store;
+- the per-leg inequality `cancelled_financial_candidates −
+  cancelled_financial_processed ≤ cancelled_processing_errors +
+  pilot_scope_skipped` failing;
+- `cancelled_processing_errors` or `errors` nonzero and not
+  individually dispositioned and closed;
+- a refund-leg `status = "ok"` read as proof of zero errors, or the
+  top-level task `status` read as proof of anything;
+- a leg result shape carrying no counters (token missing/revoked,
+  `unavailable`, or a caught exception) accepted as a completed leg;
+- a task result with no leg keys (`skipped` "Store not active" /
+  "tenant not writable", `error` "Store not found"), or a task that
+  raised before any leg (Celery FAILURE, no result dict) — the queued
+  task consumed without executing the authorized intake — or a
+  re-enqueue before its cause is explained and the no-ingestion proof
+  re-proven;
+- a GO record or I13 sign-off that records a VALUE for
+  `INITIAL_SYNC_STARTED_AT`, an effective window boundary, or any
+  per-leg result field before the worker has executed (a retrospective
+  authorization — the contract wording names them as future values,
+  which is required; a filled-in value is the violation), or that is
+  amended after signing to include one;
+- a GO record whose "version <n>", or an I13 sign-off, does not name
+  the `INTAKE_CONTRACT_VERSION` (the §B runbook revision) in force, or
+  a merchant-run runbook revision whose §I definition block is not
+  textually identical to the G1-rehearsed one;
+- the `[A52] _sync_orders start` line absent, or recorded windows not
+  matching its `created_at_min`/`created_at_max`, or
+  `created_at_max − created_at_min ≠ 7 days`, or the ordering
+  authorization sign-off `< TASK_RECEIVED_AT ≤ INITIAL_SYNC_STARTED_AT`
+  failing (a larger-than-seconds gap between the last two is not an
+  abort by itself but must be explained in the record), or a shop
+  domain copied from that line into attachable evidence;
+- a closure re-execution that books any order outside
+  AUTHORIZED_PARENT_ORDER_SET, or that is not recorded as an explained
+  second execution;
+- more than one unexplained initial task;
 - an older parent order or refund excluded merely because its date
   predates the seven-day window;
 - any claim that `import_mode="skip"` suppresses the refund catch-up;
@@ -1382,19 +1856,32 @@ after G1 and G2 are recorded complete in the
     already been ingested: STOP and recreate the fresh merchant
     environment — never delete it manually to recover the proof;
 11. sign the **dated GO decision**, using the intake-contract
-    definition (§I, before I13), which must state: "I authorize release
-    of Shopify financial and source intake for this merchant. I
-    authorize the queued `initial_store_sync` task, beginning at the
-    recorded `INITIAL_SYNC_STARTED_AT`, to ingest: (1) eligible orders
-    created during the execution-time seven-day `ORDER_CREATED_WINDOW`;
-    (2) refunded or partially refunded orders whose Shopify
-    order.`updated_at` falls during the execution-time seven-day
-    `REFUND_CANDIDATE_UPDATED_WINDOW`, regardless of the parent
-    order's age; (3) for every order selected by item 2, the complete
-    parent order and its complete refund history as available when the
-    catch-up executes, regardless of the individual refund dates;
-    (4) the merchant product catalog; (5) the payout synchronization
-    leg, while payout accounting remains blocked under
+    definition (§I, before I13). The GO record authorizes the FUTURE,
+    execution-relative contract: the worker is stopped until step 12,
+    so `INITIAL_SYNC_STARTED_AT` and the effective window boundaries
+    cannot exist at signing, and a value supplied later would make the
+    authorization retrospective — the GO must precede the first
+    merchant source write and must not cite anything that does not yet
+    exist. It must state: "I authorize release of Shopify financial and
+    source intake for this merchant. I authorize the initial store sync
+    to execute after this GO under the recorded intake contract,
+    version <n>. At execution start the worker records
+    `INITIAL_SYNC_STARTED_AT`; `ORDER_CREATED_WINDOW` and
+    `REFUND_CANDIDATE_UPDATED_WINDOW` are derived from that
+    execution-time value with `INITIAL_LOOKBACK_DAYS = 7`. I understand
+    the actual `INITIAL_SYNC_STARTED_AT` and the effective window
+    boundaries do not exist at signing and will be captured and
+    reconciled to this contract in step 12 before any merchant-facing
+    checkpoint. Under that contract the task ingests: (1) eligible
+    orders created during the execution-time seven-day
+    `ORDER_CREATED_WINDOW`; (2) refunded or partially refunded orders
+    whose Shopify order.`updated_at` falls during the execution-time
+    seven-day `REFUND_CANDIDATE_UPDATED_WINDOW`, regardless of the
+    parent order's age; (3) for every order selected by item 2, the
+    complete parent order and its complete refund history as available
+    when the catch-up executes, regardless of the individual refund
+    dates; (4) the merchant product catalog; (5) the payout
+    synchronization leg, while payout accounting remains blocked under
     `ISOLATED_SHADOW_LEDGER_V1`. I understand that an order created
     months or years before this GO decision may be imported and booked
     in full when its refund state changed during the seven-day
@@ -1404,11 +1891,21 @@ after G1 and G2 are recorded complete in the
     controls and stop conditions." Record: `GO_TIMESTAMP`,
     `GO_OPERATOR`, the redacted Shopify store identity,
     `INITIAL_LOOKBACK_DAYS = 7`, `PRE_GO_INGESTION_BASELINE_HASH`, the
-    authorized intake-contract version, and merchant
-    acknowledgement/approval where required. The GO record must NOT
-    claim that all imported source timestamps are at most seven days
-    old, must not promise post-GO-only source dates, and must not
-    describe the reach as a simple seven-day historical window.
+    authorized intake-contract version — `INTAKE_CONTRACT_VERSION`,
+    the §B runbook revision SHA whose §I definition text is the
+    contract (this is the "version <n>" the wording cites) — and
+    merchant acknowledgement/approval where required. The GO record
+    must NOT record a VALUE for `INITIAL_SYNC_STARTED_AT`, any
+    effective window boundary, or any per-leg result field (the
+    contract wording above names them as future values — that is
+    required; a filled-in value is the violation) — those exist only
+    after execution and are first recorded in the post-execution
+    controls of step 12 (from which the §K control pack copies them);
+    the GO record is never amended after signing to add one. The GO
+    record must NOT claim that all imported source timestamps are at
+    most seven days old, must not promise post-GO-only source dates,
+    and must not describe the reach as a simple seven-day historical
+    window.
     Clarify in the record: `import_mode="skip"` suppresses the
     onboarding historical-import request; it does NOT suppress the
     OAuth-triggered initial sync or its refund catch-up. **If the
@@ -1421,21 +1918,86 @@ after G1 and G2 are recorded complete in the
 12. release intake — **worker only**: keep webhooks blocked and beat
     stopped; start the Celery worker; observe the queued
     `shopify.initial_store_sync` task; record its task id, start/end
-    timestamps, and complete result; record the execution-time
-    `INITIAL_SYNC_STARTED_AT` and both windows (`ORDER_CREATED_WINDOW`,
-    `REFUND_CANDIDATE_UPDATED_WINDOW`); require completion or a fully
-    explained loud failure, evaluated PER LEG (the top-level `status`
-    is unconditionally `"ok"` and proves nothing — §I definition).
+    timestamps, and complete result. **Post-execution controls — the
+    FIRST place these values are recorded (they never appear in the
+    step-11 GO record; the §K control pack copies them from here):**
+    from the worker's private `[A52] _sync_orders start …
+    created_at_min=… created_at_max=…` INFO line (transcribe ONLY the
+    two timestamps — the line carries the shop domain; the windows are
+    NOT in the task result) record `INITIAL_SYNC_STARTED_AT` =
+    `created_at_max`, `ORDER_CREATED_WINDOW_START`/`_END` =
+    `created_at_min`/`created_at_max`,
+    `REFUND_CANDIDATE_UPDATED_WINDOW_START`/`_END` = the same pair (the
+    refund leg receives the identical values and logs no window of its
+    own), plus `TASK_RECEIVED_AT` from the task's durable
+    `django_celery_results` TaskResult row (start time, keyed by task
+    id; corroborated by the Celery received/started log line), and
+    every per-leg result field; reconcile them to the step-11 GO
+    record — `INTAKE_CONTRACT_VERSION` and `INITIAL_LOOKBACK_DAYS = 7`
+    — by the §I rule: `created_at_max − created_at_min` = exactly 7
+    days, and `GO_TIMESTAMP < TASK_RECEIVED_AT ≤ INITIAL_SYNC_STARTED_AT`
+    (the inequality failing is a STOP; the last two are normally
+    seconds apart — a larger gap is not a STOP by itself but must be
+    explained in the record) — before any merchant-facing checkpoint;
+    an absent A52 start line is a STOP. Require exactly one initial
+    task consumed on release; any later re-execution used for §I
+    closure is a separately recorded, explained execution (own task id
+    or CLI invocation, own A52 line, counters and inequality, retained
+    beside the release result), and more than one UNEXPLAINED initial
+    task is a STOP. A task result with NO leg keys (`skipped` "Store
+    not active" / "tenant not writable", `error` "Store not found"), or
+    a task that raised before any leg (Celery FAILURE, no result dict),
+    means the queued task was consumed without executing the
+    authorized intake — STOP; do not re-enqueue until the cause is
+    explained and the step-10 no-ingestion baseline is re-proven.
+    Require completion or a fully explained loud failure, evaluated PER
+    LEG (the top-level `status` is unconditionally `"ok"` when the legs
+    run and proves nothing — §I definition).
     **Reconcile to the authorized intake contract** (§I definition),
     not merely to source timestamps within seven days: record the A
     and B candidate sets and their overlap; reconcile their union
     from order ids without double counting (never by summing leg
-    counters); require every B candidate's complete refund history to
-    be present or the leg to fail loudly; require the refund leg's
-    `status = "ok"` and `fetch_failures == 0`; require every refund
-    amount to use the complete transaction/line evidence; make old
-    parent orders and old refund dates visible in the control pack
-    (they are NOT violations when selected through B); verify every
+    counters); require, for every B candidate — cancelled or not — a
+    local parent order, its complete refund history, and — where
+    Shopify shows `cancelled_at` — the cancellation provenance stamp
+    verified from the task result and worker log (no stamp-failure
+    entry, no "Cancellation provenance stamp failed" warning; the
+    raw-payload field is corroboration only — §I definition), or the
+    leg to fail loudly — the ONLY B candidates permitted to lack a
+    parent or evidence at the checkpoint are those accounted for by
+    the §I definition's two legitimate outcomes: `pilot_scope_skipped`
+    (must be 0 for this EGP merchant), or a counted loud error
+    (`cancelled_processing_errors` / `fetch_failures` / `errors`) that
+    has been dispositioned AND CLOSED by a recorded, explained
+    re-execution (parent, stamp, and complete refunds now present —
+    §I closure rule; a candidate no re-execution can re-select or a
+    permanent malformed-payload rejection is never accounted for), and
+    any other gap is a STOP; require every first-seen cancelled
+    captured-money order in A to be booked and stamped and every
+    never-captured cancellation to appear in
+    `cancelled_no_effect_skipped` (or, where its writer failed, in
+    `errors`/`cancelled_processing_errors`, dispositioned and closed
+    there per the §I no-financial-effect closure);
+    record the per-leg counters (`pilot_scope_skipped`,
+    `cancelled_financial_candidates`, `cancelled_financial_processed`,
+    `cancelled_no_effect_skipped` (orders leg only),
+    `cancelled_processing_errors`) and require the per-leg inequality
+    `cancelled_financial_candidates − cancelled_financial_processed ≤
+    cancelled_processing_errors + pilot_scope_skipped` to hold in both
+    legs; require the refund leg's `status = "ok"` and
+    `fetch_failures == 0` on the latest accounted execution — a
+    release-execution fetch failure is a STOP at that moment and is
+    closed only per the §I closure rule (a recorded re-execution whose
+    refund leg is `ok` with `fetch_failures = 0` and the affected
+    candidate's complete refund history present, both results
+    retained) — AND read `errors` and `cancelled_processing_errors`
+    directly (`status = "ok"` flips only on fetch failures and is not
+    evidence of zero errors — §I leg-status truth); require every
+    refund amount to use the complete
+    transaction/line evidence; make old parent orders and old refund
+    dates visible in the control pack (they are NOT violations when
+    selected through B, and a cancelled candidate's booked parent and
+    refunds are the required outcome, not a variance); verify every
     posted financial effect occurs exactly once; keep task-level
     errors visible and dispositioned; rejected/failed/quarantined
     outcomes appear in their operator surfaces; no unsupported
@@ -1451,10 +2013,32 @@ after G1 and G2 are recorded complete in the
 15. start Celery beat **LAST**;
 16. rerun the go-live preflight and alerts after beat starts;
 17. sign the final **intake-complete checkpoint**. Do NOT sign while:
-    the refund catch-up leg's status is not `ok`; `fetch_failures > 0`;
-    an old candidate parent's complete history is unexplained; the A/B
-    overlap is double counted; or a partial fetch is treated as
-    success.
+    the refund catch-up leg's status is not `ok`, or `fetch_failures >
+    0`, on the latest accounted execution, or an earlier execution's
+    fetch failure remains unclosed per the §I closure rule; an old
+    candidate parent's complete history is unexplained; a B
+    candidate — cancelled or not — lacks its local parent, its
+    provenance stamp, or its complete refund evidence and is not
+    accounted for by `pilot_scope_skipped` or a counted loud error
+    that has been dispositioned AND CLOSED (parent, stamp, and
+    complete refunds present after a recorded, explained
+    re-execution — a gap that is only counted, dispositioned, or
+    retried without closure, a candidate no re-execution can
+    re-select, or a permanent malformed-payload rejection is not
+    accounted for); a cancelled candidate has been classified as
+    harmless, skipped, or outside the required parent/evidence set;
+    `pilot_scope_skipped` is nonzero in either leg; the per-leg
+    inequality fails; `cancelled_processing_errors` or `errors` is
+    nonzero and undispositioned or unclosed; the refund leg's
+    `status = "ok"` is being read as proof of zero errors; the task
+    result had no leg keys or the task raised before any leg; the
+    step-12 post-execution controls (`INITIAL_SYNC_STARTED_AT`,
+    `TASK_RECEIVED_AT`, effective windows from the A52 line, per-leg
+    fields) are missing or do not reconcile to the step-11 GO record
+    and `INTAKE_CONTRACT_VERSION`; a closure re-execution booked an
+    order outside AUTHORIZED_PARENT_ORDER_SET or is unrecorded; the GO
+    record was amended after signing; the A/B overlap is double
+    counted; or a partial fetch is treated as success.
 
 The GO decision precedes the first merchant product/order/refund source
 write.
@@ -1468,8 +2052,12 @@ before the binding ceremony; the connect path silently creates or
 selects an unrelated binding; the intended merchant OWNER is not the
 bound membership; a first-owner fallback occurs; the real embedded user
 reaches Nxentra before the explicit binding; the initial task runs
-before GO; its intake differs from the authorized intake contract (§I
-definition); more than one unexplained initial task runs; webhooks are
+before GO; the GO record records a value for `INITIAL_SYNC_STARTED_AT`,
+an effective window boundary, or a per-leg result field that did not
+exist at signing, or is amended after signing; its intake differs from the
+authorized intake contract (§I definition); a cancelled B candidate is
+treated as skipped or outside the required evidence set; more than one
+unexplained initial task runs; webhooks are
 unblocked before the initial task is accounted for; beat starts before
 initial intake and retries are reconciled; any unsupported
 payout/COGS/inventory financial effect appears; any source row lacks a
