@@ -36,7 +36,11 @@ SHOPIFY_API_VERSION = getattr(settings, "SHOPIFY_API_VERSION", "2026-04")
 
 # Page sizes are chosen to keep each query's calculated cost comfortably
 # under Shopify's 1000-point single-query ceiling (nested connections
-# multiply: products × variants, orders × line_items).
+# multiply: products × variants, orders × line_items). These are page
+# sizes only, never completeness caps: a nested lineItems/variants
+# connection reporting hasNextPage is drained per-parent to exhaustion
+# (A5 nested-collection pagination — the pre-fix code silently truncated
+# an order's line-item evidence at 50 and a product's variants at 60).
 PRODUCTS_PAGE_SIZE = 12
 VARIANTS_PER_PRODUCT = 60
 ORDERS_PAGE_SIZE = 10
@@ -57,6 +61,44 @@ REFUND_TRANSACTIONS = 10
 REFUND_LINE_ITEMS = 50
 
 _MAX_THROTTLE_RETRIES = 5
+
+# Per-parent overflow pages for the nested connections above. Issued only
+# when a parent's first (nested) page reports hasNextPage — the common
+# ≤-page-size case costs no extra query.
+_ORDER_LINE_ITEMS_PAGE_QUERY = f"""
+query OrderLineItemsPage($id: ID!, $cursor: String) {{
+  order(id: $id) {{
+    lineItems(first: {LINE_ITEMS_PER_ORDER}, after: $cursor) {{
+      pageInfo {{ hasNextPage endCursor }}
+      nodes {{
+        sku
+        title
+        quantity
+        originalUnitPriceSet {{ shopMoney {{ amount }} }}
+        variant {{ legacyResourceId }}
+        product {{ legacyResourceId }}
+      }}
+    }}
+  }}
+}}
+"""
+
+_PRODUCT_VARIANTS_PAGE_QUERY = f"""
+query ProductVariantsPage($id: ID!, $cursor: String) {{
+  product(id: $id) {{
+    variants(first: {VARIANTS_PER_PRODUCT}, after: $cursor) {{
+      pageInfo {{ hasNextPage endCursor }}
+      nodes {{
+        legacyResourceId
+        sku
+        title
+        price
+        inventoryItem {{ legacyResourceId unitCost {{ amount }} }}
+      }}
+    }}
+  }}
+}}
+"""
 
 
 class ShopifyGraphQLError(requests.RequestException):
@@ -209,6 +251,54 @@ class ShopifyAdminClient:
         except (KeyError, TypeError, ValueError, ZeroDivisionError):
             return 2.0
 
+    def _drain_nested_connection(
+        self,
+        page_query: str,
+        parent_gid: str,
+        root_field: str,
+        field: str,
+        conn: object,
+        context: str,
+    ) -> list:
+        """Drain one parent object's nested connection to exhaustion,
+        starting from its already-fetched first page `conn`, and return
+        the RAW node dicts (REST-shape mapping stays at the call site).
+
+        Complete-or-loud (the A5 refund-read contract, applied to the
+        nested lineItems/variants reads): raises ShopifyGraphQLIncomplete
+        on an invalid first-page or overflow-page shape, a repeated
+        cursor, hasNextPage without endCursor, or the parent vanishing
+        mid-fetch; a failed overflow page propagates from execute() —
+        these reads never pass allow_partial, so no partial nested page
+        can masquerade as complete.
+        """
+        if not isinstance(conn, dict) or not isinstance(conn.get("nodes"), list):
+            raise ShopifyGraphQLIncomplete(f"Invalid {field} shape for {context} on {self.shop_domain}")
+        nodes = list(conn["nodes"])
+        seen_cursors: set[str] = set()
+        while True:
+            page_info = conn.get("pageInfo") or {}
+            if not page_info.get("hasNextPage"):
+                return nodes
+            end_cursor = page_info.get("endCursor")
+            if not end_cursor:
+                raise ShopifyGraphQLIncomplete(
+                    f"{field} page for {context} on {self.shop_domain} reports hasNextPage without endCursor"
+                )
+            if end_cursor in seen_cursors:
+                raise ShopifyGraphQLIncomplete(
+                    f"{field} pagination cursor repeated for {context} on {self.shop_domain}"
+                )
+            seen_cursors.add(end_cursor)
+            data = self.execute(page_query, {"id": parent_gid, "cursor": end_cursor})
+            parent = data.get(root_field)
+            if not isinstance(parent, dict):
+                raise ShopifyGraphQLIncomplete(f"{context} on {self.shop_domain} vanished mid-fetch")
+            conn = parent.get(field)
+            if not isinstance(conn, dict) or not isinstance(conn.get("nodes"), list):
+                raise ShopifyGraphQLIncomplete(f"Invalid {field} page shape for {context} on {self.shop_domain}")
+            nodes.extend(conn["nodes"])
+
     # ------------------------------------------------------------------
     # Shop
     # ------------------------------------------------------------------
@@ -271,6 +361,12 @@ class ShopifyAdminClient:
         variants:[{id, sku, title, price, inventory_item_id}]}.
         cost_map: {inventory_item_id: cost string} — unitCost comes back in
         the same query, replacing the separate REST inventory_items.json call.
+
+        A product's `variants` connection is drained to exhaustion:
+        VARIANTS_PER_PRODUCT is a page size, not a completeness cap (the
+        pre-fix code logged a warning and dropped variants past the first
+        page). Raises ShopifyGraphQLIncomplete on any pagination anomaly —
+        a truncated variant list is never yielded as complete.
         """
         query = f"""
         query Products($cursor: String) {{
@@ -282,7 +378,7 @@ class ShopifyAdminClient:
               productType
               featuredMedia {{ preview {{ image {{ url }} }} }}
               variants(first: {VARIANTS_PER_PRODUCT}) {{
-                pageInfo {{ hasNextPage }}
+                pageInfo {{ hasNextPage endCursor }}
                 nodes {{
                   legacyResourceId
                   sku
@@ -309,17 +405,17 @@ class ShopifyAdminClient:
                 if image.get("url"):
                     image_url = image["url"]
 
-                variants_conn = node.get("variants") or {}
-                if (variants_conn.get("pageInfo") or {}).get("hasNextPage"):
-                    logger.warning(
-                        "Product %s on %s has more than %d variants — extra variants not synced",
-                        node.get("legacyResourceId"),
-                        self.shop_domain,
-                        VARIANTS_PER_PRODUCT,
-                    )
+                variant_nodes = self._drain_nested_connection(
+                    _PRODUCT_VARIANTS_PAGE_QUERY,
+                    f"gid://shopify/Product/{node.get('legacyResourceId')}",
+                    "product",
+                    "variants",
+                    node.get("variants"),
+                    f"product {node.get('legacyResourceId')}",
+                )
 
                 variants = []
-                for v in variants_conn.get("nodes") or []:
+                for v in variant_nodes:
                     inv_item = v.get("inventoryItem") or {}
                     inv_item_id = inv_item.get("legacyResourceId")
                     inv_item_id = int(inv_item_id) if inv_item_id else None
@@ -381,6 +477,12 @@ class ShopifyAdminClient:
         Unlike the legacy REST orders.json (which silently drops dev-store
         test orders — the bug behind the reviewer's "0 / 0" re-sync toast),
         the GraphQL orders query returns test orders too.
+
+        Each order's `lineItems` connection is drained to exhaustion:
+        LINE_ITEMS_PER_ORDER is a page size, not a completeness cap (the
+        pre-fix code silently truncated the line-item evidence at the
+        first page). Raises ShopifyGraphQLIncomplete on any pagination
+        anomaly — a truncated line-item list is never yielded.
         """
         query = f"""
         query Orders($cursor: String, $search: String) {{
@@ -402,6 +504,7 @@ class ShopifyAdminClient:
               totalShippingPriceSet {{ shopMoney {{ amount }} }}
               customer {{ email firstName lastName }}
               lineItems(first: {LINE_ITEMS_PER_ORDER}) {{
+                pageInfo {{ hasNextPage endCursor }}
                 nodes {{
                   sku
                   title
@@ -425,7 +528,9 @@ class ShopifyAdminClient:
         window. Searches by updated_at (a refund bumps the order's
         updatedAt) + financial_status, so a refund issued today against an
         order created months before the lookback window is still caught —
-        iter_orders' created_at filter can never see those."""
+        iter_orders' created_at filter can never see those. Line items
+        drain to exhaustion exactly like iter_orders (a B candidate's
+        booked parent carries complete line-item evidence)."""
         query = f"""
         query Orders($cursor: String, $search: String) {{
           orders(first: {ORDERS_PAGE_SIZE}, after: $cursor, query: $search, sortKey: UPDATED_AT) {{
@@ -446,6 +551,7 @@ class ShopifyAdminClient:
               totalShippingPriceSet {{ shopMoney {{ amount }} }}
               customer {{ email firstName lastName }}
               lineItems(first: {LINE_ITEMS_PER_ORDER}) {{
+                pageInfo {{ hasNextPage endCursor }}
                 nodes {{
                   sku
                   title
@@ -471,22 +577,34 @@ class ShopifyAdminClient:
         while True:
             # allow_partial: customer fields can be individually denied on
             # stores where protected-customer-data approval hasn't propagated;
-            # that must not sink the whole order sync.
+            # that must not sink the whole order sync. The lineItems
+            # connection itself is NOT optional: its complete drain below is
+            # the order's line-item evidence, so an absent/invalid lineItems
+            # shape fails loudly, and the per-order overflow pages never use
+            # allow_partial.
             data = self.execute(query, {"cursor": cursor, "search": search}, allow_partial=True)
             conn = data.get("orders") or {}
             for node in conn.get("nodes") or []:
-                yield self._order_to_rest_shape(node)
+                line_item_nodes = self._drain_nested_connection(
+                    _ORDER_LINE_ITEMS_PAGE_QUERY,
+                    f"gid://shopify/Order/{node.get('legacyResourceId')}",
+                    "order",
+                    "lineItems",
+                    node.get("lineItems"),
+                    f"order {node.get('legacyResourceId')}",
+                )
+                yield self._order_to_rest_shape(node, line_item_nodes)
             page = conn.get("pageInfo") or {}
             if not page.get("hasNextPage"):
                 return
             cursor = page.get("endCursor")
 
     @staticmethod
-    def _order_to_rest_shape(node: dict) -> dict:
+    def _order_to_rest_shape(node: dict, line_item_nodes: list) -> dict:
         name = node.get("name") or ""
         customer = node.get("customer")
         line_items = []
-        for li in ((node.get("lineItems") or {}).get("nodes")) or []:
+        for li in line_item_nodes:
             line_items.append(
                 {
                     "sku": li.get("sku") or "",
