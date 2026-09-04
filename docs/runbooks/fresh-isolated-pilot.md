@@ -72,19 +72,22 @@ named evidence existing in the manifest.
   - Expected result: HEAD is a commit on `main` that has a fully green CI
     run (all seven jobs including Quality Gate). **Minimum
     application-code baseline:**
-    `cd8bc9df12407cbcab473f9f6c2a1f2336967ae5`
-    (code tree `c32efc3013de914e302dbc871e044a4601d63b15`; green main CI
-    run 33684519108, seven jobs) — the merge of the PR #140
-    cancelled-order refund-recovery correction, which contains the
-    PR #139 refund-completeness correction (`3fc79de`). **No earlier
-    commit lacking PR #140 is eligible** for G1/G2: the previously
-    named `3fc79de` (PR #139 without PR #140) and `c4896ff3` (neither)
-    revisions predate the cancelled-order correction and may no longer
-    be used — no verdict transfers from them. Because this runbook
-    document itself merges after that baseline, the exact revision
-    selected at execution must be a `main` commit containing PR #139
-    AND PR #140 AND this merged runbook, with its own green required
-    CI; the operator records that exact selected SHA, and the runbook
+    `2be1819e176399956ae509ec28a43729318d881a`
+    (code tree `c960e4774d387ab9d5d234bc6352c461e25aa3a3`; green main CI
+    run 33919019309, seven jobs) — the merge of the PR #143
+    nested-collection pagination fix, which contains the PR #139
+    refund-completeness correction (`3fc79de`), the PR #140
+    cancelled-order refund-recovery correction (`cd8bc9d`), and the
+    PR #141 store-sweep history guard (`ee003d5`). **No earlier
+    commit lacking PR #143 is eligible** for G1/G2: the previously
+    named `cd8bc9d` (PR #140 without PR #141/#143), `3fc79de` (PR #139
+    only) and `c4896ff3` (none of them) revisions predate the
+    nested-collection completeness fix and may no longer be used — no
+    verdict transfers from them. Because this runbook document itself
+    merges after that baseline, the exact revision selected at
+    execution must be a `main` commit containing PR #139, PR #140,
+    PR #141, PR #143 AND this merged runbook, with its own green
+    required CI; the operator records that exact selected SHA, and the runbook
     document revision is recorded separately from the deployed
     application revision. A later reviewed `main` revision with green
     required CI may be **selected here, before a new rehearsal begins**
@@ -606,9 +609,15 @@ pre-activation check:
   - Command / action, in order: (1) keep the web process available for
     exactly: Shopify OAuth install/callback, embedded session login,
     linking-nonce creation/redemption, authenticated configuration
-    reads/writes, and preflight; (2) block the Shopify
-    financial/source-ingestion routes at the reverse proxy — at minimum
-    `/api/shopify/webhooks` and `/api/shopify/webhooks/` — with a
+    reads/writes, and preflight; (2) block EVERY route through which
+    Shopify webhooks can reach Django at the reverse proxy, enumerated
+    from the URL configuration at the executed revision — currently the
+    dedicated endpoint (`/api/shopify/webhooks` and
+    `/api/shopify/webhooks/`) AND the generic platform endpoint
+    `/api/platforms/shopify/webhooks/`, a second live HMAC-verified
+    Shopify ingress whose pilot gates block only the payout/dispute
+    topics while order/refund/fulfillment processing stays in scope —
+    each with a
     retryable non-success response (e.g. 503; never a discarding 200),
     and prevent accidental calls to interactive sync/resync endpoints
     during the hold; (3) stop Celery beat and prove it stopped;
@@ -616,10 +625,14 @@ pre-activation check:
     and accounted-for, then stop the worker; (5) keep Redis/the broker
     AVAILABLE so the OAuth-triggered initial sync can be queued;
     (6) record an empty (or fully accounted-for) task-queue baseline.
-  - Evidence to retain (`preflight/`): proxy rule proof, beat/worker
+  - Evidence to retain (`preflight/`): the route enumeration itself
+    (every Shopify-capable webhook route found in the executed
+    revision's URL configuration, with where each is registered),
+    proxy rule proof covering every enumerated route, beat/worker
     stop proofs, queue baseline, timestamps, operator.
   - STOP if: a worker can consume tasks; beat can enqueue the periodic
-    catch-up; a Shopify webhook can reach Django; an interactive sync
+    catch-up; a Shopify webhook can reach Django through ANY route
+    (the generic platform endpoint included); an interactive sync
     endpoint remains usable; or the pre-OAuth task queue contains
     unexplained work.
 - [ ] **I5. Connect exactly one SYNTHETIC development store —
@@ -1135,59 +1148,41 @@ proves nothing — evaluate each leg's own result (`orders`,
 the leg-status truth above (status where the shape carries one, and
 counters).
 
-**Nested-collection caps — CURRENT-CODE limitation and the
-merchant-shape precondition it forces (removal condition: a merged,
-reviewed pagination fix named in §B).** The GraphQL order queries both
-sync legs use (`iter_orders` for set A, `iter_refunded_orders` for
-set B) select each order's own line items as `lineItems(first: 50)`
-(`LINE_ITEMS_PER_ORDER`) with NO pagination and NO `pageInfo` — an
-order with more than 50 line items yields exactly the first 50 with no
-warning, no counter, and no error anywhere. The product sync
-(`iter_product_pages`) selects `variants(first: 60)`
-(`VARIANTS_PER_PRODUCT`) with no pagination; it does detect overflow
-and logs the private worker WARNING `has more than 60 variants — extra
-variants not synced`, then continues — a logged truncation, never a
-failure or counter. Money-truth: neither cap changes any invoice or
-journal amount — the Shopify invoice is built from the order-level
-totals (`subtotal` / `total_price` / `total_tax` / shipping) that the
-order queries fetch separately from the line items, never by summing
-line items, and dimension tagging reads only the FIRST line item. What
-truncates is EVIDENCE and CATALOG state: the stored order payload's
-`line_items` list (the order event's evidence — including a B
-candidate's booked parent) is capped at 50 on every GraphQL sync path
-(webhook payloads carry the complete list — the cap is poller-path
-only); NON_STOCK item auto-provisioning sees only the first 50 lines'
-SKUs; the product mirror and NON_STOCK catalog carry at most 60
-variants per product. Refund completeness is NOT affected — the
-PR #139 refund reads paginate to exhaustion, and this cap never
-touches them. The same class exists in the per-order fulfillment
-query (`FULFILLMENTS_PER_ORDER = 10`, `FULFILLMENT_LINE_ITEMS = 50`),
-whose output is non-financial under the pilot (the mechanical side
-effects above). Until a reviewed pagination fix — draining `lineItems`
-and `variants` to exhaustion with the PR #139 fail-loud pattern — is
-merged and contained in the executed §B revision, the pilot carries a
-**MERCHANT-SHAPE PRECONDITION**: no order in the intake may have more
-than 50 line items and no product more than 60 variants, proven from
-the Shopify export (per-order line-item counts, per-product variant
-counts — the line-item cap emits NO signal of its own, so the export
-comparison is the only line-item control; the variant cap's worker
-warning is corroboration only), verified by the I14 / §K completeness
-controls and recorded in the I13 and §Q authorizations. The
-precondition is ONGOING, not intake-only: the caps live in every
-GraphQL sync path for as long as the executed revision runs —
-including the periodic catch-up and product sync once beat restarts
-(I16) — so a post-GO order booked by the poller (e.g. a missed
-webhook) or a post-GO product change syncs under the same caps.
-While they are in force: the §Q GO record (and the I13 twin) carries
-the shape constraint as a STANDING commitment for the pilot's
-operating period, acknowledged by the signer; every later
-control-pack build and phase sign-off repeats the §K export
-comparison over the period since the last check; the worker log is
-monitored for the variant-truncation warning; and a breach detected
-at any point is a STOP at that point. Once the
-fixing PR is merged and the executed revision contains it, this
-precondition and its controls become obsolete and must be removed
-from this runbook by a follow-up correction naming that PR.
+**Nested-collection completeness fix on record (PR #143):** merge
+`2be1819e176399956ae509ec28a43729318d881a`; reviewed head
+`7de32798fc3b937e09d010bba7fbcf2268797afe`; main CI 33919019309 —
+success. Before this fix the order queries selected each order's line
+items as `lineItems(first: 50)` with no pagination and no `pageInfo`
+(an order with more than 50 line items yielded exactly the first 50
+with no warning, counter, or error anywhere), and the product sync
+capped `variants(first: 60)`, logging a private worker warning while
+dropping every variant past the first page. Since PR #143 both nested
+connections are cursor-drained to exhaustion with per-parent overflow
+queries; any pagination anomaly — invalid shape, repeated cursor,
+hasNextPage without endCursor, parent vanishing mid-fetch — raises
+`ShopifyGraphQLIncomplete` (the PR #139 fail-loud contract); the
+overflow reads never use allow_partial; an absent `lineItems`
+connection on an order node fails loudly instead of yielding empty
+evidence. The caps never changed an invoice or journal amount — the
+Shopify invoice is built from order-level totals, never by summing
+line items — what they truncated was the stored order payload's
+`line_items` evidence, NON_STOCK item auto-provisioning beyond the
+first 50 lines' SKUs, and the product mirror / variant catalog beyond
+60, on the GraphQL sync paths only (webhook payloads always carried
+the complete list). These caps CANNOT be in force at any execution of
+this runbook: §B requires the executed revision to contain PR #143 and
+this merged runbook (which postdates it), so every eligible revision
+carries the fix — the interim merchant-shape precondition and its cap
+controls, drafted and retired inside this document's own review cycle,
+therefore do not appear here. One same-class residual stays on
+record: the per-order fulfillment query remains capped
+(`FULFILLMENTS_PER_ORDER = 10`, `FULFILLMENT_LINE_ITEMS = 50`) — its
+output is non-financial under the pilot (the mechanical side effects
+above; NON_STOCK, no COGS booking) and a capped fulfillment list must
+never be read as complete COGS evidence. Separately, as a safeguard
+over the FIXED reads (not a residual), the §K control pack keeps an
+export-vs-evidence per-order line-item count comparison as an
+independent completeness control.
 
 - [ ] **I13. Synthetic-rehearsal intake authorization.** A dated
   sign-off authorizing release of the queued initial sync for the
@@ -1211,14 +1206,7 @@ from this runbook by a follow-up correction naming that PR.
   change that selected the parent order occurred inside the
   refund-candidate `updated_at` window; and a cancelled refunded
   candidate is recovered and booked (parent, provenance stamp, complete
-  refunds), never skipped. While the §I nested-collection caps are in
-  force, the sign-off must also record the merchant-shape precondition
-  for the SYNTHETIC store: no order in its catalog/history has more
-  than 50 line items and no product has more than 60 variants, proven
-  from the store's Shopify export (per-order line-item counts,
-  per-product variant counts) and dated — the rehearsal twin of the §Q
-  step-11 `MERCHANT_SHAPE_PRECONDITION_VERIFIED` record; without that
-  record this sign-off may not be given. This sign-off authorizes the contract at
+  refunds), never skipped. This sign-off authorizes the contract at
   `INTAKE_CONTRACT_VERSION` = <the §B runbook revision SHA> (the
   rehearsal twin of the GO record's "version <n>"). Like the §Q GO
   record, it authorizes the FUTURE execution-relative contract: the
@@ -1339,27 +1327,16 @@ from this runbook by a follow-up correction naming that PR.
     legitimately appears in both legs' counters (`fetched` and
     `scanned`, and — when cancelled — in both legs'
     `cancelled_financial_candidates`);
-  - the §I nested-collection completeness controls hold: for every
-    intake order, the per-order line-item count from the Shopify
-    export is at most 50 AND equals the stored order evidence's
-    `line_items` count (the stored list is unfiltered, so equality is
-    exact below the cap; the cap emits no signal of its own — this
-    export comparison is the only line-item control); for every
-    product in the export, the per-product variant count from the
-    export is at most 60; and the worker log carries no
-    `more than 60 variants` truncation warning (corroboration). The
-    variant control is deliberately EXPORT-side only: the sync
-    legitimately skips SKU-less variants (no mirror row, no Item) and
-    the NON_STOCK catalog collapses shared SKUs, so a mirror or
-    catalog count below the export count is NOT truncation evidence
-    and no equality is demanded of it;
+  - the §K per-order line-item completeness control holds: every
+    intake order's line-item count from the Shopify export equals the
+    stored order evidence's `line_items` count (the PR #143 drained
+    reads return the complete list and the stored list is unfiltered,
+    so equality is exact — an independent control over the fix, not a
+    cap check);
   - all source and financial effects reconcile to the authorized
     intake contract — not merely to source timestamps within seven
     days.
-  Record: `MAX_ORDER_LINE_ITEM_COUNT` and `MAX_PRODUCT_VARIANT_COUNT`
-  (from the Shopify export, with the export capture date — both must
-  respect the §I caps while they are in force),
-  `OLDEST_IMPORTED_PARENT_ORDER_CREATED_AT`,
+  Record: `OLDEST_IMPORTED_PARENT_ORDER_CREATED_AT`,
   `OLDEST_IMPORTED_REFUND_CREATED_AT`,
   `NEWEST_IMPORTED_REFUND_CREATED_AT`, `CANDIDATE_ORDER_COUNT_A`,
   `CANDIDATE_ORDER_COUNT_B`, `CANDIDATE_ORDER_UNION_COUNT`,
@@ -1406,14 +1383,13 @@ from this runbook by a follow-up correction naming that PR.
   fails; a closure re-execution booked an order outside
   AUTHORIZED_PARENT_ORDER_SET; counts across A, B, and their union
   cannot be reconciled; an older imported parent/refund is omitted
-  merely to preserve a seven-day timestamp narrative; or — while the
-  §I nested-collection caps are in force — the export shows any order
-  with more than 50 line items or any product with more than 60
-  variants, a per-order line-item count differs between the export
-  and the stored order evidence, or the
-  worker log carries the variant-truncation warning.
+  merely to preserve a seven-day timestamp narrative; or a per-order
+  line-item count differs between the export and the stored order
+  evidence (the §K completeness control over the PR #143 drained
+  reads).
 - [ ] **I15. Webhook release and retry reconciliation.** Unblock the
-  Shopify webhook route while beat remains stopped. Allow queued
+  Shopify webhook routes — every I4-enumerated endpoint, the generic
+  platform endpoint included — while beat remains stopped. Allow queued
   Shopify retries to arrive; verify idempotency — duplicate deliveries
   create no duplicate financial effects; account for the webhook
   backlog.
@@ -1516,8 +1492,7 @@ Minimum schema:
 | Initial-intake set B: refund-candidate order count and ids (order-`updated_at` window) | Shopify admin/exports |
 | A union B order count after deduplication + A/B overlap count | Shopify admin/exports vs system |
 | Complete refund count and totals per B candidate | Shopify admin/exports vs system |
-| Per-order line-item count for every intake order (≤ 50 while the §I nested-collection caps are in force, and equal to the stored order evidence's `line_items` count — the cap emits no signal of its own, so this export comparison is the only line-item control) | Shopify admin/exports vs stored order evidence (read-only) |
-| Per-product variant count for every product in the export (≤ 60 while the §I caps are in force — an EXPORT-side control; the private worker `more than 60 variants` warning must be absent, as corroboration. Deliberately NOT an equality against the product mirror / NON_STOCK catalog: the sync legitimately skips SKU-less variants and collapses shared SKUs, so a lower system count is not truncation evidence) | Shopify admin/exports + worker log (private) |
+| Per-order line-item count for every intake order (must equal the stored order evidence's `line_items` count — an independent completeness control over the PR #143 drained reads; the stored list is unfiltered, so equality is exact. Deliberately no variant-count twin: the sync legitimately skips SKU-less variants and the NON_STOCK catalog collapses shared SKUs, so no export-vs-system variant equality exists to demand) | Shopify admin/exports vs stored order evidence (read-only) |
 | Oldest and newest imported parent-order dates | system (read-only) vs Shopify |
 | Oldest and newest imported refund dates | system (read-only) vs Shopify |
 | Refund fetch-failure count (must be 0 on the latest accounted execution; any earlier execution's fetch failure recorded with its §I closure) | `initial_store_sync` task result(s) — the release execution AND every recorded closure re-execution |
@@ -1590,10 +1565,7 @@ closure). Every B candidate lacking a parent or
 refund evidence must reconcile to exactly one of the §I definition's
 two legitimate outcomes (`pilot_scope_skipped` — expected 0 — or a
 counted loud error that has been CLOSED before the checkpoint); any
-other absence is a variance. While the §I nested-collection caps are
-in force, the per-order line-item and per-product variant rows above
-are repeated at every later control-pack build and phase sign-off,
-over the period since the last check (§I ongoing rule).
+other absence is a variance.
 
 For every **system** control in this table, record alongside its
 value the exact read-model function or query and parameters that
@@ -1637,7 +1609,9 @@ new writes" is enforced and proven, never promised. Required order:
 
 - [ ] **M1. Block external write ingress.**
   - Command / action: put the deployment into recorded maintenance mode
-    at the reverse proxy: reject Shopify webhook requests and every
+    at the reverse proxy: reject Shopify webhook requests (every
+    I4-enumerated Shopify webhook route, the generic platform endpoint
+    included) and every
     public mutation route with a **retryable non-success** response
     (e.g. 503) — never return 200 while discarding a webhook. Permit
     only the explicitly needed authenticated read-only reporting paths
@@ -1951,7 +1925,11 @@ Sign-off: operator ______ date ______
   during the backup;
 - synthetic history appearing in the real merchant database.
 - worker or beat active before the merchant GO decision;
-- Shopify webhook ingress active before GO;
+- Shopify webhook ingress active before GO through any route (the
+  generic platform endpoint included);
+- an intake-hold or backup ingress block that covers only the dedicated
+  Shopify webhook endpoint while another enumerated Shopify-capable
+  route stays reachable;
 - an interactive Shopify sync endpoint usable during the intake hold;
 - the queued initial task consumed before GO;
 - the automatic initial-sync enqueue failed or uncertain;
@@ -2028,16 +2006,10 @@ Sign-off: operator ______ date ______
 - more than one unexplained initial task;
 - an older parent order or refund excluded merely because its date
   predates the seven-day window;
-- while the §I nested-collection caps are in force: an order with more
-  than 50 line items or a product with more than 60 variants in the
-  intake (the merchant-shape precondition violated); a §K per-order
-  line-item or per-product variant completeness control missing or
-  failed (line items: an export/evidence count mismatch; variants: an
-  export count over the cap — mirror/catalog equality is deliberately
-  not demanded, §K); the variant-truncation worker warning present; a
-  truncated line-item or variant collection read as complete evidence
-  or a complete catalog; or a GO / I13 sign-off given without the
-  merchant-shape precondition record;
+- the §K per-order line-item completeness control missing or failed
+  (an export/evidence count mismatch on the PR #143 drained reads), or
+  a capped per-order fulfillment list read as complete COGS evidence
+  (§I fulfillment-cap residual);
 - any claim that `import_mode="skip"` suppresses the refund catch-up;
 - an initial-sync result not observed and retained;
 - webhook release before initial-task reconciliation;
@@ -2160,7 +2132,9 @@ after G1 and G2 are recorded complete in the
    F1–F3 evidence exists for this deployment**; pilot-aware Shopify
    provisioning (§I3);
 4. establish the **controlled Shopify intake hold** (§I4 form): webhook
-   and interactive-sync ingress blocked with retryable non-success
+   ingress blocked on EVERY I4-enumerated Shopify webhook route (the
+   dedicated endpoint and the generic platform endpoint) and
+   interactive-sync ingress blocked, all with retryable non-success
    responses; beat stopped; worker drained and stopped; Redis/broker
    AVAILABLE; task-queue baseline recorded;
 5. connect the **real merchant Shopify store** — for the first time
@@ -2242,26 +2216,14 @@ after G1 and G2 are recorded complete in the
     authorized intake-contract version — `INTAKE_CONTRACT_VERSION`,
     the §B runbook revision SHA whose §I definition text is the
     contract (this is the "version <n>" the wording cites) — and
-    merchant acknowledgement/approval where required. While the §I
-    nested-collection caps are in force the record must also carry
-    `MERCHANT_SHAPE_PRECONDITION_VERIFIED`: a dated verification, from
-    the merchant's Shopify export (export capture date; the per-order
-    line-item and per-product variant counts retained privately), that
-    no order has more than 50 line items and no product has more than
-    60 variants — stated as a STANDING constraint for the pilot's
-    operating period while the caps are in force (§I ongoing rule),
-    not a one-time export fact. This field sits AROUND the frozen GO
-    text, which is deliberately unchanged: under the verified precondition the GO's
+    merchant acknowledgement/approval where required. (The GO's
     "complete parent order" (item 3) and "merchant product catalog"
-    (item 4) are provable; without it they are not — the caps truncate
-    the stored order's `line_items` evidence beyond 50 and the product
-    mirror beyond 60 variants (never an invoice or journal amount —
-    §I money-truth). A GO signed without this field while the caps are
-    in force, or a merchant whose export violates either cap, is a
-    STOP: no worker or webhook release, no queue purge — the same
-    disposition as the any-age refusal below; the §I pagination fix
-    must merge and a new gate cycle must complete on a revision
-    containing it before that merchant's GO. The GO record
+    (item 4) are provable because the executed revision contains the
+    PR #143 nested-collection pagination fix — §B requires it, and the
+    §I fix-on-record note carries the detail. The §K per-order
+    line-item completeness control additionally verifies the drained
+    ORDER reads independently at step 12; the catalog side rests on
+    the revision proof and the fix's own fail-loud contract.) The GO record
     must NOT record a VALUE for `INITIAL_SYNC_STARTED_AT`, any
     effective window boundary, or any per-leg result field (the
     contract wording above names them as future values — that is
@@ -2371,16 +2333,11 @@ after G1 and G2 are recorded complete in the
     payout-accounting effect occurs; every product remains NON_STOCK;
     no inventory/COGS residue appears; the fulfillment backfill and
     `deferred_cogs` leg appear only in their expected non-financial
-    state (§I definition's mechanical side effects); and — while the
-    §I nested-collection caps are in force — verify the §K
-    completeness controls against the merchant's Shopify export:
-    every intake order's line-item count is at most 50 and equals
-    the stored order evidence's count, every product's variant count
-    in the export is at most 60 (export-side only — the sync
-    legitimately skips SKU-less variants and collapses shared SKUs,
-    so no mirror/catalog equality is demanded — §I/§K), and the
-    worker log carries no variant-truncation warning (a cap breach,
-    a line-item count mismatch, or a missing control is a STOP);
+    state (§I definition's mechanical side effects); and verify the
+    §K per-order line-item completeness control against the merchant's
+    Shopify export: every intake order's line-item count equals the
+    stored order evidence's count (an independent control over the
+    PR #143 drained reads; a mismatch or a missing control is a STOP);
 13. rerun `pilot_preflight --phase go-live`, `/_health/alerts`, and the
     source/control totals;
 14. only after the initial task is accounted for, unblock Shopify
@@ -2414,12 +2371,8 @@ after G1 and G2 are recorded complete in the
     and `INTAKE_CONTRACT_VERSION`; a closure re-execution booked an
     order outside AUTHORIZED_PARENT_ORDER_SET or is unrecorded; the GO
     record was amended after signing; the A/B overlap is double
-    counted; a partial fetch is treated as success; or — while the §I
-    nested-collection caps are in force — the
-    `MERCHANT_SHAPE_PRECONDITION_VERIFIED` record is absent from the
-    GO record, a §K per-order line-item or per-product variant
-    completeness control is missing or failed, or any order over
-    50 line items or product over 60 variants entered the intake.
+    counted; a partial fetch is treated as success; or the §K
+    per-order line-item completeness control is missing or failed.
 
 The GO decision precedes the first merchant product/order/refund source
 write.
