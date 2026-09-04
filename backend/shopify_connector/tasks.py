@@ -1187,6 +1187,11 @@ def cleanup_stale_installs(max_pending_age_hours: int = 24) -> dict:
       forever (the B2 per-company sweep only fires when THAT merchant
       clicks Connect again), holding the uniq_company_shop_domain slot.
       get_install_url recreates the row on the next Connect click.
+      G1-F1: a stale PENDING row that holds canonical history — a
+      DISCONNECTED store whose reconnect was started and abandoned — is
+      NOT deleted (that would cascade the order/payout/product mirrors
+      and the A1 binding); it is returned to DISCONNECTED and counted in
+      ``pending_stores_retained`` (``retire_or_delete_stale_pending_stores``).
     - Unconsumed PendingShopifyInstall rows >1h past their 30-min
       expires_at: they hold encrypted access/refresh tokens indefinitely
       and nothing else ever deletes them.
@@ -1197,6 +1202,7 @@ def cleanup_stale_installs(max_pending_age_hours: int = 24) -> dict:
 
     from projections.write_barrier import command_writes_allowed
 
+    from .commands import retire_or_delete_stale_pending_stores
     from .models import PendingShopifyInstall, ShopifyStore
 
     now = tz.now()
@@ -1205,8 +1211,11 @@ def cleanup_stale_installs(max_pending_age_hours: int = 24) -> dict:
             status=ShopifyStore.Status.PENDING,
             updated_at__lt=now - timedelta(hours=max_pending_age_hours),
         )
-        pending_domains = list(stale_pending.values_list("shop_domain", flat=True))
-        pending_deleted, _ = stale_pending.delete()
+        swept = retire_or_delete_stale_pending_stores(stale_pending)
+        pending_domains = swept["deleted_domains"]
+        pending_deleted = swept["deleted"]
+        pending_retained = swept["retained"]
+        retained_domains = swept["retained_domains"]
 
         expired_installs = PendingShopifyInstall.objects.filter(
             consumed_at__isnull=True,
@@ -1220,17 +1229,20 @@ def cleanup_stale_installs(max_pending_age_hours: int = 24) -> dict:
             consumed_at__lt=now - timedelta(days=30),
         ).delete()
 
-    if pending_domains or install_domains or consumed_deleted:
+    if pending_domains or retained_domains or install_domains or consumed_deleted:
         logger.info(
-            "A56 sweep: deleted %d stale PENDING stores %s, %d expired installs %s, %d old consumed installs",
+            "A56 sweep: deleted %d stale PENDING stores %s, retained %d with history as DISCONNECTED %s, %d expired installs %s, %d old consumed installs",
             pending_deleted,
             pending_domains,
+            pending_retained,
+            retained_domains,
             installs_deleted,
             install_domains,
             consumed_deleted,
         )
     return {
         "pending_stores_deleted": pending_deleted,
+        "pending_stores_retained": pending_retained,
         "expired_installs_deleted": installs_deleted,
         "consumed_installs_deleted": consumed_deleted,
     }
