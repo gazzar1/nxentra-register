@@ -40,9 +40,11 @@ from .models import (
     ShopifyOrder,
     ShopifyPayout,
     ShopifyPayoutTransaction,
+    ShopifyProduct,
     ShopifyRefund,
     ShopifyRejectedEvidence,
     ShopifyStore,
+    ShopifyUserBinding,
 )
 from .payload_validation import refund_aggregate_amount, validate_order_paid_payload, validate_refund_payload
 
@@ -170,6 +172,115 @@ def _shopify_denial_reason(exc: "requests.RequestException") -> str | None:
 
 EMBEDDED_STATE_SUFFIX = ".embedded"
 
+# G1-F1: the message a retained store carries so the settings page and the
+# operator can tell an abandoned reconnect from a real disconnect.
+STALE_RECONNECT_RETAINED_MESSAGE = (
+    "Reconnect was not completed. The store was kept (it holds synchronized history) — click Connect to try again."
+)
+
+
+def store_has_canonical_history(store: ShopifyStore) -> bool:
+    """G1-F1: True when deleting this ShopifyStore row would destroy canonical
+    history or identity that only exists as a mirror of it.
+
+    Every one of these CASCADEs (or, for rejected evidence, SET_NULLs) on the
+    store row: ShopifyOrder (and through it ShopifyRefund / ShopifyFulfillment),
+    ShopifyPayout (and its transactions), ShopifyDispute, ShopifyProduct, the
+    A1 ShopifyUserBinding, and ShopifyRejectedEvidence. A store that was ever
+    ACTIVE is treated as history even before any mirror row exists — its
+    ``public_id`` is the aggregate id of the SHOPIFY_STORE_CONNECTED /
+    DISCONNECTED events already emitted — and the durable once-ACTIVE markers
+    are ``scopes`` (written only by a successful token exchange, never
+    cleared), ``last_sync_at`` (a completed sync) and ``uninstalled_at`` (an
+    app/uninstalled). A reconnect attempt puts exactly such a DISCONNECTED row
+    back to PENDING on the SAME row (``get_install_url``'s update_or_create),
+    which is how a store with history ends up in a PENDING sweep at all.
+    """
+    if store.scopes or store.last_sync_at is not None or store.uninstalled_at is not None:
+        return True
+    return (
+        ShopifyOrder.objects.filter(store=store).exists()
+        or ShopifyPayout.objects.filter(store=store).exists()
+        or ShopifyDispute.objects.filter(store=store).exists()
+        or ShopifyProduct.objects.filter(store=store).exists()
+        or ShopifyUserBinding.objects.filter(store=store).exists()
+        or ShopifyRejectedEvidence.objects.filter(store=store).exists()
+    )
+
+
+def retire_or_delete_stale_pending_stores(stores) -> dict:
+    """G1-F1: the single disposition for abandoned PENDING ShopifyStore rows,
+    shared by the per-company sweep in ``get_install_url``, the domain-taken
+    branch of ``complete_oauth`` and the ``cleanup_stale_installs`` beat task.
+
+    A stale PENDING row WITHOUT canonical history is deleted as before (it
+    only holds the uniq_company_shop_domain slot). A stale PENDING row WITH
+    canonical history is never deleted: it is returned to DISCONNECTED with
+    the same field set the canonical DISCONNECTED writers use
+    (``disconnect_store`` / ``process_app_uninstalled`` — tokens and expiries
+    cleared, ``needs_reauth`` off; A47: a retained row must not keep a live
+    refresh token), the nonce cleared and an explanatory ``error_message`` —
+    the mirrors and the binding stay intact and the merchant simply
+    reconnects (the A48 reconnect path clears the flags on OAuth success).
+
+    Concurrency: each candidate is decided and disposed under its OWN row
+    lock — a ``SELECT ... FOR UPDATE`` re-read filtered on ``status=PENDING``
+    inside ``transaction.atomic()``. The re-read, not the caller's earlier
+    selection, is what the decision and the write act on, so a concurrent
+    ``complete_oauth`` (whose ACTIVE save holds the same row lock through its
+    own transaction) is never deleted or downgraded: if it committed first the
+    re-read returns None; if it blocks on us, its later ``save()`` UPDATE hits
+    zero rows only in the no-history DELETE case, where Django re-inserts the
+    row as ACTIVE (benign — the store still ends connected). A WHERE clause
+    alone would NOT protect the delete: Django's collector deletes by primary
+    key after its own SELECT, dropping the status predicate.
+    ``select_for_update`` is a no-op on SQLite; the PostgreSQL two-connection
+    proof lives in ``tests/e2e/test_g1_f1_store_sweep_serialization.py``.
+    Callers own the write-barrier / RLS context.
+
+    Returns ``{"deleted", "retained", "deleted_domains", "retained_domains"}``.
+    """
+    from django.utils import timezone as tz
+
+    deleted = retained = 0
+    deleted_domains: list[str] = []
+    retained_domains: list[str] = []
+    for candidate in list(stores):
+        with transaction.atomic():
+            store = (
+                ShopifyStore.objects.select_for_update()
+                .filter(pk=candidate.pk, status=ShopifyStore.Status.PENDING)
+                .first()
+            )
+            if store is None:
+                # Already disposed, or a concurrent OAuth success flipped it
+                # to ACTIVE before we took the lock — leave it alone.
+                continue
+            if store_has_canonical_history(store):
+                ShopifyStore.objects.filter(pk=store.pk).update(
+                    status=ShopifyStore.Status.DISCONNECTED,
+                    oauth_nonce="",
+                    error_message=STALE_RECONNECT_RETAINED_MESSAGE,
+                    access_token="",
+                    refresh_token="",
+                    token_expires_at=None,
+                    refresh_token_expires_at=None,
+                    needs_reauth=False,
+                    updated_at=tz.now(),
+                )
+                retained += 1
+                retained_domains.append(store.shop_domain)
+            else:
+                store.delete()
+                deleted += 1
+                deleted_domains.append(store.shop_domain)
+    return {
+        "deleted": deleted,
+        "retained": retained,
+        "deleted_domains": deleted_domains,
+        "retained_domains": retained_domains,
+    }
+
 
 def get_install_url(company, shop_domain: str, embedded: bool = False) -> dict:
     """
@@ -203,16 +314,19 @@ def get_install_url(company, shop_domain: str, embedded: bool = False) -> dict:
 
     from django.utils import timezone as tz
 
-    swept = (
+    # G1-F1: a stale PENDING row that holds canonical history (a DISCONNECTED
+    # store the merchant started to reconnect and then abandoned) is returned
+    # to DISCONNECTED instead — deleting it would cascade the order/payout/
+    # product mirrors and the A1 binding.
+    swept = retire_or_delete_stale_pending_stores(
         ShopifyStore.objects.filter(
             company=company,
             status=ShopifyStore.Status.PENDING,
             updated_at__lt=tz.now() - timedelta(hours=1),
-        )
-        .exclude(shop_domain=shop_domain)
-        .delete()
+        ).exclude(shop_domain=shop_domain)
     )
-    swept_count = swept[0] if isinstance(swept, tuple) else 0
+    swept_count = swept["deleted"]
+    retained_count = swept["retained"]
 
     # B3 (2026-06-04): never downgrade an ACTIVE store to PENDING when the
     # merchant re-clicks Connect on the same shop_domain. A re-auth (Shopify
@@ -238,11 +352,12 @@ def get_install_url(company, shop_domain: str, embedded: bool = False) -> dict:
         )
 
     logger.info(
-        "shopify.install_url_generated company=%s shop=%s prior_status=%s swept_pending=%d",
+        "shopify.install_url_generated company=%s shop=%s prior_status=%s swept_pending=%d retained_pending=%d",
         getattr(company, "id", None),
         shop_domain,
         existing_status_before,
         swept_count,
+        retained_count,
     )
 
     redirect_uri = f"{SHOPIFY_APP_URL}/api/shopify/callback/"
@@ -370,10 +485,16 @@ def complete_oauth(company, shop_domain: str, code: str, nonce: str) -> CommandR
         )
         # A56: without cleanup the pre-existing PENDING row (created by
         # get_install_url) survives forever with a stale nonce, holding
-        # the uniq_company_shop_domain slot.
+        # the uniq_company_shop_domain slot. G1-F1: if that row holds
+        # canonical history (this company connected the store before and
+        # another company holds it now), it is retained as DISCONNECTED —
+        # never deleted. Re-read from the DB first: the in-memory instance
+        # still carries the rolled-back ACTIVE mutation above.
         if was_pending:
             with command_writes_allowed():
-                store.delete()
+                retire_or_delete_stale_pending_stores(
+                    ShopifyStore.objects.filter(pk=store.pk, status=ShopifyStore.Status.PENDING)
+                )
         return CommandResult.fail(
             "This Shopify store is already connected to another Nxentra company. "
             "Disconnect it from the other company first."
