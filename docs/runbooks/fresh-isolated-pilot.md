@@ -95,7 +95,11 @@ named evidence existing in the manifest.
     operational proof: the merchant cutover (§Q) must deploy the exact
     revision pack that passed the gates.
   - Evidence to retain (`revision/`): commit SHA, tree SHA, CI run id and
-    conclusion, deployment/image identifier, deployment timestamp, operator,
+    conclusion, deployment/image identifier, the frontend build origin
+    and bundle digest (`FRONTEND_BUILD_ORIGIN` /
+    `FRONTEND_BUNDLE_DIGEST` — recorded when §G1c builds; the API
+    origin is compiled into the frontend bundle, §E3), deployment
+    timestamp, operator,
     database identifier (host/name only — no credentials), hosting region,
     and this runbook's revision (the SHA that the §I definition names
     `INTAKE_CONTRACT_VERSION` — the "version <n>" every intake
@@ -226,8 +230,35 @@ never values for secrets.
     `INFO` (never stricter — the §I intake-contract capture reads the
     worker's INFO-level `[A52] _sync_orders start` line and the Celery
     task lines).
-  - STOP if: a required value is missing, or the process would start
-    against the wrong database.
+  - **Frontend BUILD-time variables** — these are compiled into the
+    browser bundle by `npm run build`, not read at runtime, so they
+    must be present and recorded BEFORE the §G1c build runs (names and
+    non-secret values):
+    - `NEXT_PUBLIC_API_URL` — REQUIRED: this deployment's production
+      https API base URL INCLUDING the `/api` path (the form
+      `https://<DEPLOYMENT_HOST>/api` — a bare origin without the
+      path would pass a presence check yet route every API call to
+      the wrong path). With it absent the build still SUCCEEDS and
+      the bundle silently targets the compiled-in default
+      `http://localhost:8000/api` (`frontend/lib/api-client.ts`;
+      several modules bake the same fallback; the settings pages
+      strip the `/api` suffix from this value to build media URLs,
+      so the configured value must carry it). Record the exact value
+      used — it is this deployment's `FRONTEND_BUILD_ORIGIN`, which
+      §G1c verifies in the built artifact and §N5/§Q bind the
+      frontend artifact rule to.
+    - `NEXT_PUBLIC_ENABLE_EXCHANGED_TOKEN_FALLBACK` — record its
+      presence/boolean posture (absent = disabled).
+    - `NEXT_PUBLIC_SHOPIFY_API_KEY` — record which value the build
+      used: with it absent, `frontend/pages/_document.tsx` falls back
+      to the published app's hardcoded public client id (a public
+      identifier, not a secret).
+    - `NEXT_PUBLIC_SENTRY_DSN` — optional; enables the frontend
+      Sentry build path (record presence only, never the value).
+  - STOP if: a required value is missing; the process would start
+    against the wrong database; or `NEXT_PUBLIC_API_URL` is absent,
+    non-https, missing its `/api` path, or not this deployment's real
+    API base URL at the moment the frontend build runs.
 
 - [ ] **E4. Deploy check.**
   - Command / action: `python manage.py check --deploy --fail-level WARNING`
@@ -246,13 +277,27 @@ Sign-off: operator ______ date ______
 **Pilot activation and merchant data remain forbidden until all three are
 dispositioned with evidence.** Writing them here does not complete them.
 
-- [ ] **F1. ShopifyStore PENDING-sweep history protection.**
+- [ ] **F1. ShopifyStore PENDING-sweep history protection — FIX ON
+  RECORD.**
   - Required outcome: a store with canonical history cannot be deleted by
     an abandoned reconnect/PENDING cleanup.
-  - Acceptable implementation: a has-history guard, or retaining/returning
-    the store to DISCONNECTED instead of deleting canonical-history
-    mirrors.
-  - Evidence field (`preflight/`): fixing PR ______ and regression test ______.
+  - Fix on record: **PR #141** (merge
+    `ee003d57f3f304c16f4b917baeff3db407ee674c`). All three
+    stale-PENDING deletion doors (the per-company install-URL sweep,
+    the OAuth domain-taken branch, and the periodic cleanup task) share
+    one disposition: a stale PENDING store WITH canonical history (any
+    dependent order/payout/dispute/product/binding/rejected-evidence
+    row, or a once-ACTIVE marker) is returned to DISCONNECTED with
+    credentials cleared instead of being deleted; a store without
+    history is deleted as before; each candidate is re-read and
+    disposed under its own row lock. Regression tests:
+    `backend/tests/test_g1_f1_store_sweep_history_guard.py` and the
+    PostgreSQL two-connection proofs in
+    `backend/tests/e2e/test_g1_f1_store_sweep_serialization.py`.
+  - Evidence field (`preflight/`): verification that the executed §B
+    revision contains PR #141 (`git merge-base --is-ancestor
+    ee003d57f3f304c16f4b917baeff3db407ee674c <EXECUTED_SHA>` exits 0)
+    ______.
 
 - [ ] **F2. Health-endpoint publication restriction.**
   - Required outcome: the specifically approved aggregate
@@ -309,9 +354,35 @@ introduce infrastructure this repository does not use.
   - Command / action: `python manage.py migrate` (then the C1 permission
     seeding if not already run).
   - Expected result: clean apply against the pilot database.
-- [ ] **G1c. Frontend build.**
-  - Command / action: from `frontend/`: `npm ci` then `npm run build`.
-  - Expected result: build succeeds and `.next/BUILD_ID` exists.
+- [ ] **G1c. Frontend build — with the recorded build origin, verified
+  in the built artifact.**
+  - Command / action: from `frontend/`: `npm ci` then, with the §E3
+    frontend build-time variables in place (`NEXT_PUBLIC_API_URL` =
+    this deployment's production https API base URL including the
+    `/api` path), `npm run build`.
+    Then verify the ARTIFACT, not the build process: the served client
+    bundle (`.next/static/`) must contain the EXACT recorded
+    `FRONTEND_BUILD_ORIGIN` value and
+    must NOT contain `localhost:8000` (e.g.
+    `grep -rl "<FRONTEND_BUILD_ORIGIN>" .next/static/` finds matches;
+    `grep -rl "localhost:8000" .next/static/` finds none — a correct
+    production build constant-folds the unset-variable fallback away,
+    so any surviving `localhost:8000` means the origin was NOT baked
+    correctly; never explain it away as dead code). Record the two
+    grep results, `FRONTEND_BUILD_ORIGIN`, and a bundle digest
+    (`FRONTEND_BUNDLE_DIGEST` — e.g. a SHA-256 over the `.next`
+    client build output together with `.next/BUILD_ID`).
+  - Expected result: build succeeds; `.next/BUILD_ID` exists; the
+    production API base URL is baked into the client bundle; the
+    localhost default is absent. A `GET /` returning 200 is NOT
+    evidence of the bundle's API origin — the page serves regardless
+    of which origin is compiled in.
+  - STOP if: the built client bundle contains `localhost:8000`, or its
+    compiled-in API base URL is anything other than the exact recorded
+    `FRONTEND_BUILD_ORIGIN`. (This rule is about the API base URL
+    only: third-party origins — the Sentry ingest host when
+    `NEXT_PUBLIC_SENTRY_DSN` is set, CDN and font hosts — legitimately
+    appear in the bundle and are not violations.)
 - [ ] **G1d. Start services.** For every service record: expected process,
   expected version/SHA, startup command, health signal, log location,
   restart behavior.
@@ -1064,6 +1135,60 @@ proves nothing — evaluate each leg's own result (`orders`,
 the leg-status truth above (status where the shape carries one, and
 counters).
 
+**Nested-collection caps — CURRENT-CODE limitation and the
+merchant-shape precondition it forces (removal condition: a merged,
+reviewed pagination fix named in §B).** The GraphQL order queries both
+sync legs use (`iter_orders` for set A, `iter_refunded_orders` for
+set B) select each order's own line items as `lineItems(first: 50)`
+(`LINE_ITEMS_PER_ORDER`) with NO pagination and NO `pageInfo` — an
+order with more than 50 line items yields exactly the first 50 with no
+warning, no counter, and no error anywhere. The product sync
+(`iter_product_pages`) selects `variants(first: 60)`
+(`VARIANTS_PER_PRODUCT`) with no pagination; it does detect overflow
+and logs the private worker WARNING `has more than 60 variants — extra
+variants not synced`, then continues — a logged truncation, never a
+failure or counter. Money-truth: neither cap changes any invoice or
+journal amount — the Shopify invoice is built from the order-level
+totals (`subtotal` / `total_price` / `total_tax` / shipping) that the
+order queries fetch separately from the line items, never by summing
+line items, and dimension tagging reads only the FIRST line item. What
+truncates is EVIDENCE and CATALOG state: the stored order payload's
+`line_items` list (the order event's evidence — including a B
+candidate's booked parent) is capped at 50 on every GraphQL sync path
+(webhook payloads carry the complete list — the cap is poller-path
+only); NON_STOCK item auto-provisioning sees only the first 50 lines'
+SKUs; the product mirror and NON_STOCK catalog carry at most 60
+variants per product. Refund completeness is NOT affected — the
+PR #139 refund reads paginate to exhaustion, and this cap never
+touches them. The same class exists in the per-order fulfillment
+query (`FULFILLMENTS_PER_ORDER = 10`, `FULFILLMENT_LINE_ITEMS = 50`),
+whose output is non-financial under the pilot (the mechanical side
+effects above). Until a reviewed pagination fix — draining `lineItems`
+and `variants` to exhaustion with the PR #139 fail-loud pattern — is
+merged and contained in the executed §B revision, the pilot carries a
+**MERCHANT-SHAPE PRECONDITION**: no order in the intake may have more
+than 50 line items and no product more than 60 variants, proven from
+the Shopify export (per-order line-item counts, per-product variant
+counts — the line-item cap emits NO signal of its own, so the export
+comparison is the only line-item control; the variant cap's worker
+warning is corroboration only), verified by the I14 / §K completeness
+controls and recorded in the I13 and §Q authorizations. The
+precondition is ONGOING, not intake-only: the caps live in every
+GraphQL sync path for as long as the executed revision runs —
+including the periodic catch-up and product sync once beat restarts
+(I16) — so a post-GO order booked by the poller (e.g. a missed
+webhook) or a post-GO product change syncs under the same caps.
+While they are in force: the §Q GO record (and the I13 twin) carries
+the shape constraint as a STANDING commitment for the pilot's
+operating period, acknowledged by the signer; every later
+control-pack build and phase sign-off repeats the §K export
+comparison over the period since the last check; the worker log is
+monitored for the variant-truncation warning; and a breach detected
+at any point is a STOP at that point. Once the
+fixing PR is merged and the executed revision contains it, this
+precondition and its controls become obsolete and must be removed
+from this runbook by a follow-up correction naming that PR.
+
 - [ ] **I13. Synthetic-rehearsal intake authorization.** A dated
   sign-off authorizing release of the queued initial sync for the
   SYNTHETIC store (the rehearsal twin of the §Q GO decision). The
@@ -1086,7 +1211,14 @@ counters).
   change that selected the parent order occurred inside the
   refund-candidate `updated_at` window; and a cancelled refunded
   candidate is recovered and booked (parent, provenance stamp, complete
-  refunds), never skipped. This sign-off authorizes the contract at
+  refunds), never skipped. While the §I nested-collection caps are in
+  force, the sign-off must also record the merchant-shape precondition
+  for the SYNTHETIC store: no order in its catalog/history has more
+  than 50 line items and no product has more than 60 variants, proven
+  from the store's Shopify export (per-order line-item counts,
+  per-product variant counts) and dated — the rehearsal twin of the §Q
+  step-11 `MERCHANT_SHAPE_PRECONDITION_VERIFIED` record; without that
+  record this sign-off may not be given. This sign-off authorizes the contract at
   `INTAKE_CONTRACT_VERSION` = <the §B runbook revision SHA> (the
   rehearsal twin of the GO record's "version <n>"). Like the §Q GO
   record, it authorizes the FUTURE execution-relative contract: the
@@ -1207,10 +1339,27 @@ counters).
     legitimately appears in both legs' counters (`fetched` and
     `scanned`, and — when cancelled — in both legs'
     `cancelled_financial_candidates`);
+  - the §I nested-collection completeness controls hold: for every
+    intake order, the per-order line-item count from the Shopify
+    export is at most 50 AND equals the stored order evidence's
+    `line_items` count (the stored list is unfiltered, so equality is
+    exact below the cap; the cap emits no signal of its own — this
+    export comparison is the only line-item control); for every
+    product in the export, the per-product variant count from the
+    export is at most 60; and the worker log carries no
+    `more than 60 variants` truncation warning (corroboration). The
+    variant control is deliberately EXPORT-side only: the sync
+    legitimately skips SKU-less variants (no mirror row, no Item) and
+    the NON_STOCK catalog collapses shared SKUs, so a mirror or
+    catalog count below the export count is NOT truncation evidence
+    and no equality is demanded of it;
   - all source and financial effects reconcile to the authorized
     intake contract — not merely to source timestamps within seven
     days.
-  Record: `OLDEST_IMPORTED_PARENT_ORDER_CREATED_AT`,
+  Record: `MAX_ORDER_LINE_ITEM_COUNT` and `MAX_PRODUCT_VARIANT_COUNT`
+  (from the Shopify export, with the export capture date — both must
+  respect the §I caps while they are in force),
+  `OLDEST_IMPORTED_PARENT_ORDER_CREATED_AT`,
   `OLDEST_IMPORTED_REFUND_CREATED_AT`,
   `NEWEST_IMPORTED_REFUND_CREATED_AT`, `CANDIDATE_ORDER_COUNT_A`,
   `CANDIDATE_ORDER_COUNT_B`, `CANDIDATE_ORDER_UNION_COUNT`,
@@ -1256,8 +1405,13 @@ counters).
   `I13_SIGNOFF_TIMESTAMP < TASK_RECEIVED_AT ≤ INITIAL_SYNC_STARTED_AT`
   fails; a closure re-execution booked an order outside
   AUTHORIZED_PARENT_ORDER_SET; counts across A, B, and their union
-  cannot be reconciled; or an older imported parent/refund is omitted
-  merely to preserve a seven-day timestamp narrative.
+  cannot be reconciled; an older imported parent/refund is omitted
+  merely to preserve a seven-day timestamp narrative; or — while the
+  §I nested-collection caps are in force — the export shows any order
+  with more than 50 line items or any product with more than 60
+  variants, a per-order line-item count differs between the export
+  and the stored order evidence, or the
+  worker log carries the variant-truncation warning.
 - [ ] **I15. Webhook release and retry reconciliation.** Unblock the
   Shopify webhook route while beat remains stopped. Allow queued
   Shopify retries to arrive; verify idempotency — duplicate deliveries
@@ -1362,6 +1516,8 @@ Minimum schema:
 | Initial-intake set B: refund-candidate order count and ids (order-`updated_at` window) | Shopify admin/exports |
 | A union B order count after deduplication + A/B overlap count | Shopify admin/exports vs system |
 | Complete refund count and totals per B candidate | Shopify admin/exports vs system |
+| Per-order line-item count for every intake order (≤ 50 while the §I nested-collection caps are in force, and equal to the stored order evidence's `line_items` count — the cap emits no signal of its own, so this export comparison is the only line-item control) | Shopify admin/exports vs stored order evidence (read-only) |
+| Per-product variant count for every product in the export (≤ 60 while the §I caps are in force — an EXPORT-side control; the private worker `more than 60 variants` warning must be absent, as corroboration. Deliberately NOT an equality against the product mirror / NON_STOCK catalog: the sync legitimately skips SKU-less variants and collapses shared SKUs, so a lower system count is not truncation evidence) | Shopify admin/exports + worker log (private) |
 | Oldest and newest imported parent-order dates | system (read-only) vs Shopify |
 | Oldest and newest imported refund dates | system (read-only) vs Shopify |
 | Refund fetch-failure count (must be 0 on the latest accounted execution; any earlier execution's fetch failure recorded with its §I closure) | `initial_store_sync` task result(s) — the release execution AND every recorded closure re-execution |
@@ -1434,7 +1590,10 @@ closure). Every B candidate lacking a parent or
 refund evidence must reconcile to exactly one of the §I definition's
 two legitimate outcomes (`pilot_scope_skipped` — expected 0 — or a
 counted loud error that has been CLOSED before the checkpoint); any
-other absence is a variance.
+other absence is a variance. While the §I nested-collection caps are
+in force, the per-order line-item and per-product variant rows above
+are repeated at every later control-pack build and phase sign-off,
+over the period since the last check (§I ongoing rule).
 
 For every **system** control in this table, record alongside its
 value the exact read-model function or query and parameters that
@@ -1722,12 +1881,25 @@ result itself must reproduce the control pack.
   GATE_TESTED_GIT_TREE_SHA
   GATE_TESTED_IMAGE_OR_ARTIFACT_DIGEST
   GATE_TESTED_MIGRATION_MANIFEST
+  GATE_TESTED_FRONTEND_BUNDLE_DIGEST
+  FRONTEND_BUILD_ORIGIN
   G1_EVIDENCE_MANIFEST_HASH
   G2_EVIDENCE_MANIFEST_HASH
   G2_BACKUP_HASH
   ```
 
   This pack is the ONLY revision authority for the merchant cutover (§Q).
+
+  **The artifact rule is SPLIT between the two artifacts.** The backend
+  image/artifact digest is portable: the merchant deployment must run
+  exactly `GATE_TESTED_IMAGE_OR_ARTIFACT_DIGEST`. The frontend bundle
+  is NOT portable: its API origin is compiled in at build time
+  (§E3/§G1c), so `GATE_TESTED_FRONTEND_BUNDLE_DIGEST` +
+  `FRONTEND_BUILD_ORIGIN` prove what the REHEARSAL environment built
+  and served — a deployment with a different origin must REBUILD the
+  frontend from exactly `GATE_TESTED_COMMIT_SHA` with its own recorded
+  origin and verify it per §G1c (§Q step 1). A frontend bundle built
+  with another environment's origin must never serve.
 
 STOP if: any control differs, or the restore requires manual database
 repair of any kind.
@@ -1741,6 +1913,11 @@ Sign-off: operator ______ date ______
 **Abort pilot activation or merchant-data intake immediately on any of:**
 
 - wrong application revision on any service;
+- a frontend bundle whose compiled-in API origin is not the serving
+  deployment's recorded `FRONTEND_BUILD_ORIGIN` — including the
+  `localhost:8000` build default, or a bundle built for another
+  environment (e.g. the rehearsal-built bundle carried into the
+  merchant deployment);
 - nonfresh database when fresh mode was selected;
 - multiple companies or active owners;
 - unsafe environment/bypass flag present;
@@ -1851,6 +2028,16 @@ Sign-off: operator ______ date ______
 - more than one unexplained initial task;
 - an older parent order or refund excluded merely because its date
   predates the seven-day window;
+- while the §I nested-collection caps are in force: an order with more
+  than 50 line items or a product with more than 60 variants in the
+  intake (the merchant-shape precondition violated); a §K per-order
+  line-item or per-product variant completeness control missing or
+  failed (line items: an export/evidence count mismatch; variants: an
+  export count over the cap — mirror/catalog equality is deliberately
+  not demanded, §K); the variant-truncation worker warning present; a
+  truncated line-item or variant collection read as complete evidence
+  or a complete catalog; or a GO / I13 sign-off given without the
+  merchant-shape precondition record;
 - any claim that `import_mode="skip"` suppresses the refund catch-up;
 - an initial-sync result not observed and retained;
 - webhook release before initial-task reconciliation;
@@ -1928,20 +2115,37 @@ after G1 and G2 are recorded complete in the
 
 1. **load the completed gate-tested revision pack (§N5)** and verify the
    intended merchant deployment uses it exactly:
-   deployed commit SHA == `GATE_TESTED_COMMIT_SHA`; deployed
+   deployed commit SHA == `GATE_TESTED_COMMIT_SHA`; deployed BACKEND
    image/artifact digest == `GATE_TESTED_IMAGE_OR_ARTIFACT_DIGEST`;
    deployed migration manifest == `GATE_TESTED_MIGRATION_MANIFEST`.
-   If ANY differs: STOP — perform a fresh G1 and G2 cycle on the desired
-   revision, issue a new revision pack, and use only that newer completed
-   pack. Equivalence is NEVER inferred from a same branch name, a version
-   label, green CI, a small diff, "docs only", or developer judgment.
+   The FRONTEND bundle is the one deliberate exception to
+   artifact-identity (§N5 split rule): the rehearsal bundle carries the
+   rehearsal API origin compiled in, so it must NOT be carried into the
+   merchant deployment — rebuild the frontend from exactly
+   `GATE_TESTED_COMMIT_SHA` with the merchant deployment's
+   `NEXT_PUBLIC_API_URL`, verify the built bundle per §G1c (merchant
+   origin present; `localhost:8000` absent), and record the merchant
+   deployment's own `FRONTEND_BUNDLE_DIGEST` + `FRONTEND_BUILD_ORIGIN`
+   beside the pack values. Serving the rehearsal-built bundle — or any
+   bundle whose recorded build origin is not this deployment's origin —
+   is a STOP.
+   If ANY backend pack value differs, or the frontend was not rebuilt
+   from `GATE_TESTED_COMMIT_SHA`: STOP — perform a fresh G1 and G2
+   cycle on the desired revision, issue a new revision pack, and use
+   only that newer completed pack. Equivalence is NEVER inferred from
+   a same branch name, a version label, green CI, a small diff,
+   "docs only", or developer judgment.
    (If `main` advanced but the deployment uses the exact already-tested
    commit and artifact, the existing G1/G2 proof remains applicable.)
 2. provision a **NEW empty isolated merchant database**;
 3. repeat, against the new database and the new host: the revision proof
    (§B); the fresh-database zero-count proof (§C); the environment-safety
-   proof (§E); deployment, service startup, version proof and boot
-   health (§G); **the §F blockers with FRESH evidence for THIS
+   proof (§E — including the §E3 frontend build-time variable record
+   with THIS deployment's `NEXT_PUBLIC_API_URL`); deployment, service
+   startup, version proof and boot health (§G — including the §G1c
+   frontend build from `GATE_TESTED_COMMIT_SHA` with THIS deployment's
+   origin and its built-artifact verification, per step 1); **the §F
+   blockers with FRESH evidence for THIS
    deployment and THIS merchant** — F1 confirmed by verifying that
    `GATE_TESTED_COMMIT_SHA` contains the fixing PR recorded in the G1
    `preflight/` evidence (hash-bound via `G1_EVIDENCE_MANIFEST_HASH`;
@@ -2038,7 +2242,26 @@ after G1 and G2 are recorded complete in the
     authorized intake-contract version — `INTAKE_CONTRACT_VERSION`,
     the §B runbook revision SHA whose §I definition text is the
     contract (this is the "version <n>" the wording cites) — and
-    merchant acknowledgement/approval where required. The GO record
+    merchant acknowledgement/approval where required. While the §I
+    nested-collection caps are in force the record must also carry
+    `MERCHANT_SHAPE_PRECONDITION_VERIFIED`: a dated verification, from
+    the merchant's Shopify export (export capture date; the per-order
+    line-item and per-product variant counts retained privately), that
+    no order has more than 50 line items and no product has more than
+    60 variants — stated as a STANDING constraint for the pilot's
+    operating period while the caps are in force (§I ongoing rule),
+    not a one-time export fact. This field sits AROUND the frozen GO
+    text, which is deliberately unchanged: under the verified precondition the GO's
+    "complete parent order" (item 3) and "merchant product catalog"
+    (item 4) are provable; without it they are not — the caps truncate
+    the stored order's `line_items` evidence beyond 50 and the product
+    mirror beyond 60 variants (never an invoice or journal amount —
+    §I money-truth). A GO signed without this field while the caps are
+    in force, or a merchant whose export violates either cap, is a
+    STOP: no worker or webhook release, no queue purge — the same
+    disposition as the any-age refusal below; the §I pagination fix
+    must merge and a new gate cycle must complete on a revision
+    containing it before that merchant's GO. The GO record
     must NOT record a VALUE for `INITIAL_SYNC_STARTED_AT`, any
     effective window boundary, or any per-leg result field (the
     contract wording above names them as future values — that is
@@ -2148,7 +2371,16 @@ after G1 and G2 are recorded complete in the
     payout-accounting effect occurs; every product remains NON_STOCK;
     no inventory/COGS residue appears; the fulfillment backfill and
     `deferred_cogs` leg appear only in their expected non-financial
-    state (§I definition's mechanical side effects);
+    state (§I definition's mechanical side effects); and — while the
+    §I nested-collection caps are in force — verify the §K
+    completeness controls against the merchant's Shopify export:
+    every intake order's line-item count is at most 50 and equals
+    the stored order evidence's count, every product's variant count
+    in the export is at most 60 (export-side only — the sync
+    legitimately skips SKU-less variants and collapses shared SKUs,
+    so no mirror/catalog equality is demanded — §I/§K), and the
+    worker log carries no variant-truncation warning (a cap breach,
+    a line-item count mismatch, or a missing control is a STOP);
 13. rerun `pilot_preflight --phase go-live`, `/_health/alerts`, and the
     source/control totals;
 14. only after the initial task is accounted for, unblock Shopify
@@ -2182,13 +2414,22 @@ after G1 and G2 are recorded complete in the
     and `INTAKE_CONTRACT_VERSION`; a closure re-execution booked an
     order outside AUTHORIZED_PARENT_ORDER_SET or is unrecorded; the GO
     record was amended after signing; the A/B overlap is double
-    counted; or a partial fetch is treated as success.
+    counted; a partial fetch is treated as success; or — while the §I
+    nested-collection caps are in force — the
+    `MERCHANT_SHAPE_PRECONDITION_VERIFIED` record is absent from the
+    GO record, a §K per-order line-item or per-product variant
+    completeness control is missing or failed, or any order over
+    50 line items or product over 60 variants entered the intake.
 
 The GO decision precedes the first merchant product/order/refund source
 write.
 
 STOP if: the intended merchant deployment uses a revision or image not
-named by the completed revision pack; the merchant company is activated
+named by the completed revision pack; the merchant deployment serves a
+frontend bundle not rebuilt from `GATE_TESTED_COMMIT_SHA` with the
+merchant deployment's recorded `FRONTEND_BUILD_ORIGIN` and verified per
+§G1c (the backend artifact-identity rule never transfers to the
+origin-specific frontend bundle — §N5 split rule); the merchant company is activated
 (§I2) without fresh F1–F3 evidence for the merchant deployment and
 merchant (rehearsal F2/F3 evidence transferred); the rehearsal database
 or its backup is reused; synthetic financial history appears in the
