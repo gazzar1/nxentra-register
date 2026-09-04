@@ -274,8 +274,20 @@ dispositioned with evidence.** Writing them here does not complete them.
   - Evidence field (`preflight/`): written decision, configuration, and
     burst/retry proof ______.
 
+**Evidence scope — per deployment, not per revision.** F1 is a code
+property and travels with the revision: it is proven once by its fixing
+PR and regression test, and every later environment only confirms the
+executed revision contains that PR. **F2 and F3 do not transfer between
+environments:** F2 lives in each deployment's proxy/firewall, and F3
+depends on the specific merchant's expected webhook burst and retry
+volume. Synthetic-rehearsal evidence for F2/F3 therefore proves nothing
+about the real merchant deployment — §Q step 3 requires fresh F2/F3
+evidence on the merchant host, for that merchant, before the merchant
+company is activated.
+
 STOP if: any of F1–F3 lacks its evidence at the moment activation (§I) is
-attempted.
+attempted — in the rehearsal environment for G1, and again, freshly, in
+the merchant environment for §Q.
 
 Sign-off: operator ______ date ______
 
@@ -303,6 +315,12 @@ introduce infrastructure this repository does not use.
 - [ ] **G1d. Start services.** For every service record: expected process,
   expected version/SHA, startup command, health signal, log location,
   restart behavior.
+  Beat's schedule lives in the database (`django_celery_beat`
+  DatabaseScheduler) and the repository registers no periodic task in
+  code — record every periodic task registered for this deployment
+  (name, task, schedule; at minimum `shopify.sync_all_stores` and
+  `shopify.cleanup_stale_installs` if used) in `environment/`, because
+  a restored backup carries those rows (§N2).
 
   | Service | Startup command (verified) | Health signal |
   |---|---|---|
@@ -1418,6 +1436,13 @@ two legitimate outcomes (`pilot_scope_skipped` — expected 0 — or a
 counted loud error that has been CLOSED before the checkpoint); any
 other absence is a variance.
 
+For every **system** control in this table, record alongside its
+value the exact read-model function or query and parameters that
+reproduce it from the operator shell under `rls_bypass` (the §M4
+second capture) — the G2 restore comparison (§N3) recomputes every
+control that way, because the restore environment runs no HTTP
+surface.
+
 STOP on any unexplained difference — **even when Nxentra reports healthy.**
 
 Sign-off: operator ______ date ______
@@ -1478,10 +1503,21 @@ new writes" is enforced and proven, never promised. Required order:
 - [ ] **M4. Finalize the control pack.**
   - Command / action: with mutation ingress blocked and beat/worker
     stopped, generate the final §K source and system controls through
-    only the approved read-only surfaces; record every source-file hash;
-    serialize the final control manifest; compute and record its
-    SHA-256; record the timestamp. After this point no source or system
-    control may be edited.
+    only the approved read-only surfaces — AND capture every system
+    control a second time from the operator shell under `rls_bypass`,
+    using a named read-model function or query with recorded
+    parameters (for example `AccountBalanceProjection().get_trial_balance(company)`
+    for the trial balance, `build_account_drilldown(...)` for the GL
+    drilldown balances, the reconciliation and exceptions-queue count
+    queries, `python manage.py alert_check` for the alert state), and
+    require the two captures of each control to agree. Record, per
+    control, the exact function/query, parameters, and serialization
+    used, so that §N3 can recompute it identically from the shell
+    (the restore environment runs no HTTP surface). Record every
+    source-file hash; serialize the final control manifest; compute
+    and record its SHA-256; record the timestamp. After this point no
+    source or system control may be edited, and no shell computation
+    is ever adjusted post hoc to reach agreement.
 - [ ] **M5. Stop the web process.**
   - Command / action: stop gunicorn after the final read-only controls
     are captured; prove no public application process can reach the
@@ -1551,8 +1587,88 @@ result itself must reproduce the control pack.
   `python manage.py check --deploy --fail-level WARNING` against the
   scratch database explicitly and require exit 0 (the drill script prints
   this check but does not fail on it).
-- [ ] N2. Boot the application (same pinned revision) against the scratch
-  database, isolated from production traffic and from Shopify webhooks.
+- [ ] N2. Bring up ONLY the operator read path against the scratch
+  database — **no application process at all**: no web process, no
+  frontend, no beat, no worker, no shared broker. Every control N3
+  compares is computed in the **operator shell under `rls_bypass`**
+  (the §C2 / §M6 form) using the same named read-model functions and
+  queries §M4 recorded for each control (§K); the alert comparison
+  uses `python manage.py alert_check`, which runs the identical
+  `compute_alert_state()` behind `/_health/alerts`, so the endpoint is
+  not needed. This is deliberately the only posture: every HTTP
+  surface of this application that authenticates is a writer, and a
+  restore environment that mutated itself proves nothing.
+  - **Why no web process:** `POST /api/auth/login/` (both its password
+    step and its pending-token second step) and
+    `POST /api/auth/shopify-session-login/` save `user.last_login`,
+    emit a `user.logged_in` BusinessEvent for the restored company
+    (moving `event_count` / `max_event_id` / `max_company_sequence` off
+    the §M record), schedule projection processing (which, if the
+    broker call fails, synchronously creates bookmark / applied-event
+    rows), and write token rows; `POST /api/auth/refresh/` and
+    `POST /api/auth/switch-company/` write token rows (rotation +
+    blacklist); Django admin login writes a session row and
+    `last_login` — and the interactive resync runs the order sync
+    synchronously inside the web process with no worker at all. With
+    no web process listening none of these doors exists. If a future
+    drill ever needs an HTTP read, that method must be designed, proven
+    write-free on a rehearsal (watermark equality PLUS unchanged token,
+    session and `last_login` table state — the watermark cannot see
+    non-event writes), and added to this runbook first; until then it
+    is inadmissible.
+  - **Why no beat or worker:** beat writes to the database on start
+    regardless of content (schedule bookkeeping and its default
+    entries), and the restored database carries whatever periodic-task
+    rows the live deployment registered (§G1d records them) plus the
+    ACTIVE store row, so beat + worker would enqueue and execute the
+    scheduled Shopify catch-up against whatever store the restored row
+    names (the synthetic store in the G2 drill; the real merchant store
+    in any later merchant-environment drill) and mutate `last_sync_at`,
+    source rows, events, journals, and bookmarks before the comparison.
+    The STOP is on starting beat or a worker at all.
+  - **Broker:** none is started for the restore environment; the
+    scratch settings must name a `REDIS_URL` distinct from the live
+    deployment's (never shared, never reachable from it), recorded by
+    name, so that even an accidental enqueue can never land on a live
+    queue.
+  - **Required outbound control:** the restore host has no outbound
+    network path to Shopify (proxy/firewall rule, proven and recorded).
+    Optional additional control: a `FIELD_ENCRYPTION_KEY` distinct from
+    the live deployment's. Understand its consequence before choosing
+    it: the shell boots, but the field converter decrypts every
+    selected encrypted column — a model-instance load OR a bare
+    `.values()` / `.values_list()` of `ShopifyStore`,
+    `PendingShopifyInstall` or `StripeAccount` (`access_token`,
+    `refresh_token`, `webhook_secret`, `credential_ref`) raises a
+    decrypt error (fail-loud — that is the control working). Under it,
+    every store or binding field N3 needs (status, `needs_reauth`,
+    `created_at`, `last_sync_at`, store/company/membership
+    relationships) must be read with `.values(<named non-encrypted
+    fields>)` / `.values_list(<named fields>)` / `.only()` / counts
+    that exclude the encrypted columns; `alert_check` is count-only
+    and unaffected. Restoring the live key to make a read work is a
+    STOP. Record which controls are in force.
+  - **Quiescence proof** (the §M6 form): capture #1 from the shell
+    before any comparison — the BusinessEvent watermark
+    (`event_count`, `max_event_id`, `max_company_sequence`) under
+    `rls_bypass`, and proof that no application writer process and no
+    application database session exists other than the explicitly
+    named operator shell session taking the capture (record its
+    backend identifier); run N3; capture #2 identically. Require both
+    captures to equal the §M record exactly. A shell computation is
+    never adjusted post hoc to reach equality — a difference is a
+    difference.
+  - STOP if: any application process (web, frontend, beat, worker) was
+    started before N3 was recorded; any HTTP login, session-login,
+    token-refresh, switch-company or Django-admin login was performed
+    against the restored database; the broker is shared with, or
+    reachable from, the live deployment; any outbound Shopify call is
+    observed; any evidence row was resolved or any other non-event
+    mutation made; a watermark capture differs from the §M record; or
+    any restored source row, event, journal, bookmark, or
+    `last_sync_at` changed between restore and comparison. A restore
+    environment that mutated itself proves nothing — discard it and
+    repeat N1.
 - [ ] N3. Compare durable controls and evaluate derived alert conditions.
   The restored database must reproduce the **§M backup control point**:
   the §M control-manifest SHA-256 and every underlying durable control;
@@ -1581,15 +1697,23 @@ result itself must reproduce the control pack.
   `ALERT_PROJECTION_STALENESS_SECONDS`. Recompute the expected
   restore-time values of `shopify_stale_sources`, `stale_consumers`, and
   any other clock-derived alert condition from the restored durable
-  inputs and the restore-time clock; require `/_health/alerts` to match
-  that **age-aware expectation**. A difference caused solely by elapsed
+  inputs and the restore-time clock; require the restore-time alert
+  state — computed by `python manage.py alert_check` in the restore
+  environment (the same `compute_alert_state()` behind
+  `/_health/alerts`; no web process runs there, §N2) — to match that
+  **age-aware expectation**. A difference caused solely by elapsed
   time is acceptable only when all underlying persisted inputs match
   exactly AND the recorded threshold calculation fully explains the
   difference. Do not run a live Shopify sync, rewrite
   `last_sync_at`/`created_at`, resolve evidence, or otherwise mutate
   restored state merely to recreate the pre-backup alert response.
 - [ ] N4. Evidence to retain (`restore/`): the comparison table, restored
-  revision, hashes.
+  revision, hashes; the N2 isolation record (confirmation that no
+  application process was started, the operator shell session's
+  backend identifier, the distinct broker name, the outbound Shopify
+  controls in force and the store-field capture method used under them,
+  the per-control shell function/query used, and both pre- and post-N3
+  watermark captures).
 - [ ] N5. **Issue the gate-tested revision pack.** On successful G1 + G2
   closure, record one immutable revision pack in `signoff/`:
 
@@ -1630,6 +1754,13 @@ Sign-off: operator ______ date ______
 - exception or alert surface reporting false green;
 - backup failure;
 - restore mismatch;
+- any application process (web, frontend, beat, worker) started in the
+  restore environment before N3 is recorded, any HTTP or Django-admin
+  login / session-login / token refresh performed against the restored
+  database, outbound Shopify synchronization possible from it, or a
+  broker shared with the live deployment;
+- merchant-environment activation without fresh F2/F3 evidence on the
+  merchant host for that merchant (rehearsal evidence transferred);
 - need for raw-SQL repair;
 - any merchant reliance on unsupported reports;
 - real merchant store or data used in the rehearsal database;
@@ -1807,10 +1938,23 @@ after G1 and G2 are recorded complete in the
    (If `main` advanced but the deployment uses the exact already-tested
    commit and artifact, the existing G1/G2 proof remains applicable.)
 2. provision a **NEW empty isolated merchant database**;
-3. repeat, against the new database: the revision proof (§B); the
-   fresh-database zero-count proof (§C); the environment-safety proof
-   (§E); base onboarding (§H); activation-aware validation (§I1); pilot
-   activation (§I2); pilot-aware Shopify provisioning (§I3);
+3. repeat, against the new database and the new host: the revision proof
+   (§B); the fresh-database zero-count proof (§C); the environment-safety
+   proof (§E); deployment, service startup, version proof and boot
+   health (§G); **the §F blockers with FRESH evidence for THIS
+   deployment and THIS merchant** — F1 confirmed by verifying that
+   `GATE_TESTED_COMMIT_SHA` contains the fixing PR recorded in the G1
+   `preflight/` evidence (hash-bound via `G1_EVIDENCE_MANIFEST_HASH`;
+   not re-proven), F2 proven per its §F evidence field — the
+   reverse-proxy/config test AND an external HTTP probe from outside
+   the merchant host (`/_health/alerts` answers; `/_health/full` and
+   `/_metrics/` are refused) — and F3 decided and proven for the real
+   merchant's expected webhook burst and retry volume —
+   synthetic-rehearsal F2/F3 evidence does NOT transfer, and step 4's
+   intake hold verifies neither; base onboarding (§H); activation-aware
+   validation (§I1); pilot activation (§I2) — **never before the fresh
+   F1–F3 evidence exists for this deployment**; pilot-aware Shopify
+   provisioning (§I3);
 4. establish the **controlled Shopify intake hold** (§I4 form): webhook
    and interactive-sync ingress blocked with retryable non-success
    responses; beat stopped; worker drained and stopped; Redis/broker
@@ -2044,10 +2188,12 @@ The GO decision precedes the first merchant product/order/refund source
 write.
 
 STOP if: the intended merchant deployment uses a revision or image not
-named by the completed revision pack; the rehearsal database or its
-backup is reused; synthetic financial history appears in the merchant
-database; both synthetic and real stores coexist; the real store is
-connected before G1/G2 closure; the real-store go-live preflight is run
+named by the completed revision pack; the merchant company is activated
+(§I2) without fresh F1–F3 evidence for the merchant deployment and
+merchant (rehearsal F2/F3 evidence transferred); the rehearsal database
+or its backup is reused; synthetic financial history appears in the
+merchant database; both synthetic and real stores coexist; the real
+store is connected before G1/G2 closure; the real-store go-live preflight is run
 before the binding ceremony; the connect path silently creates or
 selects an unrelated binding; the intended merchant OWNER is not the
 bound membership; a first-owner fallback occurs; the real embedded user
