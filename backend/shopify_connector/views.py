@@ -20,6 +20,7 @@ from rest_framework.views import APIView
 from accounting.mappings import ModuleAccountMapping
 from accounting.models import Account
 from accounts.authz import require, resolve_actor
+from platform_connectors.throttles import PlatformWebhookThrottle
 from projections.write_barrier import command_writes_allowed
 
 from . import commands
@@ -554,10 +555,14 @@ class ShopifyWebhookView(APIView):
 
     Receives all Shopify webhooks. Verifies HMAC, routes by topic.
     No authentication (Shopify sends these directly).
+
+    F3: dedicated webhook throttle scope — NOT the shared anon bucket. Keep
+    the throttled view set in lockstep with the runbook's §I4 enumeration.
     """
 
     permission_classes = [AllowAny]
     authentication_classes = []
+    throttle_classes = [PlatformWebhookThrottle]
 
     def post(self, request):
         # Verify HMAC signature

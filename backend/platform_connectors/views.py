@@ -27,6 +27,7 @@ from events.types import (
 )
 
 from .registry import connector_registry
+from .throttles import PlatformWebhookThrottle
 
 logger = logging.getLogger(__name__)
 
@@ -93,10 +94,14 @@ class PlatformWebhookView(APIView):
     Generic webhook receiver for any registered platform connector.
     No authentication — platforms send these directly with their own
     verification mechanisms (HMAC, signing secrets, etc.).
+
+    F3: dedicated webhook throttle scope — NOT the shared anon bucket. Keep
+    the throttled view set in lockstep with the runbook's §I4 enumeration.
     """
 
     permission_classes = [AllowAny]
     authentication_classes = []
+    throttle_classes = [PlatformWebhookThrottle]
 
     def post(self, request, platform_slug):
         connector = connector_registry.get(platform_slug)
