@@ -495,6 +495,11 @@ REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"] = {
     "resend_verification": "3/hour",
     "login": "10/minute",
     "external_ingest": "120/minute",
+    # G1 preflight F3: dedicated per-IP budget for the two webhook ingress
+    # routes (platform_connectors.throttles.PlatformWebhookThrottle) — sized
+    # for a single-store pilot's realistic Shopify burst plus its 8-retries/
+    # 4-hours redelivery schedule; over-limit stays a retryable 429.
+    "platform_webhook": "120/minute",
 }
 
 CHANNEL_LAYERS = {
