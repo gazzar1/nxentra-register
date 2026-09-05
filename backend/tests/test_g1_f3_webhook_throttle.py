@@ -26,6 +26,7 @@ import json
 import pytest
 from django.core.cache import cache
 from django.test import Client
+from rest_framework.throttling import AnonRateThrottle
 from rest_framework.views import APIView
 
 from accounts.views import CsrfTokenView
@@ -156,6 +157,19 @@ def test_webhook_exhaustion_leaves_the_general_anon_bucket_untouched(tiny_rate):
     for _ in range(3):
         _post_webhook(SHOPIFY_WEBHOOK_URL)
     assert _post_webhook(SHOPIFY_WEBHOOK_URL).status_code == 429
+
+    # ...and the anon-scope counter for this ident recorded NONE of it —
+    # the discriminating proof that webhook volume no longer drains the
+    # bucket login/register/OAuth-callback traffic depends on. (Key built
+    # from DRF's own cache_format so a format change can't silently
+    # vacuate this assertion into a None-is-None pass.)
+    anon_key = AnonRateThrottle.cache_format % {"scope": AnonRateThrottle.scope, "ident": "127.0.0.1"}
+    webhook_key = PlatformWebhookThrottle.cache_format % {
+        "scope": PlatformWebhookThrottle.scope,
+        "ident": "127.0.0.1",
+    }
+    assert cache.get(webhook_key), "sanity: the webhook scope did record its history"
+    assert cache.get(anon_key) is None
 
     # ...and the SAME IP still passes an ordinary anon endpoint: the scopes
     # key different cache entries, so webhook volume can no longer starve
