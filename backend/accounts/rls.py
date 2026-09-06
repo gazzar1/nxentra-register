@@ -189,6 +189,41 @@ def rls_bypass(*, conn=None):
             _set_config("app.rls_bypass", previous, conn=conn)
 
 
+@contextmanager
+def rls_scope(*, company_id: int | None, bypass: bool, conn=None):
+    """
+    Scope BOTH RLS session parameters for a block and RESTORE the caller's
+    previous values on exit (even on exception).
+
+    The reentrant sibling of ``rls_bypass()``. A boundary that must run under
+    its own tenant/bypass posture — the event emitter — uses this instead of
+    ``set_rls_context()`` + ``clear_rls_context()``: a bare clear RESETS the
+    session parameters and thereby destroys any context an ENCLOSING caller
+    established. A command running inside ``rls_bypass()`` that emitted an
+    event and then read back an RLS-protected row it had just projected found
+    nothing (G1 shakedown, 2026-09-05: ``register_signup`` 500'd with
+    ``CompanyMembership.DoesNotExist`` under a least-privilege role).
+    ``clear_rls_context()`` stays correct at the REQUEST boundary (middleware),
+    where there is no caller context to restore.
+
+    Args:
+        company_id: Company id to scope to, or None to leave the current
+            company parameter untouched (dedicated-database posture)
+        bypass: Whether RLS is bypassed inside the block
+        conn: Database connection to use
+    """
+    previous_company_id = _get_config("app.current_company_id", conn=conn)
+    previous_bypass = _get_config("app.rls_bypass", conn=conn)
+    if company_id is not None:
+        set_current_company_id(company_id, conn=conn)
+    set_rls_bypass(bypass, conn=conn)
+    try:
+        yield
+    finally:
+        _set_config("app.current_company_id", previous_company_id, conn=conn)
+        _set_config("app.rls_bypass", previous_bypass, conn=conn)
+
+
 def clear_rls_context(*, conn=None) -> None:
     """
     Clear all RLS-related session parameters.
