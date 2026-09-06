@@ -183,10 +183,59 @@ def rls_bypass(*, conn=None):
     try:
         yield
     finally:
-        if previous is None:
-            _set_config("app.rls_bypass", None, conn=conn)
-        else:
-            _set_config("app.rls_bypass", previous, conn=conn)
+        _restore_parameter("app.rls_bypass", previous, conn=conn)
+
+
+# The RLS session parameters, in snapshot order. ONE restore rule for a raw
+# captured value lives in _restore_parameter — rls_bypass(), rls_scope() and
+# the scheduled-Shopify per-plane snapshot/restore all go through it, so no
+# caller can drift on how "exactly what was there" is put back.
+RLS_SESSION_PARAMETERS = ("app.current_company_id", "app.rls_bypass")
+
+
+def _restore_parameter(name: str, raw: str | None, *, conn=None) -> None:
+    """
+    Restore ONE session parameter to a RAW value captured earlier.
+
+    Unset — ``None`` (never set) or ``''`` (set, then reset) — is ``RESET``;
+    any other raw value (``'on'``, ``'off'``, a company id) is set back
+    verbatim. Unset and ``'off'`` are never conflated. Nothing in the codebase
+    writes ``''`` explicitly, so ``''`` only ever means "unset with no
+    connection-level default", and ``RESET`` restores exactly that.
+    """
+    if raw is None or raw == "":
+        _set_config(name, None, conn=conn)
+    else:
+        _set_config(name, raw, conn=conn)
+
+
+def snapshot_rls_context(*, conn=None):
+    """
+    RAW ``(app.current_company_id, app.rls_bypass)`` for a connection —
+    ``''``/``None`` when unset, else the literal. ``None`` on non-PostgreSQL
+    (no session parameters to snapshot).
+    """
+    conn = _get_connection(conn)
+    if conn.vendor != "postgresql":
+        return None
+    with conn.cursor() as cursor:
+        cursor.execute(
+            "SELECT current_setting(%s, true), current_setting(%s, true)",
+            list(RLS_SESSION_PARAMETERS),
+        )
+        row = cursor.fetchone()
+    return (row[0], row[1]) if row else None
+
+
+def restore_rls_context(snapshot, *, conn=None) -> None:
+    """
+    Restore EXACTLY what :func:`snapshot_rls_context` captured, through the
+    one restore rule. No-op for a ``None`` snapshot (non-PostgreSQL).
+    """
+    if snapshot is None:
+        return
+    for name, raw in zip(RLS_SESSION_PARAMETERS, snapshot, strict=True):
+        _restore_parameter(name, raw, conn=conn)
 
 
 @contextmanager
@@ -212,16 +261,14 @@ def rls_scope(*, company_id: int | None, bypass: bool, conn=None):
         bypass: Whether RLS is bypassed inside the block
         conn: Database connection to use
     """
-    previous_company_id = _get_config("app.current_company_id", conn=conn)
-    previous_bypass = _get_config("app.rls_bypass", conn=conn)
+    snapshot = snapshot_rls_context(conn=conn)
     if company_id is not None:
         set_current_company_id(company_id, conn=conn)
     set_rls_bypass(bypass, conn=conn)
     try:
         yield
     finally:
-        _set_config("app.current_company_id", previous_company_id, conn=conn)
-        _set_config("app.rls_bypass", previous_bypass, conn=conn)
+        restore_rls_context(snapshot, conn=conn)
 
 
 def clear_rls_context(*, conn=None) -> None:

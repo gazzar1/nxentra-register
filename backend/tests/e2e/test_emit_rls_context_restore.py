@@ -193,3 +193,68 @@ def test_register_signup_succeeds_under_a_least_privilege_rls_role():
             with connection.cursor() as cur:
                 cur.execute("RESET ROLE")
         rls.set_rls_bypass(True)
+
+
+# =============================================================================
+# 3. One restore rule — rls_bypass, rls_scope and the Shopify planes agree
+# =============================================================================
+
+
+def _raw(name: str):
+    with connection.cursor() as cur:
+        cur.execute("SELECT current_setting(%s, true)", [name])
+        return cur.fetchone()[0]
+
+
+def test_unset_parameters_are_restored_as_unset_never_as_off():
+    """The canonical rule (the #119 scheduled-Shopify semantics, now the one
+    implementation in accounts.rls): a parameter captured unset ('' or None)
+    is RESET on restore, by rls_scope and by rls_bypass alike."""
+    company = _make_company()
+    with connection.cursor() as cur:
+        cur.execute("RESET app.current_company_id")
+        cur.execute("RESET app.rls_bypass")
+    assert rls.get_current_company_id() is None
+    assert not rls.is_rls_bypassed()
+
+    with rls.rls_scope(company_id=company.id, bypass=True):
+        assert rls.get_current_company_id() == company.id
+        assert rls.is_rls_bypassed()
+    assert _raw("app.current_company_id") in ("", None)
+    assert _raw("app.rls_bypass") in ("", None)
+
+    with rls.rls_bypass():
+        assert rls.is_rls_bypassed()
+    assert _raw("app.rls_bypass") in ("", None)
+    rls.set_rls_bypass(True)
+
+
+def test_shopify_plane_helpers_are_the_canonical_snapshot_and_restore():
+    """The scheduled-Shopify per-plane helpers delegate to accounts.rls — same
+    snapshot, same restore, and no SQL of their own to drift."""
+    import inspect
+
+    from shopify_connector.tasks import _restore_conn_rls, _snapshot_conn_rls
+
+    src = inspect.getsource(_snapshot_conn_rls) + inspect.getsource(_restore_conn_rls)
+    # Structural pin: the wrappers issue no SQL of their own and call the
+    # canonical functions (docstrings may mention RESET; code may not run it).
+    for token in ("cursor(", "execute("):
+        assert token not in src, f"shopify plane helpers must delegate to accounts.rls, not run '{token}' themselves"
+    assert "rls.snapshot_rls_context(" in src and "rls.restore_rls_context(" in src
+
+    company = _make_company()
+    try:
+        rls.set_current_company_id(company.id)
+        rls.set_rls_bypass(False)
+        expected = (str(company.id), "off")
+        assert _snapshot_conn_rls(connection) == rls.snapshot_rls_context(conn=connection) == expected
+
+        snap = _snapshot_conn_rls(connection)
+        rls.set_current_company_id(None)
+        rls.set_rls_bypass(True)
+        _restore_conn_rls(connection, snap)
+        assert (_raw("app.current_company_id"), _raw("app.rls_bypass")) == expected
+    finally:
+        rls.set_current_company_id(None)
+        rls.set_rls_bypass(True)
