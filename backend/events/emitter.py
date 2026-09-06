@@ -432,8 +432,10 @@ def emit_event_no_actor(
     # rls_bypass(): a command that emitted and then read back an RLS-protected
     # row it had just projected found nothing (G1 shakedown 2026-09-05 —
     # register_signup 500'd under a least-privilege role; invisible to every
-    # test only because test settings pin app.rls_bypass=on as a connection
-    # default that RESET falls back to).
+    # test because SQLite makes the RLS parameters no-ops and CI's Postgres
+    # role is a superuser that ignores RLS). The scheduled Shopify tasks had
+    # worked around the same class per call site since #119
+    # (_reassert_shopify_rls); restoring here closes it for every caller.
     with tenant_context(company_id=company.id, db_alias=db_alias, is_shared=is_shared):
         if is_shared:
             scope = rls.rls_scope(company_id=company.id, bypass=getattr(settings, "RLS_BYPASS", False))

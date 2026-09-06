@@ -10,14 +10,15 @@ the CompanyMembership read-model row), emits USER_PASSWORD_CHANGED, then reads
 that membership back — and under real RLS enforcement found nothing:
 ``CompanyMembership.DoesNotExist`` → HTTP 500 at ``/api/auth/register/``.
 
-Why no test ever saw it: test settings inject ``-c app.rls_bypass=on`` as a
-CONNECTION DEFAULT (settings.py, the RLS_BYPASS block), so a RESET falls back
-to ``on``; and CI's postgres role is a superuser, which ignores RLS entirely.
-Production has neither. These proofs therefore (1) assert the restoration
-contract on the GUC values themselves — discriminating regardless of role —
-and (2) reproduce the exact production failure by reopening the connection
-WITHOUT the bypass default, under a NOBYPASSRLS role, driving the real
-``register_signup``. RLS is Postgres-only, so this module skips on SQLite.
+Why no test ever saw it: on SQLite the RLS session parameters are no-ops, and
+CI's Postgres role is the docker superuser, which ignores RLS entirely (even
+FORCE). (settings.py's ``-c app.rls_bypass=on`` connection option is NOT in
+play here — test_settings.py rebuilds DATABASES from TEST_DATABASE_URL without
+it, so a RESET reads ''.) These proofs therefore (1) assert the restoration
+contract on the GUC values themselves, with the ambient state set to exactly
+what a RESET destroys ('on' + a company id) so BOTH halves discriminate for
+any role, and (2) reproduce the production failure under a NOBYPASSRLS role
+driving the real ``register_signup``. RLS is Postgres-only; skips on SQLite.
 """
 
 import uuid
@@ -38,8 +39,6 @@ pytestmark = [
 
 # Same ephemeral role as the sibling RLS proofs (idempotent CREATE).
 EPHEMERAL_RLS_ROLE = "nxentra_rls_e2e_role"
-# The connection-level default that test settings inject when RLS_BYPASS is on.
-BYPASS_DEFAULT_OPTION = "-c app.rls_bypass=on"
 
 
 def _role_bypasses_rls() -> bool:
@@ -104,24 +103,26 @@ def _emit_for(company, tag: str):
 
 
 def test_emit_restores_the_callers_ambient_rls_values():
-    """Ambient state is deliberately DIFFERENT from what the emit sets and from
-    the connection default (bypass 'off', a DIFFERENT company id): a RESET
-    would land on 'on' / unset; a restore lands back here."""
+    """The register_signup posture: an enclosing rls_bypass() ('on') plus a
+    company id that DIFFERS from the emitting company. A RESET reads '' for
+    both (not 'on', not the id), so each assertion fails on the pre-fix tree
+    and passes only when the emit restores what it found."""
     emitting = _make_company()
     ambient = _make_company()
     try:
-        rls.set_current_company_id(ambient.id)
-        rls.set_rls_bypass(False)
-        assert rls.get_current_company_id() == ambient.id
-        assert not rls.is_rls_bypassed()
+        with rls.rls_bypass():
+            rls.set_current_company_id(ambient.id)
+            assert rls.is_rls_bypassed()
+            assert rls.get_current_company_id() == ambient.id
 
-        _emit_for(emitting, "restore")
+            _emit_for(emitting, "restore")
 
-        assert rls.get_current_company_id() == ambient.id, "emit RESET the ambient company id instead of restoring it"
-        assert not rls.is_rls_bypassed(), (
-            "emit RESET app.rls_bypass to the connection default instead of restoring 'off'"
-        )
+            assert rls.is_rls_bypassed(), "emit RESET app.rls_bypass (now '') instead of restoring the enclosing 'on'"
+            assert rls.get_current_company_id() == ambient.id, (
+                "emit RESET the ambient company id instead of restoring it"
+            )
     finally:
+        rls.set_current_company_id(None)
         rls.set_rls_bypass(True)
 
 
@@ -150,26 +151,22 @@ def test_rls_scope_is_reentrant_inside_rls_bypass_and_restores_on_exception():
 
 
 def test_register_signup_succeeds_under_a_least_privilege_rls_role():
-    """Exactly the G1 shakedown posture: no connection-level bypass default,
-    a NOBYPASSRLS role, the real register_signup. Before the fix this raised
-    CompanyMembership.DoesNotExist from commands.py — the /api/auth/register/
-    500 — because the emit boundary had reset the enclosing rls_bypass()."""
-    options = connection.settings_dict.setdefault("OPTIONS", {})
-    original_options = options.get("options", "")
-    stripped = original_options.replace(BYPASS_DEFAULT_OPTION, "").strip()
-    if stripped:
-        options["options"] = stripped
-    else:
-        options.pop("options", None)
-    connection.close()  # the next query opens a connection WITHOUT the bypass default
+    """The G1 shakedown posture, in CI: RLS actually enforced (a NOBYPASSRLS
+    role — CI's own postgres role is a superuser, the one reason the suite never
+    saw this), no bypass in the session, the real register_signup. Before the
+    fix this raised CompanyMembership.DoesNotExist from commands.py — the
+    /api/auth/register/ 500 — because the emit boundary had reset the enclosing
+    rls_bypass()."""
+    with connection.cursor() as cur:
+        cur.execute("RESET app.rls_bypass")
+    # Premise guard: a RESET must NOT land on a bypass default. The test settings
+    # carry none; if one is ever introduced, this proof goes blind and must say so.
+    assert not rls.is_rls_bypassed(), (
+        "the test connection carries a bypass reset-default; this proof cannot discriminate"
+    )
 
-    owed_reset_role = False
+    owed_reset_role = _make_role_enforce_rls()
     try:
-        with connection.cursor() as cur:
-            cur.execute("RESET app.rls_bypass")
-        assert not rls.is_rls_bypassed(), "the test connection still carries the bypass default"
-
-        owed_reset_role = _make_role_enforce_rls()
         assert not _role_bypasses_rls(), "the probing role must be subject to RLS"
 
         from accounts.commands import register_signup
@@ -195,8 +192,4 @@ def test_register_signup_succeeds_under_a_least_privilege_rls_role():
         if owed_reset_role:
             with connection.cursor() as cur:
                 cur.execute("RESET ROLE")
-        if original_options:
-            options["options"] = original_options
-        else:
-            options.pop("options", None)
-        connection.close()  # the next test reopens with the standard test default
+        rls.set_rls_bypass(True)
