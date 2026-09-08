@@ -403,8 +403,9 @@ def test_dedicated_context_restores_both_planes_after_exception(rls_enforced, mo
 
 
 def test_reassert_restores_both_planes_after_emitter_clear_dedicated(rls_enforced, monkeypatch):
-    """Dedicated tenant: an emit clears the DATA plane it wrote on; the re-assert
-    must restore BOTH the control and data planes before the next unit."""
+    """Dedicated tenant: a boundary that RESETS the DATA plane it wrote on (the
+    pre-rls_scope emitter did; simulated explicitly below) must be recovered by
+    the re-assert on BOTH the control and data planes before the next unit."""
     from accounts.pilot_policy import lock_company_for_admission
     from shopify_connector.tasks import _reassert_shopify_rls, _shopify_tenant_execution
 
@@ -412,7 +413,8 @@ def test_reassert_restores_both_planes_after_emitter_clear_dedicated(rls_enforce
     _mock_dedicated_routing(monkeypatch)
 
     with _shopify_tenant_execution(a.id):
-        # Simulate emit_event_no_actor clearing BOTH connections' RLS session.
+        # Simulate a boundary resetting BOTH connections' RLS session (the
+        # pre-rls_scope emitter did this; it now restores the caller's values).
         rls.clear_rls_context(conn=_conn("default"))
         rls.clear_rls_context(conn=_conn(TENANT_DATA_ALIAS))
         with pytest.raises(Company.DoesNotExist):
@@ -462,9 +464,12 @@ def test_exception_inside_tenant_execution_still_restores_context(rls_enforced):
 
 
 def test_reassert_recovers_after_emitter_clears_context(rls_enforced):
-    """The #119 regression: emit_event_no_actor clears the connection RLS session
-    in its finally, so the NEXT admission lock would be hidden by RLS. Each
-    scheduled unit of work re-asserts before it locks — proven here end to end."""
+    """The #119 regression: the emit boundary used to CLEAR the connection RLS
+    session in its finally (it now restores the caller's values via
+    accounts.rls.rls_scope), so the NEXT admission lock would be hidden by RLS.
+    The clear is simulated explicitly below; each scheduled unit of work
+    re-asserts before it locks — proven here end to end, and kept as the
+    belt-and-braces recovery for any boundary that resets the session."""
     from accounts.pilot_policy import lock_company_for_admission
     from shopify_connector.tasks import _reassert_shopify_rls, _shopify_tenant_execution
 
@@ -472,7 +477,8 @@ def test_reassert_recovers_after_emitter_clears_context(rls_enforced):
     cid = co.id
     with _shopify_tenant_execution(cid):
         assert Company.objects.get(pk=cid).id == cid
-        # Simulate the emitter's finally wiping the connection's RLS session.
+        # Simulate a boundary wiping the connection's RLS session (the
+        # pre-rls_scope emitter's finally did this).
         rls.clear_rls_context(conn=connection)
         with pytest.raises(Company.DoesNotExist):
             Company.objects.get(pk=cid)  # unmitigated, the next lock would fail

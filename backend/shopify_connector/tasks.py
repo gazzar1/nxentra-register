@@ -56,32 +56,21 @@ logger = logging.getLogger(__name__)
 # ``'off'`` and ``'on'`` are three distinct states, never collapsed to a Boolean).
 # No transaction and no row lock is held across the remote Shopify sync.
 
-_RLS_GUCS = ("app.current_company_id", "app.rls_bypass")
-
 
 def _snapshot_conn_rls(conn):
     """RAW prior ``(app.current_company_id, app.rls_bypass)`` GUC strings for a
     connection — ``''`` when unset, else the literal (e.g. ``'off'`` / ``'on'`` /
-    a company id). ``None`` on non-PostgreSQL (no session GUCs to snapshot)."""
-    if conn.vendor != "postgresql":
-        return None
-    with conn.cursor() as cur:
-        cur.execute("SELECT current_setting('app.current_company_id', true), current_setting('app.rls_bypass', true)")
-        return cur.fetchone()
+    a company id). ``None`` on non-PostgreSQL. The canonical
+    :func:`accounts.rls.snapshot_rls_context`, applied per plane."""
+    return rls.snapshot_rls_context(conn=conn)
 
 
 def _restore_conn_rls(conn, snapshot) -> None:
-    """Restore the EXACT raw prior GUCs captured by :func:`_snapshot_conn_rls`.
-    A prior of ``''`` (unset) is ``RESET`` — unset and ``'off'`` are never
-    conflated, so exact restoration is exact."""
-    if snapshot is None or conn.vendor != "postgresql":
-        return
-    with conn.cursor() as cur:
-        for name, raw in zip(_RLS_GUCS, snapshot, strict=True):
-            if raw is None or raw == "":
-                cur.execute(f"RESET {name}")
-            else:
-                cur.execute("SELECT set_config(%s, %s, false)", [name, raw])
+    """Restore the EXACT raw prior GUCs captured by :func:`_snapshot_conn_rls`
+    through the ONE restore rule (:func:`accounts.rls.restore_rls_context`):
+    unset is ``RESET``, anything else is set back verbatim — unset and
+    ``'off'`` are never conflated, so exact restoration is exact."""
+    rls.restore_rls_context(snapshot, conn=conn)
 
 
 def _shopify_execution_planes(db_alias: str):
@@ -107,17 +96,20 @@ def _configure_plane(conn, kind: str, company_id: int) -> None:
 def _reassert_shopify_rls() -> None:
     """Re-apply the RLS session context for the CURRENT tenant on EVERY plane.
 
-    ``events.emitter.emit_event_no_actor`` establishes its own tenant/RLS context
-    for each event write and then CLEARS the connection's RLS session settings in
-    its ``finally`` (``accounts.rls.clear_rls_context``). So after the first event
-    a scheduled command emits, ``app.current_company_id`` / ``app.rls_bypass`` are
-    wiped on that connection, and the NEXT admission lock's fresh ``Company`` query
-    is hidden by RLS (``Company.DoesNotExist``). Each admission-locking unit of
-    work therefore re-asserts BOTH the default control connection and (when the
-    tenant is dedicated) the distinct data connection, from the tenant contextvar
-    established by :func:`_shopify_tenant_execution` (scheduled path) or by
-    ``TenantRlsMiddleware`` (the in-request re-sync view, which chains the same
-    per-order locks with the identical post-emit exposure). No-op when there is no
+    Origin (#119): ``events.emitter.emit_event_no_actor`` used to establish its
+    own tenant/RLS context for each event write and then CLEAR the connection's
+    RLS session settings in its ``finally``, so after the first event a scheduled
+    command emitted, ``app.current_company_id`` / ``app.rls_bypass`` were wiped on
+    that connection and the NEXT admission lock's fresh ``Company`` query was
+    hidden by RLS (``Company.DoesNotExist``). The emit boundary now RESTORES the
+    caller's values instead (``accounts.rls.rls_scope``), which closes that class
+    for every caller; this re-assertion is kept as belt-and-braces after any
+    boundary that may re-scope the session — re-applying identical values is
+    harmless. Each admission-locking unit of work re-asserts BOTH the default
+    control connection and (when the tenant is dedicated) the distinct data
+    connection, from the tenant contextvar established by
+    :func:`_shopify_tenant_execution` (scheduled path) or by
+    ``TenantRlsMiddleware`` (the in-request re-sync view). No-op when there is no
     tenant context, so it is safe to call from a shared/default context.
     """
     from tenant.context import get_current_tenant

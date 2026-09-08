@@ -424,16 +424,26 @@ def emit_event_no_actor(
     db_alias = tenant_info["db_alias"]
     is_shared = tenant_info["is_shared"]
 
-    # Set tenant context for proper database routing
+    # Set tenant context for proper database routing. The emit runs under its
+    # own RLS posture — the company's tenant context for a shared tenant,
+    # bypass for a dedicated database — and RESTORES the caller's ambient RLS
+    # state on exit. This used to end with a bare clear_rls_context(), which
+    # RESET the session parameters and silently destroyed an enclosing
+    # rls_bypass(): a command that emitted and then read back an RLS-protected
+    # row it had just projected found nothing (G1 shakedown 2026-09-05 —
+    # register_signup 500'd under a least-privilege role; invisible to every
+    # test because SQLite makes the RLS parameters no-ops and CI's Postgres
+    # role is a superuser that ignores RLS). The scheduled Shopify tasks had
+    # worked around the same class per call site since #119
+    # (_reassert_shopify_rls); restoring here closes it for every caller.
     with tenant_context(company_id=company.id, db_alias=db_alias, is_shared=is_shared):
-        # For shared tenants, set RLS context; for dedicated, bypass RLS
         if is_shared:
-            rls.set_rls_context(company.id, bypass=getattr(settings, "RLS_BYPASS", False))
+            scope = rls.rls_scope(company_id=company.id, bypass=getattr(settings, "RLS_BYPASS", False))
         else:
             # Dedicated DB: no RLS needed, bypass for single-tenant database
-            rls.set_rls_bypass(True)
+            scope = rls.rls_scope(company_id=None, bypass=True)
 
-        try:
+        with scope:
             return _emit_event_core(
                 company=company,
                 user=user,
@@ -449,9 +459,6 @@ def emit_event_no_actor(
                 external_id=external_id,
                 payload_origin=payload_origin,
             )
-        finally:
-            # Clean up RLS context
-            rls.clear_rls_context()
 
 
 def get_aggregate_events(company, aggregate_type: str, aggregate_id: Any) -> list[BusinessEvent]:
