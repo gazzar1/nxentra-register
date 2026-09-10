@@ -120,8 +120,15 @@ def test_severity_below_the_level_is_not_gated_and_the_level_is_configurable():
 @pytest.mark.parametrize(
     "broken, needle",
     [
-        (_entry(AVIF_RCE, mitigation=""), "missing mitigation"),
-        (_entry(AVIF_RCE, reason=" "), "missing reason"),
+        (_entry(AVIF_RCE, mitigation=""), "not a non-empty string: mitigation"),
+        (_entry(AVIF_RCE, reason=" "), "not a non-empty string: reason"),
+        # Non-string values must not survive validation (Codex round 1, #147):
+        # a str()-coerced dict/list/number is "non-empty" and would suppress.
+        (_entry(AVIF_RCE, mitigation={"note": "see ticket"}), "not a non-empty string: mitigation"),
+        (_entry(AVIF_RCE, tracked_by=["E11"]), "not a non-empty string: tracked_by"),
+        (_entry(AVIF_RCE, expires=20261130), "not a non-empty string: expires"),
+        (_entry(AVIF_RCE, id=["GHSA-2xp9-vwfh-vxw4"]), "not a non-empty string: id"),
+        (_entry(AVIF_RCE, package=None), "not a non-empty string: package"),
         (_entry(AVIF_RCE, expires="soon"), "is not YYYY-MM-DD"),
         (_entry("CVE-2026-0001"), "is not a GHSA id"),
         ("not-an-object", "must be an object"),

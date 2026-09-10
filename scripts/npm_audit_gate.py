@@ -19,7 +19,8 @@ task that retires it. The ratchet:
 * an entry whose advisory no longer appears in the audit fails the gate until
   it is removed, so the list can only shrink on its own (the same rule as the
   architecture-rule allowlists);
-* a malformed or duplicate entry fails the gate.
+* a malformed entry (missing field, non-string value, bad id, bad date) or a
+  duplicate entry fails the gate.
 
 Usage (CI, from ``frontend/``)::
 
@@ -139,20 +140,26 @@ def load_allowlist(data: dict) -> tuple[list[dict], list[str]]:
         if not isinstance(entry, dict):
             errors.append(f"{label}: entry must be an object")
             continue
-        missing = [
-            f for f in REQUIRED_ENTRY_FIELDS if not str(entry.get(f) or "").strip()
+        # Every textual field must be an actual non-empty string: a dict, list
+        # or number would survive a str()-coerced check and could then
+        # suppress a matching advisory despite violating the documented schema.
+        bad = [
+            f
+            for f in REQUIRED_ENTRY_FIELDS
+            if not isinstance(entry.get(f), str) or not entry[f].strip()
         ]
-        if missing:
+        if bad:
             errors.append(
-                f"{label} ({entry.get('id', '?')}): missing {', '.join(missing)}"
+                f"{label} ({entry.get('id', '?')!r}): field(s) missing or not a "
+                f"non-empty string: {', '.join(bad)}"
             )
             continue
-        advisory_id = str(entry["id"])
+        advisory_id = entry["id"]
         if not GHSA_RE.fullmatch(advisory_id):
             errors.append(f"{label}: id {advisory_id!r} is not a GHSA id")
             continue
         try:
-            date.fromisoformat(str(entry["expires"]))
+            date.fromisoformat(entry["expires"])
         except ValueError:
             errors.append(
                 f"{label} ({advisory_id}): expires {entry['expires']!r} is not YYYY-MM-DD"
