@@ -20,6 +20,7 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework_simplejwt.settings import api_settings
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from accounts.authentication import enforce_csrf
@@ -381,6 +382,16 @@ class LoginView(TokenObtainPairView):
                     status=status.HTTP_401_UNAUTHORIZED,
                 )
 
+            # A244: a deactivated account is rejected here — before the company
+            # chooser can list its companies or mint a pending_login_token —
+            # with the same rule SimpleJWT applies inside super().post() for the
+            # single-company path, so both shapes answer identically.
+            if not api_settings.USER_AUTHENTICATION_RULE(user):
+                return Response(
+                    {"detail": "No active account found with the given credentials"},
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
+
             # =============================================================
             # STRICT TENANT POLICY: company_id REQUIRED for token issuance
             # =============================================================
@@ -555,6 +566,16 @@ class LoginView(TokenObtainPairView):
         try:
             user = User.objects.get(id=token_user_id)
         except User.DoesNotExist:
+            return Response(
+                {"detail": "invalid_pending_token", "message": "Invalid login session. Please sign in again."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        # A244: the pending token only proves the password step passed; the
+        # account can be deactivated inside the 5-minute window. Apply the same
+        # rule SimpleJWT applies at login and refresh — no token pair for an
+        # inactive principal.
+        if not api_settings.USER_AUTHENTICATION_RULE(user):
             return Response(
                 {"detail": "invalid_pending_token", "message": "Invalid login session. Please sign in again."},
                 status=status.HTTP_401_UNAUTHORIZED,

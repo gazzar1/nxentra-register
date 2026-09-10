@@ -40,7 +40,6 @@ from django.conf import settings
 from django.middleware.csrf import CsrfViewMiddleware
 from rest_framework.exceptions import AuthenticationFailed, PermissionDenied
 from rest_framework_simplejwt.authentication import JWTAuthentication
-from rest_framework_simplejwt.exceptions import InvalidToken
 
 logger = logging.getLogger(__name__)
 
@@ -133,8 +132,14 @@ class CookieJWTAuthentication(JWTAuthentication):
         try:
             validated_token = self.get_validated_token(raw_token)
             user = self.get_user(validated_token)
-        except InvalidToken:
-            # Invalid/expired cookie and no Authorization header → unauthenticated.
+        except AuthenticationFailed:
+            # Invalid/expired cookie, or a cookie for a principal that no longer
+            # exists / is inactive (``get_user`` raises ``AuthenticationFailed``,
+            # of which ``InvalidToken`` is a subclass), and no Authorization
+            # header → unauthenticated. A244: catching only ``InvalidToken`` let
+            # a stale cookie for a deleted or deactivated user turn every
+            # AllowAny view — logout included, so the cookies could never be
+            # cleared — into a 401 for the remainder of the access lifetime.
             return None
         # Authenticated via cookie → enforce CSRF. A cross-site simple/JSON POST
         # carries the SameSite=None cookie but cannot set a matching X-CSRFToken.

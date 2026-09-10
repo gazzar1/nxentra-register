@@ -76,13 +76,27 @@ class NxentraTokenRefreshSerializer(TokenRefreshSerializer):
         if not user_id:
             raise InvalidToken("Invalid refresh token.")
 
-        # Let SimpleJWT do its validation and token creation
-        data = super().validate(attrs)
+        # Let SimpleJWT do its validation and token creation. It runs BEFORE the
+        # membership/company checks on purpose: with ROTATE + BLACKLIST it burns
+        # the presented token, so a revoked member's token dies on its first
+        # failed use. SimpleJWT loads the user with a bare ``objects.get``, so a
+        # validly signed token whose user row is gone (deleted user, replaced
+        # database — A244, Sentry PYTHON-DJANGO-22) escaped as
+        # ``User.DoesNotExist`` → 500 before the guard below could run. A dead
+        # principal is a dead token: the same 401 as every other rejection here.
+        # Only that one class is caught — an inactive user still surfaces
+        # SimpleJWT's own ``no_active_account`` rejection untouched.
+        try:
+            data = super().validate(attrs)
+        except User.DoesNotExist as exc:
+            raise InvalidToken("User not found.") from exc
 
         # Validate user still belongs to this company
         from accounts.rls import rls_bypass
 
         with rls_bypass():
+            # Also the load consumed by the membership check and the re-mint
+            # below; ``None`` means the row vanished after SimpleJWT's lookup.
             user = User.objects.filter(id=user_id).first()
             if not user:
                 raise InvalidToken("User not found.")
