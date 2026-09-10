@@ -52,6 +52,19 @@ from pathlib import Path
 
 SEVERITIES: tuple[str, ...] = ("info", "low", "moderate", "high", "critical")
 GHSA_RE = re.compile(r"GHSA-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}")
+# The documented expiry syntax is the calendar date YYYY-MM-DD, nothing else.
+# ``date.fromisoformat`` alone (3.11+) would also accept ``20261130`` and week
+# dates such as ``2026-W49-1``, so the shape is checked before parsing.
+CALENDAR_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _parse_calendar_date(text: str) -> date:
+    """Parse exactly ``YYYY-MM-DD``; ``ValueError`` for any other form."""
+    if not CALENDAR_DATE_RE.fullmatch(text):
+        raise ValueError(f"{text!r} is not YYYY-MM-DD")
+    return date.fromisoformat(text)
+
+
 REQUIRED_ENTRY_FIELDS: tuple[str, ...] = (
     "id",
     "package",
@@ -167,7 +180,7 @@ def load_allowlist(data: dict) -> tuple[list[dict], list[str]]:
             errors.append(f"{label}: id {advisory_id!r} is not a GHSA id")
             continue
         try:
-            date.fromisoformat(entry["expires"])
+            _parse_calendar_date(entry["expires"])
         except ValueError:
             errors.append(
                 f"{label} ({advisory_id}): expires {entry['expires']!r} is not YYYY-MM-DD"
@@ -237,7 +250,7 @@ def evaluate(
                 f"BLOCK {where}: {advisory.title} -- not allowlisted{hint} ({advisory.url})"
             )
             continue
-        expires = date.fromisoformat(entry["expires"])
+        expires = _parse_calendar_date(entry["expires"])
         if expires < today:
             failures.append(
                 f"BLOCK {where}: allowlist entry EXPIRED {expires.isoformat()} "
@@ -336,7 +349,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--today",
-        type=date.fromisoformat,
+        type=_parse_calendar_date,
         help="override today's date (YYYY-MM-DD) for expiry checks",
     )
     args = parser.parse_args(argv)

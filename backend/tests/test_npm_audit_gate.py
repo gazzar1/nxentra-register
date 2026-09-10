@@ -178,6 +178,11 @@ def test_severity_below_the_level_is_not_gated_and_the_level_is_configurable():
         (_entry(AVIF_RCE, id=["GHSA-2xp9-vwfh-vxw4"]), "not a non-empty string: id"),
         (_entry(AVIF_RCE, package=None), "not a non-empty string: package"),
         (_entry(AVIF_RCE, expires="soon"), "is not YYYY-MM-DD"),
+        # date.fromisoformat alone would accept these (Codex round 3, #147):
+        (_entry(AVIF_RCE, expires="20261130"), "is not YYYY-MM-DD"),
+        (_entry(AVIF_RCE, expires="2026-W49-1"), "is not YYYY-MM-DD"),
+        (_entry(AVIF_RCE, expires="2026-11-30T00:00:00"), "is not YYYY-MM-DD"),
+        (_entry(AVIF_RCE, expires="2026-13-01"), "is not YYYY-MM-DD"),
         (_entry("CVE-2026-0001"), "is not a GHSA id"),
         ("not-an-object", "must be an object"),
     ],
@@ -226,6 +231,16 @@ def test_repo_allowlist_is_well_formed():
     assert errors == []
     assert {(e["id"], e["package"]) for e in entries} == {(AVIF_RCE, "next"), (WINDOWS_RCE, "next")}
     assert all(e["tracked_by"] == "E11" for e in entries)
+
+
+def test_cli_today_override_requires_calendar_date_syntax(tmp_path):
+    report = tmp_path / "report.json"
+    report.write_text(json.dumps(_report((AVIF_RCE, "next", "critical"))), encoding="utf-8")
+    allow = tmp_path / "allow.json"
+    allow.write_text(json.dumps({"allow": [_entry(AVIF_RCE)]}), encoding="utf-8")
+    with pytest.raises(SystemExit) as exc:  # argparse usage error
+        gate.main(["--allowlist", str(allow), "--audit-json", str(report), "--today", "20260910"])
+    assert exc.value.code == 2
 
 
 def test_cli_exit_codes_with_a_saved_report(tmp_path):
