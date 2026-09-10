@@ -453,10 +453,22 @@ class LoginView(TokenObtainPairView):
                     status=status.HTTP_403_FORBIDDEN,
                 )
 
-            # Set as active company before token generation
+            # Set as active company before token generation — through the
+            # canonical writer. A245: the direct `user.save(active_company)`
+            # here was a second writer for a command/projection-owned field;
+            # outside the test bypass the write guard refused it, so every
+            # login that chose a non-active company answered 500.
+            # switch_active_company re-checks membership + company activity,
+            # emits USER_COMPANY_SWITCHED and persists under the command
+            # context; super().post() below reloads the user, so the minted
+            # claims see the switch.
             if user.active_company_id != requested_company_id:
-                user.active_company_id = requested_company_id
-                user.save(update_fields=["active_company"])
+                switched = switch_active_company(user, requested_company_id)
+                if not switched.success:
+                    return Response(
+                        {"detail": "invalid_company", "message": switched.error},
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
 
         except User.DoesNotExist:
             # Don't reveal if user exists - let parent handle auth failure
@@ -589,10 +601,15 @@ class LoginView(TokenObtainPairView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        # Set as active company so token claims line up with the standard flow.
+        # Set as active company so token claims line up with the standard
+        # flow — through the canonical writer (A245, see LoginView.post).
         if user.active_company_id != requested_company_id:
-            user.active_company_id = requested_company_id
-            user.save(update_fields=["active_company"])
+            switched = switch_active_company(user, requested_company_id)
+            if not switched.success:
+                return Response(
+                    {"detail": "invalid_company", "message": switched.error},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
 
         from accounts.serializers import mint_token_pair
 
@@ -843,10 +860,16 @@ class ShopifySessionLoginView(APIView):
         company_id = store.company_id
 
         # Align active_company so token claims line up with the standard
-        # login path's invariants.
+        # login path's invariants — through the canonical writer (A245, see
+        # LoginView.post). The bound membership was resolved above; the
+        # command re-checks it and the company's activity.
         if user.active_company_id != company_id:
-            user.active_company_id = company_id
-            user.save(update_fields=["active_company"])
+            switched = switch_active_company(user, company_id)
+            if not switched.success:
+                return Response(
+                    {"detail": "invalid_company", "message": switched.error, "shop_domain": shop_domain},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
 
         tokens = mint_token_pair(user, company_id=company_id)
 
