@@ -11,16 +11,18 @@ This script keeps the same policy -- any advisory at or above the threshold
 fails the job -- but lets a specific advisory be accepted through
 ``frontend/npm-audit-allowlist.json``, where every entry must carry the GHSA
 id, the package, a reason, the mitigation in place, an expiry date and the
-task that retires it. The ratchet:
+task that retires it. An entry accepts exactly one (advisory, package)
+occurrence: the same GHSA reported for another package is not covered, because
+the stated mitigation may apply to one dependency only. The ratchet:
 
 * every suppression is printed on every run;
 * an expired entry stops suppressing -- the gate goes red again and forces
   the decision instead of letting the exception rot;
-* an entry whose advisory no longer appears in the audit fails the gate until
-  it is removed, so the list can only shrink on its own (the same rule as the
-  architecture-rule allowlists);
+* an entry whose (advisory, package) no longer appears in the audit fails the
+  gate until it is removed, so the list can only shrink on its own (the same
+  rule as the architecture-rule allowlists);
 * a malformed entry (missing field, non-string value, bad id, bad date) or a
-  duplicate entry fails the gate.
+  duplicate (advisory, package) entry fails the gate.
 
 Usage (CI, from ``frontend/``)::
 
@@ -69,6 +71,11 @@ class Advisory:
     range: str
     url: str
 
+    @property
+    def key(self) -> tuple[str, str]:
+        """An allowlist entry matches one (advisory, package) occurrence."""
+        return (self.id, self.package)
+
 
 @dataclass
 class Outcome:
@@ -82,19 +89,21 @@ class Outcome:
 
 
 def advisories_from_report(report: dict) -> list[Advisory]:
-    """Flatten an npm audit v2 report into unique advisories.
+    """Flatten an npm audit v2 report into (advisory, package) occurrences.
 
     ``vulnerabilities[<package>].via`` mixes advisory objects (the advisory is
     on that package) with plain strings (the package is only affected through
     the named dependency, whose own entry carries the advisory). Only the
-    objects are advisories; strings are skipped.
+    objects are advisories; strings are skipped. The same GHSA reported for
+    two packages yields two occurrences -- an allowlist entry names exactly
+    one of them.
     """
     version = report.get("auditReportVersion")
     if version != 2:
         raise ValueError(
             f"unsupported auditReportVersion {version!r} (expected 2 -- npm 7+)"
         )
-    seen: dict[str, Advisory] = {}
+    seen: dict[tuple[str, str], Advisory] = {}
     for package, vuln in (report.get("vulnerabilities") or {}).items():
         for via in vuln.get("via") or []:
             if not isinstance(via, dict):
@@ -102,22 +111,21 @@ def advisories_from_report(report: dict) -> list[Advisory]:
             url = str(via.get("url") or "")
             match = GHSA_RE.search(url)
             advisory_id = match.group(0) if match else f"npm-{via.get('source')}"
-            seen.setdefault(
-                advisory_id,
-                Advisory(
-                    id=advisory_id,
-                    package=str(via.get("name") or package),
-                    severity=str(via.get("severity") or "").lower(),
-                    title=str(via.get("title") or ""),
-                    range=str(via.get("range") or ""),
-                    url=url,
-                ),
+            advisory = Advisory(
+                id=advisory_id,
+                package=str(via.get("name") or package),
+                severity=str(via.get("severity") or "").lower(),
+                title=str(via.get("title") or ""),
+                range=str(via.get("range") or ""),
+                url=url,
             )
+            seen.setdefault(advisory.key, advisory)
     return sorted(
         seen.values(),
         key=lambda a: (
             -(SEVERITIES.index(a.severity) if a.severity in SEVERITIES else -1),
             a.id,
+            a.package,
         ),
     )
 
@@ -134,7 +142,7 @@ def load_allowlist(data: dict) -> tuple[list[dict], list[str]]:
         return [], ["allowlist: top-level 'allow' must be a list"]
     valid: list[dict] = []
     errors: list[str] = []
-    seen_ids: set[str] = set()
+    seen_keys: set[tuple[str, str]] = set()
     for index, entry in enumerate(entries):
         label = f"allowlist[{index}]"
         if not isinstance(entry, dict):
@@ -165,10 +173,13 @@ def load_allowlist(data: dict) -> tuple[list[dict], list[str]]:
                 f"{label} ({advisory_id}): expires {entry['expires']!r} is not YYYY-MM-DD"
             )
             continue
-        if advisory_id in seen_ids:
-            errors.append(f"{label}: duplicate entry for {advisory_id}")
+        key = (advisory_id, entry["package"])
+        if key in seen_keys:
+            errors.append(
+                f"{label}: duplicate entry for {advisory_id} ({entry['package']})"
+            )
             continue
-        seen_ids.add(advisory_id)
+        seen_keys.add(key)
         valid.append(entry)
     return valid, errors
 
@@ -201,26 +212,37 @@ def evaluate(
         for a in advisories
         if a.severity in SEVERITIES and SEVERITIES.index(a.severity) >= threshold
     ]
-    by_id = {str(e["id"]): e for e in entries}
-    present = {a.id for a in advisories}
+    by_key = {(e["id"], e["package"]): e for e in entries}
+    packages_by_id: dict[str, set[str]] = {}
+    for e in entries:
+        packages_by_id.setdefault(e["id"], set()).add(e["package"])
+    present = {a.key for a in advisories}
 
     lines = [
-        f"npm audit gate: {len(advisories)} advisories in report, {len(gated)} at or above '{level}', "
-        f"{len(entries)} allowlist entries (today {today.isoformat()})"
+        f"npm audit gate: {len(advisories)} advisory occurrences in report, "
+        f"{len(gated)} at or above '{level}', {len(entries)} allowlist entries "
+        f"(today {today.isoformat()})"
     ]
     for advisory in gated:
-        entry = by_id.get(advisory.id)
+        entry = by_key.get(advisory.key)
         where = f"{advisory.severity} {advisory.id} {advisory.package} {advisory.range}".rstrip()
         if entry is None:
+            elsewhere = sorted(packages_by_id.get(advisory.id, set()))
+            hint = (
+                f" (allowlisted only for {', '.join(elsewhere)}; the mitigation may not apply here)"
+                if elsewhere
+                else ""
+            )
             failures.append(
-                f"BLOCK {where}: {advisory.title} -- not allowlisted ({advisory.url})"
+                f"BLOCK {where}: {advisory.title} -- not allowlisted{hint} ({advisory.url})"
             )
             continue
-        expires = date.fromisoformat(str(entry["expires"]))
+        expires = date.fromisoformat(entry["expires"])
         if expires < today:
             failures.append(
-                f"BLOCK {where}: allowlist entry EXPIRED {expires.isoformat()} (tracked by {entry['tracked_by']}) "
-                "-- upgrade, or renew the entry with a new expiry and a current reason"
+                f"BLOCK {where}: allowlist entry EXPIRED {expires.isoformat()} "
+                f"(tracked by {entry['tracked_by']}) -- upgrade, or renew the entry "
+                "with a new expiry and a current reason"
             )
             continue
         lines.append(
@@ -228,10 +250,11 @@ def evaluate(
             f"(tracked by {entry['tracked_by']}); mitigation: {entry['mitigation']}"
         )
     for entry in entries:
-        if str(entry["id"]) not in present:
+        if (entry["id"], entry["package"]) not in present:
             failures.append(
-                f"STALE allowlist entry {entry['id']} ({entry['package']}): advisory no longer reported "
-                "-- remove the entry (the allowlist only shrinks on its own)"
+                f"STALE allowlist entry {entry['id']} ({entry['package']}): advisory "
+                "no longer reported for that package -- remove the entry (the "
+                "allowlist only shrinks on its own)"
             )
 
     lines.extend(failures)
@@ -281,7 +304,8 @@ def run_npm_audit(cwd: Path) -> dict:
     )
     if not (proc.stdout or "").strip():
         raise RuntimeError(
-            f"npm audit produced no output (exit {proc.returncode}): {proc.stderr.strip()[:500]}"
+            f"npm audit produced no output (exit {proc.returncode}): "
+            f"{proc.stderr.strip()[:500]}"
         )
     return _parse_report(proc.stdout, f"npm audit output (exit {proc.returncode})")
 

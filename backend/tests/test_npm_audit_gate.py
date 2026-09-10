@@ -6,9 +6,10 @@ A246 (2026-09-10) -- the npm audit gate's allowlist semantics.
 step in CI: same policy (any advisory at or above the threshold fails), plus
 an explicit, expiring allowlist so a critical advisory with no non-breaking
 fix can be accepted for a bounded time with a stated mitigation. These tests
-pin the ratchet: unlisted blocks, listed passes and is printed, expired stops
-suppressing, stale fails, malformed fails. Pure script tests -- no Django, no
-database, no network (the real ``npm audit`` call is not exercised here).
+pin the ratchet: unlisted blocks, listed passes and is printed, an entry
+covers exactly one (advisory, package) occurrence, expired stops suppressing,
+stale fails, malformed fails. Pure script tests -- no Django, no database, no
+network (the real ``npm audit`` call is not exercised here).
 """
 
 from __future__ import annotations
@@ -86,7 +87,7 @@ def test_critical_without_entry_blocks():
 def test_allowlisted_critical_passes_and_the_suppression_is_printed():
     outcome = _evaluate(_report((AVIF_RCE, "next", "critical")), [_entry(AVIF_RCE)])
     assert outcome.ok, outcome.lines
-    allow = [line for line in outcome.lines if line.startswith(f"ALLOW critical {AVIF_RCE}")]
+    allow = [line for line in outcome.lines if line.startswith(f"ALLOW critical {AVIF_RCE} next")]
     assert len(allow) == 1
     assert "accepted until 2026-12-31" in allow[0] and "tracked by E11" in allow[0] and "mitigation:" in allow[0]
     assert outcome.lines[-1] == "RESULT: PASS"
@@ -106,7 +107,54 @@ def test_entry_expiring_today_still_suppresses():
 def test_stale_entry_fails_so_the_list_only_shrinks():
     outcome = _evaluate(_report((SOME_HIGH, "next", "high")), [_entry(AVIF_RCE)])
     assert not outcome.ok
-    assert any(line.startswith(f"STALE allowlist entry {AVIF_RCE}") for line in outcome.lines)
+    assert any(line.startswith(f"STALE allowlist entry {AVIF_RCE} (next)") for line in outcome.lines)
+
+
+# --------------------------------------------------------------------------- #
+# An entry covers exactly one (advisory, package) occurrence (Codex #147 r2)
+# --------------------------------------------------------------------------- #
+
+
+def test_same_advisory_under_two_packages_is_two_occurrences():
+    report = _report((AVIF_RCE, "next", "critical"), (AVIF_RCE, "eslint-config-next", "critical"))
+    assert [a.key for a in gate.advisories_from_report(report)] == [
+        (AVIF_RCE, "eslint-config-next"),
+        (AVIF_RCE, "next"),
+    ]
+
+
+def test_entry_for_one_package_does_not_suppress_the_same_advisory_elsewhere():
+    report = _report((AVIF_RCE, "next", "critical"), (AVIF_RCE, "eslint-config-next", "critical"))
+    outcome = _evaluate(report, [_entry(AVIF_RCE, package="next")])
+    assert not outcome.ok
+    assert any(line.startswith(f"ALLOW critical {AVIF_RCE} next") for line in outcome.lines)
+    blocked = [line for line in outcome.lines if line.startswith(f"BLOCK critical {AVIF_RCE} eslint-config-next")]
+    assert len(blocked) == 1 and "allowlisted only for next" in blocked[0]
+
+
+def test_entry_naming_the_wrong_package_is_stale_and_does_not_suppress():
+    outcome = _evaluate(_report((AVIF_RCE, "next", "critical")), [_entry(AVIF_RCE, package="postcss")])
+    assert not outcome.ok
+    assert any(line.startswith(f"BLOCK critical {AVIF_RCE} next") for line in outcome.lines)
+    assert any(line.startswith(f"STALE allowlist entry {AVIF_RCE} (postcss)") for line in outcome.lines)
+
+
+def test_one_entry_per_package_covers_both_occurrences():
+    report = _report((AVIF_RCE, "next", "critical"), (AVIF_RCE, "eslint-config-next", "critical"))
+    outcome = _evaluate(report, [_entry(AVIF_RCE, package="next"), _entry(AVIF_RCE, package="eslint-config-next")])
+    assert outcome.ok, outcome.lines
+    assert sum(line.startswith("ALLOW ") for line in outcome.lines) == 2
+
+
+def test_duplicate_id_and_package_entry_fails():
+    outcome = _evaluate(_report((AVIF_RCE, "next", "critical")), [_entry(AVIF_RCE), _entry(AVIF_RCE)])
+    assert not outcome.ok
+    assert any("duplicate entry" in line for line in outcome.lines)
+
+
+# --------------------------------------------------------------------------- #
+# Threshold, malformed allowlists, report parsing
+# --------------------------------------------------------------------------- #
 
 
 def test_severity_below_the_level_is_not_gated_and_the_level_is_configurable():
@@ -140,12 +188,6 @@ def test_malformed_entry_fails_even_when_it_would_match(broken, needle):
     assert any(needle in line for line in outcome.lines), outcome.lines
 
 
-def test_duplicate_entry_fails():
-    outcome = _evaluate(_report((AVIF_RCE, "next", "critical")), [_entry(AVIF_RCE), _entry(AVIF_RCE)])
-    assert not outcome.ok
-    assert any("duplicate entry" in line for line in outcome.lines)
-
-
 def test_allowlist_without_allow_list_fails():
     outcome = gate.evaluate(_report((AVIF_RCE, "next", "critical")), {"allow": "nope"}, today=TODAY)
     assert not outcome.ok and any("must be a list" in line for line in outcome.lines)
@@ -156,12 +198,21 @@ def test_transitive_via_strings_are_not_advisories():
     # affected through postcss; the advisory itself sits under `postcss`.
     report = _report((AVIF_RCE, "next", "critical"), extra_via=[("next", "postcss")])
     advisories = gate.advisories_from_report(report)
-    assert [a.id for a in advisories] == [AVIF_RCE]
+    assert [a.key for a in advisories] == [(AVIF_RCE, "next")]
 
 
-def test_same_advisory_under_two_packages_is_counted_once():
-    report = _report((AVIF_RCE, "next", "critical"), (AVIF_RCE, "eslint-config-next", "critical"))
-    assert len(gate.advisories_from_report(report)) == 1
+def test_advisory_package_comes_from_the_via_object_not_the_parent_key():
+    # A `via` object names its own package; the parent key is only a fallback.
+    via = {
+        "source": 2,
+        "name": "postcss",
+        "severity": "critical",
+        "title": "postcss critical",
+        "url": f"https://github.com/advisories/{WINDOWS_RCE}",
+        "range": "<8",
+    }
+    report = _report(extra_via=[("next", via)])
+    assert [a.key for a in gate.advisories_from_report(report)] == [(WINDOWS_RCE, "postcss")]
 
 
 def test_unsupported_report_version_fails_closed():
@@ -173,7 +224,7 @@ def test_repo_allowlist_is_well_formed():
     data = json.loads((_REPO / "frontend" / "npm-audit-allowlist.json").read_text(encoding="utf-8"))
     entries, errors = gate.load_allowlist(data)
     assert errors == []
-    assert {e["id"] for e in entries} == {AVIF_RCE, WINDOWS_RCE}
+    assert {(e["id"], e["package"]) for e in entries} == {(AVIF_RCE, "next"), (WINDOWS_RCE, "next")}
     assert all(e["tracked_by"] == "E11" for e in entries)
 
 
