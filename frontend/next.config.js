@@ -33,6 +33,14 @@ const shopifyEmbedHeaders = [
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  // A246 (2026-09-10): the app uses no `next/image`, so the Image
+  // Optimization API (`/_next/image`) served nothing but attack surface —
+  // GHSA-2xp9-vwfh-vxw4 (critical, unauthenticated RCE via libheif/sharp
+  // when an AVIF is optimized; no 14.x patch). With `unoptimized: true`
+  // Next answers that route with a 404 before any parameter validation or
+  // sharp call. Re-enable only together with the Next 15 upgrade (E11) and
+  // an actual `next/image` use.
+  images: { unoptimized: true },
   i18n: {
     locales: ['en', 'ar'],
     defaultLocale: 'en',

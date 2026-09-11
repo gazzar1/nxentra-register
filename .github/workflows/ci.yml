@@ -290,14 +290,23 @@ jobs:
           # hits the production SECRET_KEY guard.
           DEBUG: "True"
 
-      - name: npm audit (production dependencies)
+      - name: npm audit gate (production dependencies)
         # Threshold is "critical" rather than "high" because clearing the
         # remaining high-severity Next.js DoS / smuggling advisories
         # requires a Next.js v14 -> v15+ major upgrade, which is tracked as
-        # a Phase E ticket in NEXT_TASKS.md. Critical-only is the standard
-        # CI gate for "drop everything" classes; high-severity is addressed
-        # via planned upgrade rather than blocking every merge.
-        run: npm audit --omit=dev --audit-level=critical
+        # E11 in NEXT_TASKS.md. Critical-only is the standard CI gate for
+        # "drop everything" classes; high-severity is addressed via the
+        # planned upgrade rather than blocking every merge.
+        #
+        # A246 (2026-09-10): `npm audit` cannot accept a specific advisory,
+        # so the first critical with no non-breaking fix (two Next 14.x RCE
+        # advisories, only fix = Next 15) turned this gate red on every
+        # branch at once. scripts/npm_audit_gate.py runs the same audit
+        # (`npm audit --omit=dev --json`) at the same threshold and honours
+        # the explicit, expiring allowlist in frontend/npm-audit-allowlist.json:
+        # every suppression is printed, an expired entry stops suppressing,
+        # a stale entry fails the gate (the list only shrinks on its own).
+        run: python ../scripts/npm_audit_gate.py --allowlist npm-audit-allowlist.json
         working-directory: frontend
 
   # ─────────────────────────────────────────────────────────

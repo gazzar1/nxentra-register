@@ -1,0 +1,21 @@
+{
+  "_policy": "Advisories accepted by CI's npm audit gate (scripts/npm_audit_gate.py, job 'Security & Deploy Check'). Every entry needs id, package, reason, mitigation, expires (YYYY-MM-DD) and tracked_by. An expired entry stops suppressing; an entry whose advisory is no longer reported fails the gate until removed. Grow this list only with a reason and a mitigation a reviewer can verify from the repo.",
+  "allow": [
+    {
+      "id": "GHSA-2xp9-vwfh-vxw4",
+      "package": "next",
+      "reason": "Critical, published 2026-09-08: unauthenticated remote code execution in the Image Optimization API via libheif/sharp when an AVIF file is optimized. Affects every Next.js < 15.5.24; there is no 14.x patch and the only fix is the Next 15 major (E11).",
+      "mitigation": "The app uses no next/image, so next.config.js sets images.unoptimized=true (A246): Next answers /_next/image with a 404 before any parameter validation or sharp call. An nginx 404 for /_next/image on the deployed hosts is recommended in addition and needs no rebuild.",
+      "expires": "2026-11-30",
+      "tracked_by": "E11"
+    },
+    {
+      "id": "GHSA-p293-qw3h-jr36",
+      "package": "next",
+      "reason": "Critical, published 2026-09-08: unauthenticated remote code execution on Windows-hosted Next.js servers. Affects every Next.js < 15.5.24; there is no 14.x patch and the only fix is the Next 15 major (E11).",
+      "mitigation": "Nxentra is served from Linux only (the DigitalOcean droplet); Windows is used for development and never to serve the app.",
+      "expires": "2026-11-30",
+      "tracked_by": "E11"
+    }
+  ]
+}
