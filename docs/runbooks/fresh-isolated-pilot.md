@@ -1,10 +1,20 @@
 # Fresh isolated pilot — executable runbook
 
-**Status: PROCEDURE ONLY. This document has not been executed.** It defines
+**Status: PROCEDURE — partially rehearsed, nothing closed.** It defines
 how to take a reviewed revision from a clean deployment target to a
-supervised first-pilot environment and then prove G1 and G2. Writing it
-closes nothing: **G1 and G2 remain OPEN and merchant data remains blocked**
-until the live tracker
+supervised first-pilot environment and then prove G1 and G2. On the
+rehearsal deployment the §B–§G steps as they stood at runbook revision
+`0c1e2b1` were executed with evidence at `36b8de4` on 2026-09-05; the
+first §H–§I shakedown attempt there found a P1 that PR #145 fixed; the
+deployment was re-pinned to `968e486` on 2026-09-08 (a backend-only
+change: the §B1 pin, the §C fresh-database proof, F1/F3 ancestry and §G1f
+boot health were redone, and the §G1c bundle evidence was carried on
+recorded backend-only reasoning); §H1–§I3 then passed a non-evidence
+shakedown on a throwaway database — the §B re-pin rule working, not G1
+progress. The steps added since (§E5, §G1g, the amended §B1/§G1c/§G1f
+probes) have not been executed anywhere yet.
+Neither that rehearsal nor this document closes anything: **G1 and G2
+remain OPEN and merchant data remains blocked** until the live tracker
 ([constrained_pilot_status.md](../status/constrained_pilot_status.md))
 records their closure with evidence.
 
@@ -68,26 +78,57 @@ named evidence existing in the manifest.
 - [ ] **B1. Pin the revision.**
   - Command / action: on the deployment working copy —
     `git rev-parse HEAD` and `git rev-parse HEAD^{tree}` and
-    `git status --porcelain` (must be empty).
+    `git status --porcelain` (must be empty). **Re-run the porcelain
+    check after every §G1c frontend build:** `next build` (Next
+    14.2.35) rewrites the tracked `frontend/next-env.d.ts` (it
+    regenerates the file's documentation-URL comment), so a tree that
+    was clean at pin time is dirty after the build. A diff confined to
+    that one file is the build side-effect, not a modified deployment,
+    ONLY if `git diff frontend/next-env.d.ts` shows nothing but that
+    comment line changing: record that diff, restore the file (from the
+    repository root `git checkout -- frontend/next-env.d.ts`; from
+    `frontend/` `git checkout -- next-env.d.ts`), re-run the porcelain
+    check, and record both porcelain results (`revision/`) — the file is
+    a TypeScript declaration reference and does not enter the served
+    bundle. Any other change to that file, or any other dirt after the
+    build, is a STOP.
   - Expected result: HEAD is a commit on `main` that has a fully green CI
     run (all seven jobs including Quality Gate). **Minimum
-    application-code baseline:**
-    `2be1819e176399956ae509ec28a43729318d881a`
-    (code tree `c960e4774d387ab9d5d234bc6352c461e25aa3a3`; green main CI
-    run 33919019309, seven jobs) — the merge of the PR #143
-    nested-collection pagination fix, which contains the PR #139
-    refund-completeness correction (`3fc79de`), the PR #140
-    cancelled-order refund-recovery correction (`cd8bc9d`), and the
-    PR #141 store-sweep history guard (`ee003d5`). **No earlier
-    commit lacking PR #143 is eligible** for G1/G2: the previously
-    named `cd8bc9d` (PR #140 without PR #141/#143), `3fc79de` (PR #139
-    only) and `c4896ff3` (none of them) revisions predate the
-    nested-collection completeness fix and may no longer be used — no
-    verdict transfers from them. Because this runbook document itself
-    merges after that baseline, the exact revision selected at
-    execution must be a `main` commit containing PR #139, PR #140,
-    PR #141, PR #143 AND this merged runbook, with its own green
-    required CI; the operator records that exact selected SHA, and the runbook
+    application-code baseline (revision floor):**
+    `8a61e3659caaab7440c0192d37d58622d610c729`
+    (code tree `7e4f02a336d88e3a39999c29af27a2d02ff70f4d`; green main CI
+    run 34592317615, seven jobs) — the merge of PR #148 (A245), which
+    contains, in merge order: the PR #139 refund-completeness
+    correction (`3fc79de`), the PR #140 cancelled-order refund-recovery
+    correction (`cd8bc9d`), the PR #141 store-sweep history guard
+    (`ee003d5`), the PR #143 nested-collection pagination fix
+    (`2be1819`), the PR #142 NEXT_TASKS follow-up filing (`0a59880`,
+    docs only), this runbook's first merged revision (PR #138,
+    `0c1e2b1`), the PR #144 F3 dedicated webhook-throttle scope
+    (`36b8de4`), the PR #145 emit-boundary RLS-context restore
+    (`968e486` — the fix for the P1 the first rehearsal shakedown
+    found: `POST /api/auth/register/` 500 under a least-privilege
+    NOBYPASSRLS database role), the PR #147 npm-audit gate with its
+    explicit expiring allowlist plus `images.unoptimized` (`418173c`,
+    A246), the PR #146 stale-credential 401 hardening (`f5ad19e`,
+    A244) and the PR #148 login-time company switch through the
+    canonical writer (`8a61e36`, A245). **No earlier commit is
+    eligible** for G1/G2: the previously named floor `2be1819`
+    (PR #143), the rehearsal deployment's interim §B pins `36b8de4`
+    (PR #144) and `968e486` (PR #145) — and every commit before them —
+    predate at least one of these fixes and may no longer be used; no
+    verdict transfers from them. (The rehearsal deployment pinned at
+    `968e486` must be re-pinned to a revision at or after the floor —
+    a fresh §G1c frontend build AND a restart of every process from the
+    re-pinned checkout, so that §G1e's version proof holds for the
+    bundle and for the running Next server, which reads
+    `images.unoptimized` from `next.config.js` at start — and its §B–§G
+    evidence redone before its formal G1 window.) Because this runbook
+    document itself merges after that baseline, the exact revision
+    selected at execution must be a `main` commit that contains the
+    floor (`git merge-base --is-ancestor 8a61e3659caaab7440c0192d37d58622d610c729 <EXECUTED_SHA>` exits 0)
+    AND this merged runbook revision, with its own green required CI;
+    the operator records that exact selected SHA, and the runbook
     document revision is recorded separately from the deployed
     application revision. A later reviewed `main` revision with green
     required CI may be **selected here, before a new rehearsal begins**
@@ -97,6 +138,18 @@ named evidence existing in the manifest.
     verdict forward — green CI is a selection precondition, not an
     operational proof: the merchant cutover (§Q) must deploy the exact
     revision pack that passed the gates.
+    **Selection-time gate note (A246, PR #147):** the required
+    Security & Deploy Check runs `scripts/npm_audit_gate.py` against
+    `frontend/npm-audit-allowlist.json`, which accepts exactly two
+    Next 14.x critical advisories — GHSA-2xp9-vwfh-vxw4 (the Image
+    Optimization API RCE; mitigated by `images.unoptimized=true`, §G1c/
+    §G1g) and GHSA-p293-qw3h-jr36 (Windows-hosted servers only;
+    mitigated by Linux-only hosting) — each until **2026-11-30**,
+    tracked by E11 (the Next 15 upgrade). An expired entry stops
+    suppressing and turns the gate red by design; a revision whose
+    required CI is red for that reason is NOT eligible here — E11 (or a
+    fresh, narrow, dated allowlist decision) must land on `main` first.
+    Never select around a red gate.
   - Evidence to retain (`revision/`): commit SHA, tree SHA, CI run id and
     conclusion, deployment/image identifier, the frontend build origin
     and bundle digest (`FRONTEND_BUILD_ORIGIN` /
@@ -221,7 +274,12 @@ never values for secrets.
     `changeme` default); `FIELD_ENCRYPTION_KEY` set and valid (boot
     validates); `DATABASE_URL` pointing at the pilot database;
     `REDIS_URL`; `PROJECTIONS_SYNC=True` (boot refuses otherwise in
-    production — A162); `ALLOWED_HOSTS` for `<DEPLOYMENT_HOST>`;
+    production — A162); `ALLOWED_HOSTS` containing `<DEPLOYMENT_HOST>` — record the exact
+    value in `environment/` (not a secret) and whether it also lists a
+    loopback host (`127.0.0.1` / `localhost`): the §G1f bare-probe
+    status code depends on that entry, which is a recorded
+    deployment-posture decision, never something changed to make a
+    probe pass;
     `CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS` set to the real
     https origins (boot refuses wildcard/localhost values in production);
     `SHOPIFY_API_KEY`, `SHOPIFY_API_SECRET`, `SHOPIFY_APP_URL`;
@@ -271,6 +329,46 @@ never values for secrets.
   - STOP if: any warning or error remains, or a secret value appears in
     captured evidence (redact and re-capture before proceeding).
 
+- [ ] **E5. Database ROLE posture — RLS is enforced only for a
+  non-bypassing role.**
+  - Why: every RLS migration in the repository pairs `ENABLE ROW LEVEL
+    SECURITY` with `FORCE ROW LEVEL SECURITY`, so table ownership does
+    not bypass the tenant policies — but a PostgreSQL **superuser** or
+    a role with **BYPASSRLS** bypasses them entirely, whatever the
+    application sets. The PR #145 defect class (the emit boundary
+    RESET the caller's RLS session context, so `register_signup` could
+    not read back the membership row it had just projected —
+    `POST /api/auth/register/` 500) was invisible on SQLite (the RLS
+    session parameters are no-ops there), in CI (the Postgres
+    superuser) and on the legacy droplet (the cluster admin role); it
+    surfaced only on the first deployment that connected as a
+    least-privilege role. A bypassing application role therefore makes
+    G1 prove nothing about tenant isolation and hides this whole class.
+  - Command / action: connect as the application role named in
+    `DATABASE_URL` (the role the web, worker and beat processes use):
+    from `backend/` with the deployment `.env` in place,
+    `python manage.py dbshell` (it needs the `psql` client on the host;
+    otherwise `psql "$DATABASE_URL"` from the same environment). Record
+    names, booleans and counts only, never the password:
+    `SELECT current_user, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user;`
+    `SELECT count(*) FILTER (WHERE relrowsecurity) AS rls_tables, count(*) FILTER (WHERE relrowsecurity AND NOT relforcerowsecurity) AS not_forced FROM pg_class;`
+    `SELECT tableowner, count(*) AS tables FROM pg_tables WHERE schemaname = 'public' GROUP BY tableowner;`
+    (the application role owns the tables when it ran `migrate` — the
+    expected posture; FORCE keeps an owner subject to the policies, so
+    ownership is recorded, not refused). Confirm `RLS_BYPASS` is absent
+    (§E2): production settings then add no `-c app.rls_bypass=on`
+    connection option.
+  - Expected result: `rolsuper = false`, `rolbypassrls = false`,
+    `rls_tables > 0`, `not_forced = 0`, and the table owner(s) known.
+  - Evidence to retain (`environment/`): the role name, the two
+    booleans, the two counts and the owner listing, recorded as this
+    deployment's `DATABASE_ROLE_POSTURE`.
+  - STOP if: the application role is a superuser or has BYPASSRLS
+    (never grant either to "fix" a request that fails under the
+    least-privilege role — that failure is a code defect to report and
+    fix on `main`, as PR #145 was, followed by a §B re-pin), or any
+    RLS-enabled table is not FORCE'd.
+
 Sign-off: operator ______ date ______
 
 ---
@@ -315,23 +413,62 @@ dispositioned with evidence.** Writing them here does not complete them.
     HTTP proof (from outside the host: `/_health/alerts` answers;
     `/_health/full` and `/_metrics/` are refused) ______.
 
-- [ ] **F3. Shopify webhook-throttle decision.**
-  - Required outcome: either evidence that the first merchant's realistic
-    webhook burst plus retries fits safely within the configured policy,
-    or a dedicated HMAC-protected Shopify webhook throttle posture.
-  - Evidence field (`preflight/`): written decision, configuration, and
-    burst/retry proof ______.
+- [ ] **F3. Shopify webhook-throttle decision — CODE ARM ON RECORD,
+  EVIDENCE ARM PER DEPLOYMENT.**
+  - Required outcome: the Shopify-capable webhook ingress carries its
+    own throttle posture (no longer the shared anonymous bucket), and
+    evidence that the first merchant's realistic webhook burst plus
+    Shopify's retries fits safely within THIS deployment's EFFECTIVE
+    policy.
+  - Code arm on record: **PR #144** (merge `36b8de4371e6d95868a0b743a662b5e155b66227`).
+    `platform_connectors/throttles.py::PlatformWebhookThrottle`
+    (scope `platform_webhook`, default rate
+    `REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]["platform_webhook"] = "120/minute"`)
+    is the ONLY throttle class on BOTH §I4-enumerated Shopify-capable
+    webhook routes — `/api/shopify/webhooks[/]` and
+    `/api/platforms/<slug>/webhooks/`. The budget is per ident (DRF's
+    `AnonRateThrottle.get_ident` with `NUM_PROXIES` unset: the whole
+    `X-Forwarded-For` value when the proxy sends one, else
+    `REMOTE_ADDR`), charged in `APIView.initial()` BEFORE each view's
+    HMAC verification — the HMAC check stays the authenticity gate and
+    the throttle is a per-client budget for unauthenticated traffic.
+    An over-limit request gets DRF's 429 with `Retry-After`, a
+    retryable non-success (Shopify retries any non-2xx delivery up to
+    8 times over 4 hours), never a discarding 200. Regression tests:
+    `backend/tests/test_g1_f3_webhook_throttle.py`.
+  - Effective policy (founder disposition B, 2026-09-05): the throttle
+    counters live in DRF's default per-process `LocMemCache` (the
+    repository configures no `CACHES`), so the ceiling is the nominal
+    rate **× the number of web worker processes** — the §G1d command
+    runs gunicorn with `--workers 3`, so ≤ 360/minute per ident
+    effective — and the counters reset when a worker restarts. This is
+    loose in the availability direction and is DISCLOSED, not fixed: a
+    shared-cache bound is its own future task, never a rider on a G1
+    run.
+  - Evidence field (`preflight/`): (a) code arm — `git merge-base
+    --is-ancestor 36b8de4371e6d95868a0b743a662b5e155b66227 <EXECUTED_SHA>` exits 0 ______; (b) this
+    deployment's configured rate (the settings default unless
+    overridden — record which), web worker count, the resulting
+    effective ceiling, and the proxy's `X-Forwarded-For` posture (it
+    must SET the header to the connecting client's address, never
+    append or pass through a client-supplied value — otherwise the
+    ident is attacker-controllable) ______; (c) the written burst/retry
+    decision for THIS merchant against that effective ceiling ______.
 
 **Evidence scope — per deployment, not per revision.** F1 is a code
 property and travels with the revision: it is proven once by its fixing
 PR and regression test, and every later environment only confirms the
-executed revision contains that PR. **F2 and F3 do not transfer between
-environments:** F2 lives in each deployment's proxy/firewall, and F3
-depends on the specific merchant's expected webhook burst and retry
-volume. Synthetic-rehearsal evidence for F2/F3 therefore proves nothing
-about the real merchant deployment — §Q step 3 requires fresh F2/F3
-evidence on the merchant host, for that merchant, before the merchant
-company is activated.
+executed revision contains that PR. F3 has the same kind of code arm
+(PR #144, confirmed by ancestry) PLUS a per-deployment evidence arm.
+**F2 and the F3 evidence arm do not transfer between environments:** F2
+lives in each deployment's proxy/firewall, and F3's effective ceiling
+depends on each deployment's worker count and proxy posture and on the
+specific merchant's expected webhook burst and retry volume.
+Synthetic-rehearsal evidence for F2/F3 therefore proves nothing about
+the real merchant deployment — §Q step 3 requires fresh F2/F3 evidence
+on the merchant host, for that merchant, before the merchant company is
+activated. The §G1g `/_next/image` refusal follows the F2 shape (a proxy
+rule plus external and loopback probes, per deployment).
 
 STOP if: any of F1–F3 lacks its evidence at the moment activation (§I) is
 attempted — in the rehearsal environment for G1, and again, freshly, in
@@ -374,12 +511,24 @@ introduce infrastructure this repository does not use.
     correctly; never explain it away as dead code). Record the two
     grep results, `FRONTEND_BUILD_ORIGIN`, and a bundle digest
     (`FRONTEND_BUNDLE_DIGEST` — e.g. a SHA-256 over the `.next`
-    client build output together with `.next/BUILD_ID`).
+    client build output together with `.next/BUILD_ID`). Then re-run
+    the §B1 porcelain check: `next build` rewrites the tracked
+    `frontend/next-env.d.ts` (§B1 — record its diff, which must show
+    only the comment line; restore it — from `frontend/`:
+    `git checkout -- next-env.d.ts`; re-check; record both porcelain
+    results; any other change is a STOP).
   - Expected result: build succeeds; `.next/BUILD_ID` exists; the
     production API base URL is baked into the client bundle; the
-    localhost default is absent. A `GET /` returning 200 is NOT
-    evidence of the bundle's API origin — the page serves regardless
-    of which origin is compiled in.
+    localhost default is absent. Note that `images: { unoptimized: true }`
+    in `frontend/next.config.js` (A246, PR #147 — present in every
+    revision at or after the §B floor) is read by the Next server from
+    that file when `npm run start` launches it, not baked by this
+    build: the running server then answers `/_next/image` with 404
+    before any parameter validation or `sharp` call, and §G1g probes
+    the RUNNING process for it — so §G1d must start the frontend from
+    the pinned checkout, never serve a rebuilt bundle under an old
+    process. A `GET /` returning 200 is NOT evidence of the bundle's API origin
+    — the page serves regardless of which origin is compiled in.
   - STOP if: the built client bundle contains `localhost:8000`, or its
     compiled-in API base URL is anything other than the exact recorded
     `FRONTEND_BUILD_ORIGIN`. (This rule is about the API base URL
@@ -398,7 +547,7 @@ introduce infrastructure this repository does not use.
 
   | Service | Startup command (verified) | Health signal |
   |---|---|---|
-  | Web (Django) | `gunicorn nxentra_backend.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120` | `GET /_health/live` → 200; `GET /_health/ready` → 200 |
+  | Web (Django) | `gunicorn nxentra_backend.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120` | `GET /_health/live` → 200; `GET /_health/ready` → 200 (through the proxy, or on loopback with the `Host` + `X-Forwarded-Proto` headers — §G1f) |
   | Worker | `celery -A nxentra_backend worker -l INFO` | worker log shows ready; `/_health/alerts` not reporting missing consumers after first drain |
   | Beat | `celery -A nxentra_backend beat -l INFO --scheduler django_celery_beat.schedulers:DatabaseScheduler` | beat log ticking; scheduled tasks appear in worker log |
   | Broker | Redis reachable at `REDIS_URL` | `/_health/full` `redis` check |
@@ -415,13 +564,76 @@ introduce infrastructure this repository does not use.
 - [ ] **G1f. Boot health.**
   - Command / action: `curl` `/_health/live`, `/_health/ready`,
     `/_health/full` (internal path), and run
-    `python manage.py alert_check`.
-  - Expected result: live/ready 200; full reports `healthy` (503 with any
-    failing check names otherwise); `alert_check` prints the aggregate
-    state and exits 0.
-  - Evidence to retain (`environment/`): the four outputs.
+    `python manage.py alert_check`. **Probe the backend on loopback the
+    way the proxy does — send BOTH headers the proxy sets.** Production
+    settings enforce `SECURE_SSL_REDIRECT = True` with
+    `SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")`, and
+    Django validates every request's `Host` against `ALLOWED_HOSTS` (in
+    `SecurityMiddleware` before it builds the redirect target, and again
+    in `CommonMiddleware`). A bare
+    `curl http://127.0.0.1:<port>/_health/live` (curl sends
+    `Host: 127.0.0.1:<port>`) therefore answers **301** (the redirect to
+    https) when a loopback host is in this deployment's `ALLOWED_HOSTS`
+    (§E3 record) and **400** (`DisallowedHost`) when it is not — either
+    way the transport/host posture working, not an unhealthy service,
+    and not the expected 200. The faithful loopback probe sends the
+    `Host` the proxy forwards and the proto header:
+    `curl -s -o /dev/null -w "%{http_code}\n" -H "Host: <DEPLOYMENT_HOST>" -H "X-Forwarded-Proto: https" http://127.0.0.1:<port>/_health/live`
+    (same for `ready`; for `full` keep the body — `-o full.json` instead
+    of `-o /dev/null` — because the failing check names live in it;
+    `/_health/full` is externally refused by §F2, so it is probed here
+    on loopback only). A 400 with both headers means `<DEPLOYMENT_HOST>`
+    is not in `ALLOWED_HOSTS` — fix the §E3 value, never the probe.
+  - Expected result: the bare probe 301 or 400, never 200; live/ready
+    200 with both headers; full reports `healthy` (503 with any failing
+    check names otherwise); `alert_check` prints the aggregate state
+    and exits 0.
+  - Evidence to retain (`environment/`): the four outputs (the `full`
+    body included) plus the bare-probe status code, beside the §E3
+    `ALLOWED_HOSTS` record that explains it.
   - STOP if: full health or `alert_check` is unhealthy at boot on an empty
-    database — that indicates a mis-set environment, not merchant data.
+    database — that indicates a mis-set environment, not merchant data;
+    the bare loopback probe answers 200 (the §E transport posture is not
+    in force); or the two-header probe answers anything but 200.
+- [ ] **G1g. Image-optimizer route refusal at the proxy (per
+  deployment, F2 shape).**
+  - Why: GHSA-2xp9-vwfh-vxw4 (critical, published 2026-09-08) is an
+    unauthenticated remote code execution in Next.js's Image
+    Optimization API (`/_next/image`) via `libheif`/`sharp` when an
+    AVIF is optimized; no Next 14.x patch exists (E11 tracks the Next
+    15 upgrade; the CI allowlist entry expires 2026-11-30, §B1). The
+    application uses no `next/image`, so the route served nothing but
+    attack surface: every revision at or after the §B floor carries
+    `images: { unoptimized: true }` in `frontend/next.config.js`
+    (A246), which the Next server reads when it starts and then
+    answers the route with 404 before any parameter validation or
+    `sharp` call. The deployment's reverse proxy additionally
+    refuses the route — defense in depth that needs no rebuild — and,
+    exactly like §F2, that rule lives in the deployment (the
+    repository ships no proxy configuration) and must be proven, not
+    assumed.
+  - Command / action: add a proxy rule answering `/_next/image` with
+    404 (nginx: `location = /_next/image { return 404; }` above the
+    frontend `location /` in the SERVED https server block), test and
+    reload the proxy, then run three probes: from OUTSIDE the host
+    `curl -s -o /dev/null -w "%{http_code}\n" "https://<DEPLOYMENT_HOST>/_next/image?url=%2Ffavicon-32x32.png&w=32&q=75"`;
+    on the host against the frontend process directly (bypassing the
+    proxy) the same path on `http://127.0.0.1:<frontend port>`; and the
+    serving control
+    `curl -s -o /dev/null -w "%{http_code}\n" https://<DEPLOYMENT_HOST>/login`.
+  - Expected result: 404 from both image probes — the proxy's rule
+    externally, and on loopback the RUNNING Next server's own
+    `unoptimized` refusal (it reads `next.config.js` at start) — and
+    200 from the control. A 200 image response on the loopback probe
+    means the running frontend process was started from a checkout
+    without `images.unoptimized` (a pre-floor working copy, or a
+    process not restarted after the re-pin) — a §G1e version-proof
+    failure for the frontend service; a 404 there says nothing about
+    the bundle, which §G1c/§G1e prove separately.
+  - Evidence to retain (`environment/`): the proxy rule, the proxy
+    config-test output, the three probe codes ______.
+  - STOP if: either image probe returns anything other than 404, or the
+    control returns anything other than 200.
 
 Sign-off: operator ______ date ______
 
@@ -469,7 +681,18 @@ same provisioning withholds those mappings.
   - Expected result: fiscal structure exists (`num_periods` NORMAL
     periods plus one framework ADJUSTMENT period; preflight requires the
     January start and 12/13 periods); the chosen chart of accounts
-    exists; `onboarding_completed` is true; **no** `ShopifyStore` exists;
+    exists; `onboarding_completed` is true;
+    `FiscalPeriodConfig.current_period` equals the submitted
+    `current_period` while **every `FiscalPeriod.is_current` flag is
+    false** — `complete_onboarding` records the current period on the
+    config row only (its `_create_periods` never sets the per-period
+    flag); that flag is written solely by the `set_current_period`
+    command's `FISCAL_PERIOD_CURRENT_SET` event, a
+    `CURRENCY_FISCAL_CHANGE`-gated door under the active pilot. This is
+    an observation, not a defect and not a STOP: preflight does not
+    read `is_current`; do not add a `set_current_period` call to the
+    bootstrap sequence to "repair" it (the sequence the 2026-09-08
+    shakedown validated has none); **no** `ShopifyStore` exists;
     **no** `Item` with `item_type=INVENTORY` exists; **no**
     `shopify_connector` mapping with role INVENTORY or COGS exists; no
     unsupported optional module is enabled.
@@ -2116,7 +2339,9 @@ after G1 and G2 are recorded complete in the
    with THIS deployment's `NEXT_PUBLIC_API_URL`); deployment, service
    startup, version proof and boot health (§G — including the §G1c
    frontend build from `GATE_TESTED_COMMIT_SHA` with THIS deployment's
-   origin and its built-artifact verification, per step 1); **the §F
+   origin and its built-artifact verification, per step 1, and the
+   §G1g `/_next/image` refusal probed externally on the merchant host);
+   **the §F
    blockers with FRESH evidence for THIS
    deployment and THIS merchant** — F1 confirmed by verifying that
    `GATE_TESTED_COMMIT_SHA` contains the fixing PR recorded in the G1
@@ -2125,8 +2350,11 @@ after G1 and G2 are recorded complete in the
    reverse-proxy/config test AND an external HTTP probe from outside
    the merchant host (`/_health/alerts` answers; `/_health/full` and
    `/_metrics/` are refused) — and F3 decided and proven for the real
-   merchant's expected webhook burst and retry volume —
-   synthetic-rehearsal F2/F3 evidence does NOT transfer, and step 4's
+   merchant's expected webhook burst and retry volume against the
+   merchant deployment's EFFECTIVE ceiling (rate × web workers, proxy
+   ident posture — §F3 evidence arm; the code arm re-confirmed by
+   ancestry) — synthetic-rehearsal F2/F3 evidence does NOT transfer,
+   and step 4's
    intake hold verifies neither; base onboarding (§H); activation-aware
    validation (§I1); pilot activation (§I2) — **never before the fresh
    F1–F3 evidence exists for this deployment**; pilot-aware Shopify
