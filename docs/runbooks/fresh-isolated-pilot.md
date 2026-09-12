@@ -11,8 +11,26 @@ change: the §B1 pin, the §C fresh-database proof, F1/F3 ancestry and §G1f
 boot health were redone, and the §G1c bundle evidence was carried on
 recorded backend-only reasoning); §H1–§I3 then passed a non-evidence
 shakedown on a throwaway database — the §B re-pin rule working, not G1
-progress. The steps added since (§E5, §G1g, the amended §B1/§G1c/§G1f
-probes) have not been executed anywhere yet.
+progress. On 2026-09-11 the deployment was re-pinned to `d9c94c6` (the
+PR #149 merge: the `8a61e36` floor plus the runbook revision that added
+§E5, §G1g and the amended §B1/§G1c/§G1f probes) with a fresh §G1c build,
+a restart of every process from the re-pinned checkout, and the §B–§G
+evidence redone — §E5, §G1g and the amended probes included; the §B1 pin
+record's hosting-region field remains to be filled — the pilot database
+untouched, §H onward not re-run; the §L1 external monitor was put in
+place the same day (a deployment property, not G1 evidence). The Shopify
+app-identity precondition this revision adds to §E3 (a dedicated app
+whose webhook, compliance, redirect and app URLs point at the deployment
+host; `NEXT_PUBLIC_SHOPIFY_API_KEY` set at build) has NOT been executed on any
+deployment yet: the dedicated rehearsal app itself exists (created, and
+its version released, 2026-09-12), but at this revision the rehearsal
+deployment still carried the published app's client id and the scope
+default; whether the switch is done on the current pin first or
+folded into the §B re-pin that this document's own merge requires, that
+re-pin repeats §B1 in full — a fresh §G1c build, every process
+restarted, the §B–§G evidence redone — with the new §E3 app-identity
+record and the §G1c client-id verification as added content, and no
+pre-merge switch evidence transfers.
 Neither that rehearsal nor this document closes anything: **G1 and G2
 remain OPEN and merchant data remains blocked** until the live tracker
 ([constrained_pilot_status.md](../status/constrained_pilot_status.md))
@@ -117,13 +135,15 @@ named evidence existing in the manifest.
     (PR #143), the rehearsal deployment's interim §B pins `36b8de4`
     (PR #144) and `968e486` (PR #145) — and every commit before them —
     predate at least one of these fixes and may no longer be used; no
-    verdict transfers from them. (The rehearsal deployment pinned at
-    `968e486` must be re-pinned to a revision at or after the floor —
-    a fresh §G1c frontend build AND a restart of every process from the
-    re-pinned checkout, so that §G1e's version proof holds for the
-    bundle and for the running Next server, which reads
-    `images.unoptimized` from `next.config.js` at start — and its §B–§G
-    evidence redone before its formal G1 window.) Because this runbook
+    verdict transfers from them. (The rehearsal deployment, pinned at
+    `968e486` until 2026-09-11, was re-pinned that day to `d9c94c6` —
+    the PR #149 merge, at or after the floor — with a fresh §G1c
+    frontend build AND a restart of every process from the re-pinned
+    checkout, so that §G1e's version proof holds for the bundle and for
+    the running Next server, which reads `images.unoptimized` from
+    `next.config.js` at start, and its §B–§G evidence redone. Every
+    later re-pin — including the one this document's own merge
+    requires under the rule below — repeats exactly that.) Because this runbook
     document itself merges after that baseline, the exact revision
     selected at execution must be a `main` commit that contains the
     floor (`git merge-base --is-ancestor 8a61e3659caaab7440c0192d37d58622d610c729 <EXECUTED_SHA>` exits 0)
@@ -151,10 +171,12 @@ named evidence existing in the manifest.
     fresh, narrow, dated allowlist decision) must land on `main` first.
     Never select around a red gate.
   - Evidence to retain (`revision/`): commit SHA, tree SHA, CI run id and
-    conclusion, deployment/image identifier, the frontend build origin
-    and bundle digest (`FRONTEND_BUILD_ORIGIN` /
-    `FRONTEND_BUNDLE_DIGEST` — recorded when §G1c builds; the API
-    origin is compiled into the frontend bundle, §E3), deployment
+    conclusion, deployment/image identifier, the frontend build origin,
+    Shopify client id and bundle digest (`FRONTEND_BUILD_ORIGIN` /
+    `FRONTEND_BUILD_SHOPIFY_CLIENT_ID` / `FRONTEND_BUNDLE_DIGEST` —
+    recorded when §G1c builds; the API origin is compiled into the
+    client bundle and the Shopify app client id into the server build,
+    §E3), deployment
     timestamp, operator,
     database identifier (host/name only — no credentials), hosting region,
     and this runbook's revision (the SHA that the §I definition names
@@ -282,7 +304,10 @@ never values for secrets.
     probe pass;
     `CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS` set to the real
     https origins (boot refuses wildcard/localhost values in production);
-    `SHOPIFY_API_KEY`, `SHOPIFY_API_SECRET`, `SHOPIFY_APP_URL`;
+    `SHOPIFY_API_KEY`, `SHOPIFY_API_SECRET`, `SHOPIFY_APP_URL` and
+    `SHOPIFY_SCOPES` (with the build-time `NEXT_PUBLIC_SHOPIFY_API_KEY`
+    below, the five values the app-identity rule below binds to ONE
+    Shopify app);
     `SENTRY_DSN`; email settings as chosen. Optional tunables with
     defaults: `ALERT_UNRESOLVED_FAILURES_MAX` (0),
     `ALERT_PROJECTION_LAG_THRESHOLD` (50),
@@ -292,7 +317,11 @@ never values for secrets.
     worker's INFO-level `[A52] _sync_orders start` line and the Celery
     task lines).
   - **Frontend BUILD-time variables** — these are compiled into the
-    browser bundle by `npm run build`, not read at runtime, so they
+    build output by `npm run build` (the client bundle under
+    `.next/static/`, or, for `_document.tsx`, the server-rendered
+    document under `.next/server/`) — inlined at build; a variable
+    absent at build is not recovered from the runtime environment by
+    the client bundle or by any prerendered page — so they
     must be present and recorded BEFORE the §G1c build runs (names and
     non-secret values):
     - `NEXT_PUBLIC_API_URL` — REQUIRED: this deployment's production
@@ -310,16 +339,134 @@ never values for secrets.
       frontend artifact rule to.
     - `NEXT_PUBLIC_ENABLE_EXCHANGED_TOKEN_FALLBACK` — record its
       presence/boolean posture (absent = disabled).
-    - `NEXT_PUBLIC_SHOPIFY_API_KEY` — record which value the build
-      used: with it absent, `frontend/pages/_document.tsx` falls back
-      to the published app's hardcoded public client id (a public
-      identifier, not a secret).
+    - `NEXT_PUBLIC_SHOPIFY_API_KEY` — REQUIRED for every deployment
+      (never rely on the `_document.tsx` fallback, even where its value
+      would equal the published id), recorded as this deployment's
+      `FRONTEND_BUILD_SHOPIFY_CLIENT_ID`: `frontend/pages/_document.tsx`
+      compiles it into the `shopify-api-key` meta tag that App Bridge
+      is configured from; with it absent the build still SUCCEEDS and
+      the fallback survives: the PUBLISHED app's public client id
+      (`2258d6303a3672a381fe7606c2d2917b` — a public identifier, not a
+      secret) is rendered into every prerendered `.html`, and
+      `pages/_document.js` keeps the un-inlined `||` fallback (Next
+      inlines only `NEXT_PUBLIC_` variables present at build), so
+      inside any OTHER app's admin surface App Bridge
+      would be configured with the wrong client id and the embedded
+      path could not pass I6/J0 — at App Bridge initialization, or at
+      the backend, which accepts only session tokens whose `aud` equals
+      `SHOPIFY_API_KEY` (`verify_shopify_session_token`; the
+      app-identity rule below). Its value must equal the backend
+      `SHOPIFY_API_KEY`; §G1c verifies the built artifact.
     - `NEXT_PUBLIC_SENTRY_DSN` — optional; enables the frontend
       Sentry build path (record presence only, never the value).
+  - **Shopify app identity — a dedicated app per deployment host is a
+    PRECONDITION, not a convenience.** Shopify webhook subscriptions,
+    the privacy-compliance URLs, the OAuth redirect URL and the
+    application URL are declared APP-WIDE in the app's configuration
+    file (`shopify.app.toml` for the published app: one fixed
+    `[[webhooks.subscriptions]]` `uri`, `[webhooks.privacy_compliance]`,
+    `[auth] redirect_urls`, `application_url`) and released as an app
+    VERSION by `shopify app deploy`; the application registers no
+    per-store webhooks (A51 removed `register_webhooks` — declarative
+    subscriptions only). A store installed on the PUBLISHED app
+    (`Nxentra Sync`, client id `2258d630…`, every URL on
+    `https://app.nxentra.com`) therefore delivers EVERY webhook to the
+    live host and none to this deployment — the §I15 retry
+    reconciliation and the §J webhook proofs cannot run, and the §I4
+    hold's webhook block has nothing real to hold back (its worker and
+    beat arms still hold the OAuth-triggered initial sync) — and adding
+    a second subscription URI to the
+    published app would mirror every REAL merchant's webhooks to this
+    host, which is forbidden. Consequently the app that the §I5 store
+    installs must be an app whose `application_url`, redirect URL,
+    subscription `uri` and compliance URLs ALL point at
+    `<DEPLOYMENT_HOST>`. For the rehearsal that is the dedicated app
+    **`Nxentra Sync REHEARSAL`** (client id
+    `c2d69bb5f3c53a213faaa9936d33585d`, configured by the founder-held
+    `shopify.app.rehearsal.toml` — the same shape as the tracked
+    `shopify.app.toml` with every URL on the rehearsal host and
+    `read_all_orders` removed; public identifiers only, no `[build]`
+    table; not tracked at this revision — and released with
+    `shopify app deploy --config rehearsal`, which never touches the
+    published app; its protected-customer-data access is the
+    unreviewed development-store posture (reasons recorded, no review
+    submitted), and — as a rule of this runbook, not a Shopify
+    enforcement — it is installed on nothing but the §I5 synthetic
+    development store). The published app's configuration is never
+    changed for a rehearsal purpose. Five deployment values are bound
+    to that ONE app and must agree with each other and with the app's
+    ACTIVE version:
+    `SHOPIFY_API_KEY` — the app's client id: the OAuth `client_id`,
+    and the `audience` that `verify_shopify_session_token` requires
+    on every App Bridge session token the backend accepts;
+    `SHOPIFY_API_SECRET` — that app's client secret: the OAuth token
+    exchange, the webhook HMAC check and the session-token signature
+    all depend on it;
+    `SHOPIFY_APP_URL` — `https://<DEPLOYMENT_HOST>` exactly: the
+    standalone OAuth path builds the `redirect_uri` it sends to
+    Shopify as `<SHOPIFY_APP_URL>/api/shopify/callback/`
+    (`shopify_connector/commands.py`), which must be an entry in the
+    app's `[auth] redirect_urls`;
+    `NEXT_PUBLIC_SHOPIFY_API_KEY` — the same client id, compiled into
+    the build at §G1c (above);
+    `SHOPIFY_SCOPES` — the scope set the app's active version declares
+    (scope strings are compared as SETS of scope names — comma-split,
+    order-insensitive — and recorded raw). Set it explicitly; never
+    rely on the settings default, which INCLUDES `read_all_orders`, a
+    scope the rehearsal app does not carry. The OAuth authorize URL
+    sends this string and the string Shopify grants is stored on
+    `ShopifyStore.scopes` at §I5. Without `read_all_orders`: the
+    onboarding historical import — which §I3 never requests — clamps
+    itself to a 59-day floor, and the initial-sync legs, unclamped by
+    code, can read only the orders Shopify exposes to `read_orders`
+    alone (the last 60 days — A126), so the §I definition's any-age
+    parent reach on the B leg is NOT exercisable on the rehearsal app.
+    That is a declared rehearsal/merchant scope difference — moot for a
+    freshly created development store, which holds no older order;
+    recorded in `environment/` and in the tracker — and a §Q step-3
+    requirement, not a choice: for a real merchant the chosen app's
+    ACTIVE version must carry `read_all_orders` — the §I definition's
+    any-age parent reach is a GO requirement (§O; §Q step 11), so a
+    merchant app whose active version lacks it cannot execute the
+    contract the GO must authorize: a STOP at §Q step 3 (its intake
+    would differ from the authorized contract), closed only by the
+    per-app approval released in a NEW active version and this record
+    redone against it; a missing scope is never a bound, and the
+    step-11 disposition (a code-level intake-selection control)
+    applies only where the founder or merchant does not want the
+    reach — and its protected-customer-data access must be approved
+    for non-development stores; both are per-app Shopify approvals
+    that a dedicated app does not inherit from the published app, and
+    the rehearsal app's unreviewed development-store posture proves
+    nothing about either.
+  - Evidence to retain (`environment/`, all public identifiers): the
+    app name, client id and Partner/Dev Dashboard app id, the ACTIVE
+    version name, `application_url`, the redirect URL and this
+    deployment's `SHOPIFY_APP_URL`, the subscription `uri`, the
+    compliance URLs, both scope strings raw — this deployment's
+    `SHOPIFY_SCOPES` and the active version's declared list — with the
+    set-comparison result (the granted string is recorded at §I5), the
+    webhook API version, and the frontend build's client id
+    (`FRONTEND_BUILD_SHOPIFY_CLIENT_ID`); for the rehearsal, also the
+    PUBLISHED app's ACTIVE version name and release date as shown in
+    the Dev Dashboard — expected unchanged from the pre-rehearsal
+    value (`nxentra-sync-9`, released 2026-06-19, every URL on
+    `https://app.nxentra.com`) — so the last STOP below is decided
+    from the record; the secret by presence only, never its value.
   - STOP if: a required value is missing; the process would start
-    against the wrong database; or `NEXT_PUBLIC_API_URL` is absent,
+    against the wrong database; `NEXT_PUBLIC_API_URL` is absent,
     non-https, missing its `/api` path, or not this deployment's real
-    API base URL at the moment the frontend build runs.
+    API base URL at the moment the frontend build runs;
+    `NEXT_PUBLIC_SHOPIFY_API_KEY` is absent at that moment; any of the
+    app's `application_url`, redirect, subscription or compliance URLs
+    is on another host; `SHOPIFY_APP_URL` is not
+    `https://<DEPLOYMENT_HOST>`, or `<SHOPIFY_APP_URL>/api/shopify/callback/`
+    is not in the active version's redirect URLs; `SHOPIFY_API_KEY`,
+    `NEXT_PUBLIC_SHOPIFY_API_KEY` and the recorded app client id are
+    not one and the same value; the rehearsal deployment carries the
+    published app's client id; `SHOPIFY_SCOPES` names a different
+    scope set than the active version; or the published app's
+    configuration was changed for a rehearsal purpose.
 
 - [ ] **E4. Deploy check.**
   - Command / action: `python manage.py check --deploy --fail-level WARNING`
@@ -494,12 +641,13 @@ introduce infrastructure this repository does not use.
   - Command / action: `python manage.py migrate` (then the C1 permission
     seeding if not already run).
   - Expected result: clean apply against the pilot database.
-- [ ] **G1c. Frontend build — with the recorded build origin, verified
-  in the built artifact.**
+- [ ] **G1c. Frontend build — with the recorded build origin AND
+  Shopify client id, verified in the built artifact.**
   - Command / action: from `frontend/`: `npm ci` then, with the §E3
     frontend build-time variables in place (`NEXT_PUBLIC_API_URL` =
     this deployment's production https API base URL including the
-    `/api` path), `npm run build`.
+    `/api` path; `NEXT_PUBLIC_SHOPIFY_API_KEY` = this deployment's
+    `FRONTEND_BUILD_SHOPIFY_CLIENT_ID`), `npm run build`.
     Then verify the ARTIFACT, not the build process: the served client
     bundle (`.next/static/`) must contain the EXACT recorded
     `FRONTEND_BUILD_ORIGIN` value and
@@ -508,10 +656,36 @@ introduce infrastructure this repository does not use.
     `grep -rl "localhost:8000" .next/static/` finds none — a correct
     production build constant-folds the unset-variable fallback away,
     so any surviving `localhost:8000` means the origin was NOT baked
-    correctly; never explain it away as dead code). Record the two
-    grep results, `FRONTEND_BUILD_ORIGIN`, and a bundle digest
-    (`FRONTEND_BUNDLE_DIGEST` — e.g. a SHA-256 over the `.next`
-    client build output together with `.next/BUILD_ID`). Then re-run
+    correctly; never explain it away as dead code). Verify the Shopify
+    client id the same way — it is compiled into the SERVER build, not
+    the client bundle: Next compiles `frontend/pages/_document.tsx`
+    into `pages/_document.js`, duplicates that module into some page
+    and shared chunks, and renders its `shopify-api-key` meta tag into
+    every prerendered `.html` under `.next/server/pages/`, so with
+    `NEXT_PUBLIC_SHOPIFY_API_KEY` set (§E3 — required)
+    `grep -rl "<FRONTEND_BUILD_SHOPIFY_CLIENT_ID>" .next/server/` lists
+    MANY files (a Next 14.2.35 build of this revision: 30 — 18 `.html`,
+    `pages/_document.js`, 11 other chunks) — record the count and
+    confirm `pages/_document.js` is among them; a grep over
+    `.next/server/` for any OTHER Shopify client id this repository
+    knows (the published app's `2258d6303a3672a381fe7606c2d2917b` on a
+    deployment whose app is not the published app; the rehearsal app's
+    id on any other deployment) finds nothing — the same
+    constant-folding rule: another known id surviving means the
+    variable was absent, or carried that other id, at build time,
+    and either is the STOP below (the greps are scoped to
+    `.next/server/` and `.next/static/` on purpose — the webpack cache
+    under `.next/cache/` keeps the source literal and is not part of
+    the served build); and record whether the
+    id also appears under `.next/static/` (at this revision only
+    `_document.tsx` references the variable, so it should not — an
+    appearance is a recorded observation, not a STOP; the server-build
+    rule is the gate). Record the grep results, `FRONTEND_BUILD_ORIGIN`,
+    `FRONTEND_BUILD_SHOPIFY_CLIENT_ID`, and a build digest
+    (`FRONTEND_BUNDLE_DIGEST` — e.g. a SHA-256 over the `.next/static/`
+    and `.next/server/` build output together with `.next/BUILD_ID`,
+    so that the digest covers the server build that carries the client
+    id as well as the client bundle that carries the origin). Then re-run
     the §B1 porcelain check: `next build` rewrites the tracked
     `frontend/next-env.d.ts` (§B1 — record its diff, which must show
     only the comment line; restore it — from `frontend/`:
@@ -519,7 +693,11 @@ introduce infrastructure this repository does not use.
     results; any other change is a STOP).
   - Expected result: build succeeds; `.next/BUILD_ID` exists; the
     production API base URL is baked into the client bundle; the
-    localhost default is absent. Note that `images: { unoptimized: true }`
+    localhost default is absent; the server build carries exactly the
+    recorded `FRONTEND_BUILD_SHOPIFY_CLIENT_ID` (`pages/_document.js`
+    included; no other KNOWN client id — the published app's, or the
+    rehearsal app's on any other deployment — anywhere under
+    `.next/server/`). Note that `images: { unoptimized: true }`
     in `frontend/next.config.js` (A246, PR #147 — present in every
     revision at or after the §B floor) is read by the Next server from
     that file when `npm run start` launches it, not baked by this
@@ -531,7 +709,9 @@ introduce infrastructure this repository does not use.
     — the page serves regardless of which origin is compiled in.
   - STOP if: the built client bundle contains `localhost:8000`, or its
     compiled-in API base URL is anything other than the exact recorded
-    `FRONTEND_BUILD_ORIGIN`. (This rule is about the API base URL
+    `FRONTEND_BUILD_ORIGIN`; or any file under `.next/server/` carries
+    another known Shopify client id, or `pages/_document.js` lacks the
+    recorded `FRONTEND_BUILD_SHOPIFY_CLIENT_ID`. (The origin rule is about the API base URL
     only: third-party origins — the Sentry ingest host when
     `NEXT_PUBLIC_SENTRY_DSN` is set, CDN and font hosts — legitimately
     appear in the bundle and are not violations.)
@@ -824,7 +1004,10 @@ pre-activation check:
     candidate, cancelled or not, booked with its complete parent order
     and complete refund history regardless of age — plus products and
     payouts; declarative Shopify
-    webhooks can also begin delivering immediately after connection.
+    webhooks (subscribed app-wide by the app version the §E3 record
+    names — they reach THIS host only because that app's subscription
+    URI points at it) can also begin delivering immediately after
+    connection.
     Store connection is therefore NOT inert — ingestion must be held
     until deliberately released. (`import_mode="skip"` suppresses only
     the onboarding historical-import request; it does NOT suppress the
@@ -863,7 +1046,17 @@ pre-activation check:
   - Command / action: initiate the connection through the **top-level
     standalone Nxentra OAuth path**: `/shopify/settings` →
     `POST /api/shopify/install/` → complete OAuth for
-    `<SYNTHETIC_DEV_SHOP_DOMAIN>`. Do **not** use the embedded
+    `<SYNTHETIC_DEV_SHOP_DOMAIN>` — on the app the §E3 record names
+    (for the rehearsal, the dedicated `Nxentra Sync REHEARSAL` app;
+    never the published app, whose webhooks would go to the live host
+    and never arrive here). The development store is created in the
+    same Partner organization with an obviously synthetic name, seeded
+    only with Shopify's generated test data — nothing copied from any
+    merchant; the synthetic orders and refunds the §I13/§J cases need
+    are created in that store later; its `.myshopify.com` domain is
+    PRIVATE evidence (§P — never in attachable evidence, never in Git,
+    and never written into any Shopify CLI configuration file, tracked
+    or founder-held, as `[build] dev_store_url`). Do **not** use the embedded
     token-exchange installation path for this step — it automatically
     creates a `ShopifyUserBinding` when it holds a Shopify `sub`, which
     would make the required unbound-state proof impossible. The store
@@ -873,7 +1066,11 @@ pre-activation check:
     App Bridge/session-token behavior, signed webhook delivery, and API
     synchronization.
   - Expected result: exactly one ACTIVE synthetic Shopify development
-    store exists. **No active `ShopifyUserBinding` exists yet** for the
+    store exists, installed on the §E3 app, and its stored
+    `ShopifyStore.scopes` names exactly the §E3 scope set
+    (comma-split, order-insensitive; for the rehearsal:
+    `read_all_orders` absent) — record the raw string.
+    **No active `ShopifyUserBinding` exists yet** for the
     synthetic Shopify user and store — this is deliberate: the
     immediately following I6/J0 ceremony must first prove the
     fail-closed `not_bound` state and then create the canonical binding.
@@ -899,8 +1096,12 @@ pre-activation check:
     store was connected through a path that bypasses the intended
     unbound state; more than one ACTIVE store exists; the domain is the
     first merchant's live store; the store contains real merchant
-    catalog, customers, orders, or financial history; or data was copied
-    from the merchant merely to make the test realistic.
+    catalog, customers, orders, or financial history; data was copied
+    from the merchant merely to make the test realistic; the store was
+    installed on the published app, or on any app whose webhook
+    subscription, compliance, redirect or application URLs are not on
+    `<DEPLOYMENT_HOST>` (§E3);
+    or the granted scope set differs from the §E3 record.
 - [ ] **I6 / J0. A1 live Shopify embedded-authentication proof —
   independently signed; executed HERE, before product sync and before
   go-live preflight.** This is the named J0 criterion of the G1 matrix
@@ -1635,7 +1836,9 @@ One controlled, current-head rehearsal using **synthetic data generated
 solely for the rehearsal environment** — merchant approval does not
 convert real merchant data into non-merchant data. The Shopify test cases
 must run through the real deployed Shopify integration using the synthetic
-development store, not merely direct fake command calls; settlement and
+development store installed on the deployment's own app (§E3 — so that
+signed webhook deliveries actually reach this host), not merely direct
+fake command calls; settlement and
 bank files must also be synthetic and contain no real merchant identifiers
 or amounts. Where the supported workflow is user-facing,
 run it through the real deployed application surfaces (frontend pages and
@@ -2080,6 +2283,7 @@ result itself must reproduce the control pack.
   GATE_TESTED_MIGRATION_MANIFEST
   GATE_TESTED_FRONTEND_BUNDLE_DIGEST
   FRONTEND_BUILD_ORIGIN
+  FRONTEND_BUILD_SHOPIFY_CLIENT_ID
   G1_EVIDENCE_MANIFEST_HASH
   G2_EVIDENCE_MANIFEST_HASH
   G2_BACKUP_HASH
@@ -2090,13 +2294,17 @@ result itself must reproduce the control pack.
   **The artifact rule is SPLIT between the two artifacts.** The backend
   image/artifact digest is portable: the merchant deployment must run
   exactly `GATE_TESTED_IMAGE_OR_ARTIFACT_DIGEST`. The frontend bundle
-  is NOT portable: its API origin is compiled in at build time
-  (§E3/§G1c), so `GATE_TESTED_FRONTEND_BUNDLE_DIGEST` +
-  `FRONTEND_BUILD_ORIGIN` prove what the REHEARSAL environment built
-  and served — a deployment with a different origin must REBUILD the
-  frontend from exactly `GATE_TESTED_COMMIT_SHA` with its own recorded
-  origin and verify it per §G1c (§Q step 1). A frontend bundle built
-  with another environment's origin must never serve.
+  is NOT portable: its API origin AND its Shopify app client id are
+  compiled in at build time (§E3/§G1c), so
+  `GATE_TESTED_FRONTEND_BUNDLE_DIGEST` + `FRONTEND_BUILD_ORIGIN` +
+  `FRONTEND_BUILD_SHOPIFY_CLIENT_ID` prove what the REHEARSAL
+  environment built and served — a deployment with a different origin
+  or a different app must REBUILD the frontend from exactly
+  `GATE_TESTED_COMMIT_SHA` with its own recorded origin and client id
+  and verify it per §G1c (§Q step 1). A frontend bundle built with
+  another environment's origin or app must never serve on any other
+  deployment — the rehearsal-built bundle, carrying the rehearsal
+  app's id, on the merchant deployment included.
 
 STOP if: any control differs, or the restore requires manual database
 repair of any kind.
@@ -2115,6 +2323,12 @@ Sign-off: operator ______ date ______
   `localhost:8000` build default, or a bundle built for another
   environment (e.g. the rehearsal-built bundle carried into the
   merchant deployment);
+- a frontend bundle whose compiled-in Shopify client id is not the
+  serving deployment's recorded `FRONTEND_BUILD_SHOPIFY_CLIENT_ID`,
+  or a Shopify store connected on an app whose webhook subscription
+  URI, compliance URLs, redirect URL or application URL is not on the
+  serving deployment's host (§E3 — the published app on the rehearsal host,
+  or the rehearsal app anywhere else);
 - nonfresh database when fresh mode was selected;
 - multiple companies or active owners;
 - unsafe environment/bypass flag present;
@@ -2315,15 +2529,20 @@ after G1 and G2 are recorded complete in the
    deployed migration manifest == `GATE_TESTED_MIGRATION_MANIFEST`.
    The FRONTEND bundle is the one deliberate exception to
    artifact-identity (§N5 split rule): the rehearsal bundle carries the
-   rehearsal API origin compiled in, so it must NOT be carried into the
-   merchant deployment — rebuild the frontend from exactly
+   rehearsal API origin AND the rehearsal app's client id compiled in,
+   so it must NOT be carried into the merchant deployment — rebuild the
+   frontend from exactly
    `GATE_TESTED_COMMIT_SHA` with the merchant deployment's
-   `NEXT_PUBLIC_API_URL`, verify the built bundle per §G1c (merchant
-   origin present; `localhost:8000` absent), and record the merchant
-   deployment's own `FRONTEND_BUNDLE_DIGEST` + `FRONTEND_BUILD_ORIGIN`
-   beside the pack values. Serving the rehearsal-built bundle — or any
-   bundle whose recorded build origin is not this deployment's origin —
-   is a STOP.
+   `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_SHOPIFY_API_KEY` (the client
+   id of the app the merchant store installs — the step-3 app-identity
+   decision, taken before this rebuild), verify the built bundle per
+   §G1c (merchant origin present; `localhost:8000` absent; the server
+   build carrying that client id and no other), and record the
+   merchant deployment's own
+   `FRONTEND_BUNDLE_DIGEST` + `FRONTEND_BUILD_ORIGIN` +
+   `FRONTEND_BUILD_SHOPIFY_CLIENT_ID` beside the pack values. Serving
+   the rehearsal-built bundle — or any bundle whose recorded build
+   origin or client id is not this deployment's — is a STOP.
    If ANY backend pack value differs, or the frontend was not rebuilt
    from `GATE_TESTED_COMMIT_SHA`: STOP — perform a fresh G1 and G2
    cycle on the desired revision, issue a new revision pack, and use
@@ -2336,10 +2555,35 @@ after G1 and G2 are recorded complete in the
 3. repeat, against the new database and the new host: the revision proof
    (§B); the fresh-database zero-count proof (§C); the environment-safety
    proof (§E — including the §E3 frontend build-time variable record
-   with THIS deployment's `NEXT_PUBLIC_API_URL`); deployment, service
+   with THIS deployment's `NEXT_PUBLIC_API_URL` and
+   `NEXT_PUBLIC_SHOPIFY_API_KEY`, and the §E3 Shopify app-identity
+   record for THIS deployment: the app the real merchant store
+   installs must have its `application_url`, redirect URL, webhook
+   subscription URI and compliance URLs on the merchant deployment's
+   host; the choice of app is a recorded founder decision taken BEFORE
+   step 1, whose rebuild compiles that app's client id in — and the
+   chosen app's ACTIVE version must carry `read_all_orders` (the §I
+   definition's any-age parent reach is a GO requirement — §O, step 11
+   — so an app without it cannot execute the contract the GO
+   authorizes: STOP here, obtain the approval, release a new active
+   version and redo the §E3 record — the step-11 code-level control
+   applies only where the reach itself is not wanted) and must hold
+   protected-customer-data access approved for non-development stores,
+   both per-app Shopify approvals that a dedicated merchant app must
+   hold when this record is made and that neither the published app's
+   approvals nor the rehearsal app's unreviewed development-store
+   posture transfer; the published
+   app's active version points every URL at `https://app.nxentra.com`,
+   and a new version of the published app pointing elsewhere would
+   re-point EVERY store installed on it — the same app-wide property
+   §E3 relies on — so a merchant host with any other origin uses its
+   own dedicated app unless the founder records why re-pointing the
+   published app is acceptable for every install it has; the rehearsal
+   app is never used for a real merchant); deployment, service
    startup, version proof and boot health (§G — including the §G1c
    frontend build from `GATE_TESTED_COMMIT_SHA` with THIS deployment's
-   origin and its built-artifact verification, per step 1, and the
+   origin and client id and its built-artifact verification, per step
+   1, and the
    §G1g `/_next/image` refusal probed externally on the merchant host);
    **the §F
    blockers with FRESH evidence for THIS
@@ -2368,7 +2612,11 @@ after G1 and G2 are recorded complete in the
 5. connect the **real merchant Shopify store** — for the first time
    anywhere in this process — through the controlled **standalone OAuth
    path**;
-6. prove the post-connect state: exactly one ACTIVE real store; **no
+6. prove the post-connect state: exactly one ACTIVE real store, whose
+   stored `ShopifyStore.scopes` names exactly THIS deployment's §E3
+   scope set — `read_all_orders` present — compared comma-split and
+   order-insensitive with the raw string recorded (the §I5
+   granted-scope check; a difference is a STOP before GO); **no
    active `ShopifyUserBinding` yet**; the `initial_store_sync` enqueue
    succeeded (private log "Queued initial Shopify sync for <shop>" — on
    "Could not queue initial Shopify sync" or uncertainty, apply the §I5
@@ -2608,9 +2856,12 @@ write.
 STOP if: the intended merchant deployment uses a revision or image not
 named by the completed revision pack; the merchant deployment serves a
 frontend bundle not rebuilt from `GATE_TESTED_COMMIT_SHA` with the
-merchant deployment's recorded `FRONTEND_BUILD_ORIGIN` and verified per
-§G1c (the backend artifact-identity rule never transfers to the
-origin-specific frontend bundle — §N5 split rule); the merchant company is activated
+merchant deployment's recorded `FRONTEND_BUILD_ORIGIN` and
+`FRONTEND_BUILD_SHOPIFY_CLIENT_ID` and verified per §G1c (the backend
+artifact-identity rule never transfers to the origin- and app-specific
+frontend bundle — §N5 split rule); the real store's granted scope set
+differs from the §E3 record (`read_all_orders` absent); the merchant
+company is activated
 (§I2) without fresh F1–F3 evidence for the merchant deployment and
 merchant (rehearsal F2/F3 evidence transferred); the rehearsal database
 or its backup is reused; synthetic financial history appears in the
