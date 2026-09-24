@@ -1135,9 +1135,12 @@ class ShopifyAccountingHandler(BaseProjection):
             logger.info("Shopify refund %s handled as zero-value (no credit note needed)", refund_id)
             return
 
-        # A23: lookup with bounded retry — the order_paid handler's
-        # SalesInvoice commit may not yet be visible to this transaction
-        # if both events land in the same projection pass.
+        # A23: lookup with bounded retry — ANOTHER connection's order_paid
+        # commit may not yet be visible to this transaction. Within ONE pass the
+        # order's event is fully settled — posted, deferred or quarantined —
+        # before its refund is attempted (passes are non-re-entrant in-context —
+        # see BaseProjection.process_pending), so the retry covers only the
+        # cross-connection case.
         original_invoice = _find_posted_shopify_invoice(event.company, shopify_order_id)
 
         if not original_invoice:
@@ -1158,6 +1161,14 @@ class ShopifyAccountingHandler(BaseProjection):
             #     quarantine, not an endless defer (Codex round-3 P1).
             #   * no order event at all — a fresh refund may still be racing its order
             #     webhook (DEFER < 24h); past that it is a genuine orphan (quarantine).
+            #   * a marker with no POSTED invoice is terminal evidence ONLY because
+            #     passes are non-re-entrant in-context (BaseProjection.process_pending
+            #     skips a nested drain of its own projection) and READ COMMITTED never
+            #     exposes another connection's uncommitted marker. Before that guard, a
+            #     command's synchronous drain inside the order handler re-entered this
+            #     projection while the invoice was still DRAFT and consumed the refund
+            #     here (G1 rehearsal §I14 STOP, 2026-09-22 — a regression of PR #127
+            #     over the pre-existing nested drain).
             from datetime import timedelta
 
             from django.utils import timezone as _tz
@@ -1188,8 +1199,10 @@ class ShopifyAccountingHandler(BaseProjection):
                     fix_hint=(
                         "Re-running the sync will NOT repost this order or re-ingest this refund "
                         "(both events are already applied and the pilot's rebuild is disabled). "
-                        "Book the refund — and correct the order's own quarantined entry — with "
-                        "manual journals, then resolve this from /finance/exceptions."
+                        "If a POSTED invoice for this order exists now, book only the refund with a "
+                        "manual journal against it; if the order itself was quarantined (no invoice "
+                        "was ever posted), also book the sale manually. Then resolve this from "
+                        "/finance/exceptions."
                     ),
                 )
 
