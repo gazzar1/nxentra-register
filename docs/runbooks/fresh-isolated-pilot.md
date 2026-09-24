@@ -1411,11 +1411,13 @@ B = orders currently refunded or partially_refunded whose Shopify
     selected order is dispatched; a dispatched-and-failed parent
     therefore stays INSIDE AUTHORIZED_PARENT_ORDER_SET for the
     recorded re-execution that closes it (§I closure rule), so that
-    closure never books outside the set; a selected order that an
-    earlier execution already booked is a `skipped` no-op in the paid
-    writer and leaves no trace — it needs none, being in the set
-    through the execution that added it, and `scanned` minus the
-    traced identities is its count; the only other selected orders
+    closure never books outside the set; a selected order already
+    booked — by an earlier execution, or by this execution's own
+    orders leg moments before (an A/B overlap: the orders leg runs
+    first) — is a `skipped` no-op in the paid writer and leaves no
+    trace; it needs none, being in the set through the leg that
+    added it, and `scanned` minus the traced identities is its
+    count; the only other selected orders
     that neither book nor leave a line are `pilot_scope_skipped`
     (must be 0) and an id-less payload (a STOP already); A_k is
     reconstructed from the orders export, Shopify created_at never
@@ -2298,9 +2300,10 @@ independent completeness control.
     dispatched — booked or promoted, and dispatched-and-failed by its
     `[A159] Could not book parent order …` / `[A159] Parent-order
     booking failed for …` WARNING lines, order id only (§I definition
-    — the selected set itself is not reconstructed; a re-selected
-    order an earlier execution already booked is a traceless `skipped`
-    no-op, in the set through its adder) — so the union is
+    — the selected set itself is not reconstructed; a selected order
+    already booked, by an earlier execution or by this execution's
+    own orders leg (an A/B overlap), is a traceless `skipped` no-op,
+    in the set through its adder) — so the union is
     evaluated as the union of the A_k plus every parent a refund leg
     of the 1 + K dispatched; every parent row booked by the 1 + K
     executions and their recorded closure re-executions must be in
@@ -2628,8 +2631,8 @@ Minimum schema:
 |---|---|
 | Shopify order/refund IDs, counts, gross totals | Shopify admin/exports |
 | Initial-intake set A per execution — A_k for each of the 1 + K initial tasks: order count, ids, totals (that execution's `created_at` window; the windows overlap, so an order may sit in several A_k — the execution whose dispatch of it first succeeded is the one that added it, normally the first that selected it) | Shopify admin/exports |
-| Initial-intake set B per execution — B_k for each of the 1 + K initial tasks: its size (that execution's refund-leg `scanned`) and the identities of the parents that leg dispatched: booked (rows in its span with `shopify_created_at` outside its window; inside-window rows whose orders-leg dispatch left a `Failed to process order …` / `Error processing order …` line — the in-execution closure; plus its promotions) or dispatched-and-failed (the order ids in its `[A159] Could not book parent order …` / `[A159] Parent-order booking failed for …` WARNING lines); a re-selected order an earlier execution already booked is a traceless `skipped` no-op — not enumerated, counted as `scanned` minus the identities above, in the set through its adder; the selected set itself is not reconstructed — Shopify evaluated it against an order `updated_at` the system neither requests nor stores (§I definition) | task result + system rows (private) |
-| `AUTHORIZED_PARENT_ORDER_SET` = the union over the 1 + K executions of A_k ∪ B_k, deduplicated by Shopify order id — evaluated as the union of the A_k plus every parent a refund leg dispatched and left a trace of (booked, promoted or dispatched-and-failed — a failed one stays in the set for its closure; a traceless re-selection of an already-booked order is in the set through its adder); a gap record's row is ADDED by exactly one execution (normally the first that selects it; after a counted error, its closer) and it may remain a member of later candidate sets as a `skipped` no-op or an in-place change of its class — plus, per execution, the refund-leg `scanned` count | Shopify admin/exports vs system |
+| Initial-intake set B per execution — B_k for each of the 1 + K initial tasks: its size (that execution's refund-leg `scanned`) and the identities of the parents that leg dispatched: booked (rows in its span with `shopify_created_at` outside its window; inside-window rows whose orders-leg dispatch left a `Failed to process order …` / `Error processing order …` line — the in-execution closure; plus its promotions) or dispatched-and-failed (the order ids in its `[A159] Could not book parent order …` / `[A159] Parent-order booking failed for …` WARNING lines); a selected order already booked — by an earlier execution, or by this execution's own orders leg (an A/B overlap) — is a traceless `skipped` no-op: not enumerated, counted as `scanned` minus the identities above, in the set through its adder; the selected set itself is not reconstructed — Shopify evaluated it against an order `updated_at` the system neither requests nor stores (§I definition) | task result + system rows (private) |
+| `AUTHORIZED_PARENT_ORDER_SET` = the union over the 1 + K executions of A_k ∪ B_k, deduplicated by Shopify order id — evaluated as the union of the A_k plus every parent a refund leg dispatched and left a trace of (booked, promoted or dispatched-and-failed — a failed one stays in the set for its closure; a traceless dispatch of an already-booked order — booked by an earlier execution or by the same execution's orders leg — is in the set through its adder); a gap record's row is ADDED by exactly one execution (normally the first that selects it; after a counted error, its closer) and it may remain a member of later candidate sets as a `skipped` no-op or an in-place change of its class — plus, per execution, the refund-leg `scanned` count | Shopify admin/exports vs system |
 | Complete refund count and totals per refund-leg-dispatched parent (the B candidates as a class = the union over the 1 + K executions of the parents each refund leg dispatched — the "set B per execution" row; refund evidence supplies each one's complete refund history and totals over the order's whole life, never the membership; never `ShopifyOrder.financial_status`, which is written only at creation) | Shopify "Export transaction histories" file (the orders CSV carries only a per-order refunded amount) vs system |
 | Per-order line-item count for every intake order (must equal the stored order evidence's `line_items` count — an independent completeness control over the PR #143 drained reads; the stored list is unfiltered, so equality is exact. Deliberately no variant-count twin: the sync legitimately skips SKU-less variants and the NON_STOCK catalog collapses shared SKUs, so no export-vs-system variant equality exists to demand) | Shopify admin/exports vs stored order evidence (read-only) |
 | Oldest and newest imported parent-order dates | system (read-only) vs Shopify |
@@ -3585,9 +3588,10 @@ after G1 and G2 are recorded complete in the
     by its `scanned` size and the parents its refund leg dispatched —
     booked, promoted, or dispatched-and-failed by its `[A159]`
     failure lines (the selected set itself is not reconstructed — §I
-    definition; a re-selected order an earlier execution already
-    booked is a traceless `skipped` no-op, in the set through its
-    adder; the B candidates as a class are those dispatched parents,
+    definition; a selected order already booked, by an earlier
+    execution or by this execution's own orders leg, is a traceless
+    `skipped` no-op, in the set through its adder; the B candidates
+    as a class are those dispatched parents,
     §K, their refund histories checked against refund evidence);
     reconcile `AUTHORIZED_PARENT_ORDER_SET` — the union of
     the A_k plus every refund-leg-dispatched parent over the 1 + K
