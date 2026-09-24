@@ -19,18 +19,19 @@ evidence redone — §E5, §G1g and the amended probes included; the §B1 pin
 record's hosting-region field remains to be filled — the pilot database
 untouched, §H onward not re-run; the §L1 external monitor was put in
 place the same day (a deployment property, not G1 evidence). The Shopify
-app-identity precondition this revision adds to §E3 (a dedicated app
-whose webhook, compliance, redirect and app URLs point at the deployment
-host; `NEXT_PUBLIC_SHOPIFY_API_KEY` set at build) has NOT been executed on any
-deployment yet: the dedicated rehearsal app itself exists (created, and
-its version released, 2026-09-12), but at this revision the rehearsal
-deployment still carried the published app's client id and the scope
-default; whether the switch is done on the current pin first or
-folded into the §B re-pin that this document's own merge requires, that
-re-pin repeats §B1 in full — a fresh §G1c build, every process
-restarted, the §B–§G evidence redone — with the new §E3 app-identity
-record and the §G1c client-id verification as added content, and no
-pre-merge switch evidence transfers.
+app-identity precondition added to §E3 (a dedicated app whose webhook,
+compliance, redirect and app URLs point at the deployment host;
+`NEXT_PUBLIC_SHOPIFY_API_KEY` set at build) was executed on 2026-09-13:
+the deployment was re-pinned to `710d089` (PR #150) with the app switch
+folded into a full §B1 re-pin (fresh §G1c build, every process
+restarted, §B–§G evidence redone with the §E3 app-identity record and
+the §G1c client-id verification). The §H–§I window then ran on that
+deployment 2026-09-17 → 2026-09-22 (§I4 hold, §I5, J0, §I7–§I13, the
+§I14 release) and STOPPED at §I14 on a code defect — a re-entrant
+projection drain consumed two same-pass refunds — fixed by PR #152
+(`17dd1a9`, the new §B1 floor); founder decision D11 = (a): a fresh
+database, a new pin containing this revision, and §H–§I re-run in full.
+Nothing closed.
 Neither that rehearsal nor this document closes anything: **G1 and G2
 remain OPEN and merchant data remains blocked** until the live tracker
 ([constrained_pilot_status.md](../status/constrained_pilot_status.md))
@@ -113,10 +114,10 @@ named evidence existing in the manifest.
   - Expected result: HEAD is a commit on `main` that has a fully green CI
     run (all seven jobs including Quality Gate). **Minimum
     application-code baseline (revision floor):**
-    `8a61e3659caaab7440c0192d37d58622d610c729`
-    (code tree `7e4f02a336d88e3a39999c29af27a2d02ff70f4d`; green main CI
-    run 34592317615, seven jobs) — the merge of PR #148 (A245), which
-    contains, in merge order: the PR #139 refund-completeness
+    `17dd1a98d439a1eb439f4788c5c72042a61238b7`
+    (code tree `cc380e4d781e4201eb650d042f47d695f4696647`; green main CI
+    run 35966835373, seven jobs) — the merge of PR #152 (the
+    `process_pending` re-entrancy guard), which contains, in merge order: the PR #139 refund-completeness
     correction (`3fc79de`), the PR #140 cancelled-order refund-recovery
     correction (`cd8bc9d`), the PR #141 store-sweep history guard
     (`ee003d5`), the PR #143 nested-collection pagination fix
@@ -129,24 +130,34 @@ named evidence existing in the manifest.
     NOBYPASSRLS database role), the PR #147 npm-audit gate with its
     explicit expiring allowlist plus `images.unoptimized` (`418173c`,
     A246), the PR #146 stale-credential 401 hardening (`f5ad19e`,
-    A244) and the PR #148 login-time company switch through the
-    canonical writer (`8a61e36`, A245). **No earlier commit is
-    eligible** for G1/G2: the previously named floor `2be1819`
-    (PR #143), the rehearsal deployment's interim §B pins `36b8de4`
-    (PR #144) and `968e486` (PR #145) — and every commit before them —
-    predate at least one of these fixes and may no longer be used; no
-    verdict transfers from them. (The rehearsal deployment, pinned at
+    A244), the PR #148 login-time company switch through the
+    canonical writer (`8a61e36`, A245), the PR #149/#150/#151 runbook
+    and tracker revisions (`d9c94c6`, `710d089`, `e1b5948`, docs only)
+    and the PR #152 projection-pass re-entrancy guard (`17dd1a9`: a
+    projection never observes its own in-flight pass, so an order and
+    its refund pending in one projection pass no longer consume the
+    refund — found by the 2026-09-22 rehearsal §I14 release at
+    `710d089`). **No earlier commit is eligible** for G1/G2: the
+    previously named floors `2be1819` (PR #143) and `8a61e36`
+    (PR #148), the rehearsal deployment's interim §B pins `36b8de4`
+    (PR #144), `968e486` (PR #145), `d9c94c6` (PR #149) and `710d089`
+    (PR #150) — and every commit before them — predate at least one of
+    these fixes and may no longer be used; no verdict transfers from
+    them. (The rehearsal deployment, pinned at
     `968e486` until 2026-09-11, was re-pinned that day to `d9c94c6` —
     the PR #149 merge, at or after the floor — with a fresh §G1c
     frontend build AND a restart of every process from the re-pinned
     checkout, so that §G1e's version proof holds for the bundle and for
     the running Next server, which reads `images.unoptimized` from
-    `next.config.js` at start, and its §B–§G evidence redone. Every
-    later re-pin — including the one this document's own merge
+    `next.config.js` at start, and its §B–§G evidence redone. On
+    2026-09-13 it was re-pinned again to `710d089` (PR #150) with the
+    §E3 app switch; the §H–§I window then ran there 2026-09-17 →
+    2026-09-22 and STOPPED at §I14 — see the header and the tracker.
+    Every later re-pin — including the one this document's own merge
     requires under the rule below — repeats exactly that.) Because this runbook
     document itself merges after that baseline, the exact revision
     selected at execution must be a `main` commit that contains the
-    floor (`git merge-base --is-ancestor 8a61e3659caaab7440c0192d37d58622d610c729 <EXECUTED_SHA>` exits 0)
+    floor (`git merge-base --is-ancestor 17dd1a98d439a1eb439f4788c5c72042a61238b7 <EXECUTED_SHA>` exits 0)
     AND this merged runbook revision, with its own green required CI;
     the operator records that exact selected SHA, and the runbook
     document revision is recorded separately from the deployed
@@ -196,6 +207,26 @@ The pilot database must be **provably fresh** before the pilot company is
 created. Do not substitute destructive cleanup for freshness: if unexpected
 business history exists, STOP — recreate the deployment from a new empty
 database, or explicitly choose the legacy-history path and audit it (§D).
+A database from a STOPPED or superseded window is ARCHIVED, never dropped
+or reused in place: `pg_dump` (custom format) with its SHA-256 recorded in
+the private manifest, the old database kept under its own name, a NEW
+database name for the fresh proof, and C2 run on the new name BEFORE any
+process boots against it (the `EventBookmark` caveat). Every process's
+`DATABASE_URL` is changed by re-creating the process (§G1e proves the
+connected database per process); the §I4 hold stays in force across the
+swap with NO gap — a Shopify-capable route with no ACTIVE store row
+answers a discarding 200 (`shopify_connector/views.py`), so verify the
+retryable 503 before and after every restart or proxy reload; the broker
+is listed read-only before §I5 (a leftover task from the old context would
+target the new store, whose ids restart at 1) and never purged (§O); §C1
+seeds, the §E5 role posture and the §G1d periodic-task registry are
+re-created and re-evidenced on the new database; the §L1 monitor is paused
+with a dated note for the swap and RESUMED — with one recorded probe
+result against the replacement deployment in `alerts/` — as soon as §G1f
+boot health passes and before §H opens (§O treats a failing monitor as an
+abort condition and §L1 requires its scheduled probes throughout); the
+pause and resume timestamps are recorded together; TaskResult and row ids
+restart at 1 (re-base the §I12/§I14 expectations).
 
 - [ ] **C1. Migrate the empty database.**
   - Command / action: from `backend/`, with the production environment of
@@ -314,8 +345,9 @@ never values for secrets.
     `ALERT_PROJECTION_STALENESS_SECONDS` (21600),
     `SHOPIFY_SOURCE_STALE_SECONDS` (28800); `LOG_LEVEL` absent or
     `INFO` (never stricter — the §I intake-contract capture reads the
-    worker's INFO-level `[A52] _sync_orders start` line and the Celery
-    task lines).
+    worker's INFO-level `[A52] _sync_orders start` line; Celery's own
+    task lines are not available on this logging configuration — §G1d
+    — and the TaskResult row's `date_started` stands in).
   - **Frontend BUILD-time variables** — these are compiled into the
     build output by `npm run build` (the client bundle under
     `.next/static/`, or, for `_document.tsx`, the server-rendered
@@ -453,6 +485,17 @@ never values for secrets.
     value (`nxentra-sync-9`, released 2026-06-19, every URL on
     `https://app.nxentra.com`) — so the last STOP below is decided
     from the record; the secret by presence only, never its value.
+    Before any §I5 on a new database after a long §I4 hold (days of
+    503s): re-confirm in the Dev Dashboard that the ACTIVE app version
+    still declares every §I4 topic (the application registers no
+    per-store webhooks — `register_webhooks` was removed — so Shopify's
+    "deleted after 8 consecutive failures if configured using the
+    Admin API" rule is not expected to apply: an inference from its
+    documentation as read 2026-09-24, not a guarantee); read and record
+    (counts only) the app's webhook delivery/failure metrics there;
+    and check the app's emergency developer inbox for Shopify's
+    warning e-mails (expected after a hold; not a STOP) — record WHICH
+    mailbox that is as a §E3 value, off-repo.
   - STOP if: a required value is missing; the process would start
     against the wrong database; `NEXT_PUBLIC_API_URL` is absent,
     non-https, missing its `/api` path, or not this deployment's real
@@ -581,7 +624,12 @@ dispositioned with evidence.** Writing them here does not complete them.
     the throttle is a per-client budget for unauthenticated traffic.
     An over-limit request gets DRF's 429 with `Retry-After`, a
     retryable non-success (Shopify retries any non-2xx delivery up to
-    8 times over 4 hours), never a discarding 200. Regression tests:
+    8 times over 4 hours — per Shopify's webhook documentation as read
+    2026-09-24, which also states that after 8 consecutive failures a
+    subscription is deleted only if it was created through the Admin
+    API, and that warning e-mails go to the app's emergency developer
+    address; this retry clock binds §I15, see there), never a
+    discarding 200. Regression tests:
     `backend/tests/test_g1_f3_webhook_throttle.py`.
   - Effective policy (founder disposition B, 2026-09-05): the throttle
     counters live in DRF's default per-process `LocMemCache` (the
@@ -723,12 +771,17 @@ introduce infrastructure this repository does not use.
   code — record every periodic task registered for this deployment
   (name, task, schedule; at minimum `shopify.sync_all_stores` and
   `shopify.cleanup_stale_installs` if used) in `environment/`, because
-  a restored backup carries those rows (§N2).
+  a restored backup carries those rows (§N2). Record the worker's
+  process definition verbatim (command including `--concurrency 1`,
+  working directory, out/err log paths) in the same `environment/`
+  record; the running value is re-proven at §G1e after every restart,
+  and a restart that reverts it to the CPU count is a §G1d deviation
+  and a STOP before §I14.
 
   | Service | Startup command (verified) | Health signal |
   |---|---|---|
   | Web (Django) | `gunicorn nxentra_backend.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120` | `GET /_health/live` → 200; `GET /_health/ready` → 200 (through the proxy, or on loopback with the `Host` + `X-Forwarded-Proto` headers — §G1f) |
-  | Worker | `celery -A nxentra_backend worker -l INFO` | worker log shows ready; `/_health/alerts` not reporting missing consumers after first drain |
+  | Worker | `celery -A nxentra_backend worker -l INFO --concurrency 1` — one prefork process is the worker form this runbook prescribes for the pilot (founder decision D12, 2026-09-23, after rehearsal deviation D8; a deployment-topology rule, not a supported-product-contract change): `process_pending` has no mutual exclusion across connections, so a second worker process could run the same projection for the same company concurrently (an open hazard, review finding F-K), and the §I14 expectations (one contiguous release pass, entry numbers in ingest order) assume a single process. The checked-in `docker-compose.yml` says `--concurrency=2` and a process manager restarting from a saved definition silently reverts to the CPU count — §G1e proves the running value. | worker log shows ready; `/_health/alerts` not reporting missing consumers after first drain. Log streams (Celery re-homes the root logger onto STDERR after Django's logging setup; nothing in the settings disables it): loggers named in `ops/logging_config.py` (`projections`, `events`, `accounts`, `tenant`, `ops`, `nxentra.accounting.*`) keep their STDOUT JSON handler — the `projections.base` "terminally skipped" / deferred WARNING lines land there; every other application logger (`shopify_connector.*`: the `[A52]` lines, "Queued initial Shopify sync", partial-response warnings) propagates to the root and lands on STDERR in plain text (copy every A52 timestamp verbatim, never re-render; the window values of `initial_store_sync` and of the prescribed `sync_store_orders` task are aware `+00:00` strings); Celery's own "Task received/succeeded" lines are expected on NEITHER stream (the `celery` logger does not propagate and the re-homing empties its handlers — observed 2026-09-22 as zero such lines for the release execution). Read BOTH streams; the startup banner (`concurrency: 1 (prefork)`) is written to the process's original stdout — record which file holds it. |
   | Beat | `celery -A nxentra_backend beat -l INFO --scheduler django_celery_beat.schedulers:DatabaseScheduler` | beat log ticking; scheduled tasks appear in worker log |
   | Broker | Redis reachable at `REDIS_URL` | `/_health/full` `redis` check |
   | Frontend | `npm run start` (Next.js, port 3000; the checked-in PM2 app name for the frontend is `nxentra-web`) | `GET /` on the frontend → 200 |
@@ -737,10 +790,34 @@ introduce infrastructure this repository does not use.
   Known, accepted quirk: `STATIC_ROOT` is not defined, so `collectstatic`
   cannot succeed (the backend Dockerfile deliberately ignores its failure);
   Django static assets are not part of this deployment's serving path.
-- [ ] **G1e. Version proof.**
+- [ ] **G1e. Version, posture and database proof.**
   - Command / action: verify every running service is executing the §B
-    revision (image tag / deployed checkout SHA per service).
-  - STOP if: **any service is running a different application revision.**
+    revision (image tag / deployed checkout SHA per service); verify the
+    worker runs ONE prefork process — the CURRENT start's banner line
+    `concurrency: 1 (prefork)` in the worker log, or a read-only
+    `celery -A nxentra_backend inspect stats` showing pool
+    max-concurrency 1 — and that the process manager's saved arguments
+    contain `--concurrency 1`; verify per process (web, worker, beat)
+    the database name it is connected to equals the §C database (a
+    process manager captures the environment at process creation, so a
+    plain restart keeps an OLD `DATABASE_URL` — re-create the process
+    or restart with the environment updated); verify the installed
+    `django-celery-results` is ≥ 2.6.0 (`pip show django-celery-results`
+    in the deployment's virtualenv) and that migration
+    `django_celery_results 0012_taskresult_date_started` is applied
+    (`python manage.py showmigrations django_celery_results`) — the
+    §I intake contract reads `TaskResult.date_started`, which that
+    version introduced. Record all four in
+    `environment/`; the worker form is carried into the §N5 pack. (One
+    prefork process removes only the Celery-side concurrency — the web
+    workers still run synchronous drains on other connections; that
+    cross-connection case is covered by the `ProjectionAppliedEvent`
+    unique constraint and the A23 bounded retry, not by this setting.)
+  - STOP if: **any service is running a different application
+    revision**; the worker's effective concurrency is not 1; any
+    process is connected to a database other than the §C database; or
+    `django-celery-results` is older than 2.6.0 / its `0012` migration
+    is unapplied.
 - [ ] **G1f. Boot health.**
   - Command / action: `curl` `/_health/live`, `/_health/ready`,
     `/_health/full` (internal path), and run
@@ -1059,7 +1136,18 @@ pre-activation check:
     or founder-held, as `[build] dev_store_url`). Do **not** use the embedded
     token-exchange installation path for this step — it automatically
     creates a `ShopifyUserBinding` when it holds a Shopify `sub`, which
-    would make the required unbound-state proof impossible. The store
+    would make the required unbound-state proof impossible. On a fresh
+    database after a STOPPED window the app is already installed on the
+    synthetic store: keep its Shopify Admin app tile UNOPENED until this
+    step has passed (an embedded launch would run token exchange, create
+    the store row AND a binding — the STOP below); do not uninstall it
+    to reset (the `app/uninstalled` webhook is held by §I4 and the later
+    `shop/redact` blanks credentials on every row matching the domain);
+    the founder's explicit lift of any earlier window's "never re-run
+    OAuth" rule is recorded at this step; the 8-hour stale-source clock
+    (`SHOPIFY_SOURCE_STALE_SECONDS`, anchored on `ShopifyStore.created_at`
+    while `last_sync_at` is null) starts at this Connect click, so
+    §I5 → §I14 must fit one sitting; verify NTP first. The store
     MUST be a non-production Shopify development/test store containing
     only synthetic catalog and transaction data — no copied real
     customer/order/refund data — while still exercising real OAuth,
@@ -1078,7 +1166,8 @@ pre-activation check:
     binding; only the embedded token-exchange path and the linking-nonce
     redemption create bindings.) The OAuth-triggered
     `initial_store_sync` enqueue is recorded in the private application
-    log ("Queued initial Shopify sync for <shop>"); the worker and beat
+    log ("Queued initial Shopify sync for <shop>" — the line carries no
+    task id; the id is read from the §I12 broker listing); the worker and beat
     remain stopped and webhook ingress remains blocked, so **the task is
     queued but cannot execute** and no automatic sync has run.
     **Enqueue-failure disposition:** OAuth success is NOT proof the task
@@ -1088,9 +1177,21 @@ pre-activation check:
     blocked, repair the broker condition; do not rely silently on the
     periodic catch-up and do not blindly enqueue a second task while the
     first task's existence is uncertain. Any manual enqueue recovery
-    command must first be verified against live code, must return a
-    recorded task id, and must be proven on the synthetic rehearsal
-    before it may appear in this runbook.
+    command for the INITIAL sync must first be verified against live
+    code, must return a recorded task id, and must be proven on the
+    synthetic rehearsal before it may appear in this runbook (none
+    does). One enqueue form is named elsewhere in this runbook — the
+    explicit-window re-execution task `shopify.sync_store_orders` (the
+    §I closure rule; the §I15 replacement execution) — it runs the
+    orders leg only and is never a substitute for a failed or
+    uncertain initial-sync enqueue — and §I5 grants
+    it a CONTROLLED FIRST SYNTHETIC PROOF: on the synthetic rehearsal
+    only, with the worker running (§I14 onward), enqueued once per
+    recorded need and recorded as its own execution (task id at
+    enqueue, TaskResult row, A52 line, §K row). That record is its
+    proof; until it exists the form may not be used on the merchant
+    path (§Q), and a merchant-path need arising before then is a STOP
+    for founder decision.
   - STOP if: any active `ShopifyUserBinding` already exists before J0;
     the connect path automatically authenticates the embedded user; the
     store was connected through a path that bypasses the intended
@@ -1151,6 +1252,9 @@ pre-activation check:
      the exact active binding and reaches the intended Nxentra company
      without third-party cookies or a standalone-cookie fallback; the
      displayed actor/company identity matches the bound membership.
+     Each launch that reaches a successful `token-exchange/` call queues
+     one further `initial_store_sync` (K counts them — §I13/§I14); the
+     page's own reload after redemption is such a launch.
   7. **STOP if:** the initial embedded launch skips `not_bound`; an
      OWNER is selected merely because one exists; third-party cookies
      are required; no App Bridge session token is used; the nonce can
@@ -1162,7 +1266,11 @@ pre-activation check:
   **J0 evidence** (all raw authentication evidence PRIVATE): retain
   privately the browser/version/OS + cookie posture; timestamped
   screenshots of the initial embedded launch, `not_bound`, successful
-  link, and successful post-link embedded login; a redacted network
+  link, and successful post-link embedded login (crop each to the
+  Nxentra page: the Shopify admin address bar, browser tab title,
+  sidebar, header account name, app-panel text and the Connected Store
+  card all carry the shop domain — §P; never paste them into a chat or
+  ticket); a redacted network
   sequence (session-token request present; not-bound result; nonce
   creation status; nonce redemption status; successful session login);
   proof of the binding's same-company/store/membership relationship; the
@@ -1221,14 +1329,29 @@ pre-activation check:
   `ShopifyUserBinding`, the Shopify warehouse/Customer/PostingProfile
   setup records, the module-account mappings, the non-financial
   `SHOPIFY_STORE_CONNECTED` event, and account/provider configuration.
+  Record the queue baseline from a read-only broker listing (queue
+  length and each queued task's name and id in queue order — never a
+  purge, §O): expected `initial_store_sync` × (1 + K) plus the
+  projection tasks the J0 logins queued; the first `initial_store_sync`
+  id is the §I14 release execution.
 
 **Initial-intake contract — reusable definition** (used by I13, I14, the
-§K controls, and §Q; every window is computed at EXECUTION time, when
-the worker starts the task — never at OAuth time):
+§K controls, §Q and — for its three replacement terms — §I15; every
+initial-sync window is computed at EXECUTION time, when the worker
+starts the task — never at OAuth time; the one exception is
+`REPLACEMENT_WINDOW`, which the operator declares in the §I15 addendum
+BEFORE that execution and then verifies equal to its A52 line):
 
 ```
 INITIAL_SYNC_STARTED_AT = the execution-time `now` the initial_store_sync
-                          task computes when its store sync begins
+                          task computes when its store sync begins —
+                          each of the 1 + K initial tasks computes its
+                          OWN, recorded per execution; the unqualified
+                          name denotes the release execution's value,
+                          which the GO / I13 reconciliation binds; each
+                          K re-execution applies the same seven-day and
+                          ordering rules to its own A52 pair and its
+                          own `date_started` (§I14, §Q step 12) —
                           (`_sync_store`: `now = tz.now()`) — the value
                           the code uses as BOTH window ends. It is
                           observable ONLY as the `created_at_max` value
@@ -1240,15 +1363,24 @@ INITIAL_SYNC_STARTED_AT = the execution-time `now` the initial_store_sync
                           by the task's store lookup, tenant-context
                           entry and store refetch (seconds).
 
-TASK_RECEIVED_AT        = the task's start timestamp from its durable
+TASK_RECEIVED_AT        = the task's `date_started` from its durable
                           `django_celery_results` TaskResult row, keyed
                           by task id (the result backend is django-db
-                          and STARTED tracking is on, so the row's
-                          date_created is the STARTED time and
-                          date_done the finish), corroborated by the
-                          worker's received/started log lines where
-                          present (recorded separately; used only for
-                          ordering)
+                          and STARTED tracking is on, so the row is
+                          first written at STARTED — `date_created` ≈
+                          `date_started` — and `date_done` is the
+                          finish; the enqueue time is recorded
+                          nowhere; the field exists from
+                          django-celery-results 2.6.0 — the pinned
+                          floor, its migration
+                          `django_celery_results.0012_taskresult_date_started`
+                          applied by §C1 and verified at §G1e),
+                          corroborated by the `[A52]
+                          _sync_orders start` line that follows within
+                          seconds (Celery's own received/started lines
+                          reach neither worker stream on this logging
+                          configuration — §G1d; recorded separately;
+                          used only for ordering)
 
 ORDER_CREATED_WINDOW =
     [INITIAL_SYNC_STARTED_AT − 7 days, INITIAL_SYNC_STARTED_AT]
@@ -1261,11 +1393,103 @@ REFUND_CANDIDATE_UPDATED_WINDOW =
       of its own)
 
 A = eligible Shopify orders whose created_at is in ORDER_CREATED_WINDOW
+    (computed per execution from that execution's window)
 
 B = orders currently refunded or partially_refunded whose Shopify
-    order.updated_at is in REFUND_CANDIDATE_UPDATED_WINDOW
+    order.updated_at is in REFUND_CANDIDATE_UPDATED_WINDOW (computed
+    per execution from that execution's window; Shopify evaluates it
+    against the order's updated_at AT THE READ — a value the system
+    neither requests nor stores and a later edit moves — so B_k is
+    never reconstructed after the fact: its durable evidence is the
+    refund leg's `scanned` (the size of B_k at the read) and the
+    parents that leg DISPATCHED — those it booked or promoted, and
+    those it dispatched but failed to book, each named by Shopify
+    order id in that execution's `[A159] Could not book parent order
+    …` / `[A159] Parent-order booking failed for …` WARNING line on
+    the worker stream (transcribe the order id only; the line carries
+    the shop domain) — every one of which was in B_k because only a
+    selected order is dispatched; a dispatched-and-failed parent
+    therefore stays INSIDE AUTHORIZED_PARENT_ORDER_SET for the
+    recorded re-execution that closes it (§I closure rule), so that
+    closure never books outside the set; a selected order already
+    booked — by an earlier execution, or by this execution's own
+    orders leg moments before (an A/B overlap: the orders leg runs
+    first) — is a `skipped` no-op in the paid writer and leaves no
+    trace; it needs none, being in the set through the leg that
+    added it, and `scanned` minus the traced identities is its
+    count; the only other selected orders
+    that neither book nor leave a line are `pilot_scope_skipped`
+    (must be 0) and an id-less payload (a STOP already); A_k is
+    reconstructed from the orders export, Shopify created_at never
+    changing)
 
-AUTHORIZED_PARENT_ORDER_SET = A union B, deduplicated by Shopify order id
+AUTHORIZED_PARENT_ORDER_SET = the union, over the 1 + K initial tasks, of
+                          each execution's own A union B, deduplicated
+                          by Shopify order id — a record that newly
+                          qualifies in the gap between consecutive
+                          executions' INITIAL_SYNC_STARTED_AT (the
+                          windows themselves overlap: each reaches
+                          seven days back from its own start) is
+                          authorized for the execution that first
+                          selects it (on the synthetic store the K
+                          later sets contribute no new record)
+
+REPLACEMENT_ORDER_SET   = (§I15 lapsed-retry path only) the synthetic
+                          orders created under the re-verified webhook
+                          block (§I4 items 1–2, beat still stopped, the
+                          worker running since §I14)
+                          AFTER the LAST of the 1 + K executions'
+                          INITIAL_SYNC_STARTED_AT (an order created
+                          between two of them lies inside the later
+                          one's ORDER_CREATED_WINDOW), listed by
+                          Shopify order id in a dated replacement
+                          addendum signed BEFORE the replacement
+                          execution; outside every execution's
+                          ORDER_CREATED_WINDOW and therefore outside
+                          AUTHORIZED_PARENT_ORDER_SET by construction;
+                          contains no cancelled order of any kind (a
+                          never-captured one counts in `skipped` and
+                          in `cancelled_no_effect_skipped`; a
+                          captured-money one books through the paid
+                          writer and counts in `cancelled_financial_*`
+                          — either breaks the `cancelled_*` = 0
+                          clause; the cancelled path is exercised at
+                          §I14 and §J, not here), and every member
+                          is paid at creation (Shopify
+                          `financial_status` paid, partially_paid,
+                          refunded or partially_refunded — a pending
+                          order books no journal and proves nothing
+                          here)
+
+REPLACEMENT_WINDOW      = that execution's [created_at_min,
+                          created_at_max] task arguments = [T0, T1],
+                          T0 a UTC timestamp read on the deployment
+                          host directly in the required form
+                          (`date -u +%Y-%m-%dT%H:%M:%S+00:00` — never
+                          hand-rendered from a bare `date`) at least one
+                          minute BEFORE the first replacement order is
+                          created and T1 one read at least one minute
+                          AFTER the last (the margin absorbs clock
+                          skew against Shopify; no Shopify `created_at`
+                          needs to be read to the second); the
+                          synthetic store receives no other order
+                          creation in [T0, T1] (the operator controls
+                          it), so the window contains exactly
+                          REPLACEMENT_ORDER_SET; both
+                          bounds recorded and passed as
+                          YYYY-MM-DDTHH:MM:SS+00:00 (aware UTC, second
+                          precision, no Z, no date-only);
+                          must equal, byte for byte, the
+                          created_at_min / created_at_max of its own
+                          `[A52] _sync_orders start` line (the task
+                          passes the strings through verbatim)
+
+REPLACEMENT_EXECUTION_STARTED_AT
+                        = that execution's TaskResult `date_started`
+                          (the task-form twin of TASK_RECEIVED_AT);
+                          the ordering rule for this execution is
+                          I15_REPLACEMENT_SIGNOFF_TIMESTAMP <
+                          REPLACEMENT_EXECUTION_STARTED_AT
 
 INTAKE_CONTRACT_VERSION = the runbook document revision SHA recorded in
                           §B (`revision/`, "this runbook's revision";
@@ -1287,7 +1511,12 @@ The line is emitted at INFO on the application logger, so the worker's
 effective log level must be INFO (the `-l INFO` startup command in §G
 and a `LOG_LEVEL` environment value no stricter than INFO, recorded in
 the §E report). The reconciliation that these fields must satisfy is
-ONE rule, stated identically wherever it is applied:
+ONE rule — the same rule, applied to each execution's own values —
+wherever it is applied to an
+`initial_store_sync` execution (the release execution and the K
+explained re-executions; an explicit-window execution — a closure
+re-execution or the §I15 replacement execution — is reconciled instead
+to its declared window, which is by construction not seven days):
 `created_at_max − created_at_min` = exactly 7 days
 (`INITIAL_LOOKBACK_DAYS`); authorization sign-off timestamp
 (`GO_TIMESTAMP` in §Q, `I13_SIGNOFF_TIMESTAMP` in the rehearsal)
@@ -1438,24 +1667,89 @@ and a STOP:
    (48-hour lookback, only once beat runs), recomputes both windows
    from its OWN start time, so a B candidate is re-selected only while
    its `updated_at` still falls inside that later window — and this
-   runbook names no enqueue door for a second `initial_store_sync`
-   (the I5 enqueue-recovery rule applies: any such command must be
-   verified against live code, return a recorded task id, and be
-   proven on the synthetic rehearsal before it may appear here). The
+   live code has three callers of the enqueue helper
+   (`shopify_connector/commands.py` `_schedule_initial_sync`): the
+   standalone OAuth completion (`complete_oauth` — the §I5 door), the
+   Shopify-initiated pending-install finalize
+   (`finalize_shopify_install` — never exercised inside the window;
+   the store is installed through §I5 only) and the embedded token
+   exchange (`complete_oauth_token_exchange` — unconditional on EVERY
+   successful `token-exchange/` call, so each embedded launch after
+   the J0 binding that reaches token exchange queues one further
+   `initial_store_sync`; rehearsed 2026-09-22, K = 2). None is an
+   operator command and none may be used as one; any OPERATOR
+   enqueue-recovery command must be verified against live code,
+   return a recorded task id, and be proven on the synthetic rehearsal
+   before it may appear here (the I5 rule; its one exception is the
+   controlled first synthetic proof §I5 grants the re-execution task
+   below). The
    A-leg re-execution that DOES take an explicit `created_at` window
-   is `python manage.py resync_shopify_orders --company <slug>
-   --from <ISO> --to <ISO>` (or the worker task
-   `shopify.sync_store_orders` with explicit `created_at_min` /
-   `created_at_max`); with any window the order leg routes a cancelled
+   is the worker task `shopify.sync_store_orders` with explicit
+   `created_at_min` / `created_at_max` — the evidence-bearing form:
+   the task returns the complete orders-leg result (`status`,
+   `fetched`, `created`, `skipped`, `errors`, `cogs_fulfillments`,
+   `refunds_backfilled`, `pilot_scope_skipped` and the four
+   `cancelled_*` counters) and the django-db result backend stores it
+   in the task's TaskResult row beside its `date_started`; its A52
+   lines land on the worker's streams (§G1d). Enqueue it from
+   `backend/` with the deployment `.env` in place (operator action;
+   `<store_id>` is the `store_id` printed on the §I14 A52 start line —
+   private, never in attachable evidence; both timestamps as ISO
+   strings with an explicit `+00:00` offset, which the task passes
+   verbatim to its A52 start line):
+
+   ```bash
+   python manage.py shell -c "
+   from shopify_connector.tasks import sync_shopify_store_orders
+   r = sync_shopify_store_orders.delay(store_id=<store_id>, created_at_min='<ISO>', created_at_max='<ISO>')
+   print(r.id)"
+   ```
+
+   Record the printed task id at once. This enqueue form is verified
+   against live code at this revision (the task's signature and
+   return value; it is the same call the application's own import
+   path makes); §I5 grants it a controlled first synthetic proof — its
+   first recorded use on the synthetic rehearsal, with the worker
+   running, is that proof — and on the merchant path it may be used
+   only after such a recorded synthetic proof exists; otherwise the
+   closure is a STOP for founder decision, never an improvised run.
+   Read the execution's TaskResult row (read-only, same environment):
+
+   ```bash
+   python manage.py shell -c "
+   from django_celery_results.models import TaskResult
+   r = TaskResult.objects.get(task_id='<task id>')
+   print(r.status, r.date_started, r.date_done); print(r.result)"
+   ```
+
+   Run it after the worker's `[A52] _sync_orders done` line: `r.status`
+   must read `SUCCESS` (the row is written only when the task starts —
+   `CELERY_TASK_TRACK_STARTED` — so a `DoesNotExist` or `STARTED` read
+   is early, not absent: read again); the leg's `status` "ok" is a key
+   inside `r.result`, distinct from `r.status`.
+   The CLI `python manage.py resync_shopify_orders --company <slug>
+   --from <ISO> --to <ISO>` runs the same orders leg but prints only
+   `fetched`, `created`, `skipped` and `errors` (its A52 done line
+   adds `pilot_scope_skipped`), re-renders the given timestamps, writes
+   its A52 lines to its own process output rather than the worker's,
+   and DISCARDS the rest of the result, so it cannot carry the §I
+   inequality or the refund counters and is NOT an evidence-bearing
+   form for any execution whose counters enter the §K pack. With any
+   window the order leg routes a cancelled
    or refunded order through the paid writer, the stamp and the refund
    backfill, so it can close a candidate whose creation date the
    operator names. It books EVERY order created in the named window,
    so the window MUST be the narrowest that re-selects the candidate,
    the re-execution is recorded as an explained second execution (its
-   own task id or CLI invocation, its own `[A52] _sync_orders start`
+   own task id and TaskResult row, its own `[A52] _sync_orders start`
    line, counters and inequality, in the §K pack), and any order it
    books outside AUTHORIZED_PARENT_ORDER_SET is an intake-contract
-   variance and a STOP. The interactive resync endpoint is NOT a
+   variance and a STOP. (The §I15 lapsed-retry path runs the same
+   worker task for orders created AFTER the LAST of the 1 + K
+   executions' `INITIAL_SYNC_STARTED_AT`; that is not a closure
+   re-execution — it is authorized by its own signed
+   `REPLACEMENT_ORDER_SET`, §I15.)
+   The interactive resync endpoint is NOT a
    closure path: it accepts only a `days` lookback ending at its own
    request time, runs in-request as the merchant session, and stays
    blocked under the intake hold. A candidate that no re-execution can
@@ -1474,6 +1768,18 @@ and a STOP:
    reopens) or opens a further row when the still-malformed payload
    changed — either way it closes nothing; only a corrected payload
    (supersession) does, and until then it is a STOP.
+
+Since PR #152 (`17dd1a9`) a projection pass is non-re-entrant per
+(projection, company): a command invoked from inside a handler still
+drains every OTHER projection synchronously but never the projection
+whose handler is running, so within one pass an order's event is fully
+settled — posted, deferred or quarantined — before its refund is
+attempted. Operator-visible consequence: a refund that reaches the
+worker in the same pass as its order posts in that pass with ascending
+entry numbers; events of a type that a projection's own handler
+commands emit would wait for the next pass instead of posting in the
+same one (no projection does this today — a code-maintenance item,
+NEXT_TASKS A175).
 
 A cancelled B candidate is NOT a third category: it is processed
 (`cancelled_financial_processed`), pilot-dispositioned
@@ -1638,6 +1944,24 @@ independent completeness control.
   effective window boundaries do not exist yet and no VALUE for them
   may be recorded here — they are captured at I14 and reconciled to
   this authorization there.
+  The sign-off pre-declares the initial tasks the release will consume:
+  `INITIAL_TASKS_QUEUED` = 1 + K, with the task ids in queue order from
+  the §I12 read-only broker listing (the first = the §I5 enqueue = the
+  release execution) and K = the number of successful embedded
+  `token-exchange/` calls since §I5 (each queues one task —
+  `complete_oauth_token_exchange`; counted from the proxy access log
+  and cross-checked against the broker count). No embedded launch may
+  occur between signing and the §I14 worker start; if one does,
+  re-sign. It also names every Shopify order the execution-time
+  windows will select — including orders left in the synthetic store
+  by an earlier STOPPED window while they still fall inside the
+  seven-day windows — records that nobody edits those orders in
+  Shopify Admin (an edit bumps `updated_at` and re-qualifies them for
+  set B), and records the planned §I15 unblock time (≤ ~4 h after the
+  first synthetic order whose retries the §I15 proof relies on). It
+  does not pre-authorize the §I15 lapsed-retry replacement execution:
+  that path needs its own dated replacement addendum, signed before
+  the execution (§I15).
   Sign-off: operator ______ `I13_SIGNOFF_TIMESTAMP` (UTC, to the
   second — the rehearsal twin of `GO_TIMESTAMP`, ordered against
   `TASK_RECEIVED_AT` at I14) ______
@@ -1645,12 +1969,226 @@ independent completeness control.
   authorized intake CONTRACT, not a simple window.** Start the Celery
   worker ONLY; keep beat stopped and webhooks blocked. Observe the
   queued `shopify.initial_store_sync` task: record its task id (from
-  the worker receive/start log and its durable `django_celery_results`
-  TaskResult row), its start/finish timestamps, and its complete result
-  (privately); require exactly one initial task consumed on release —
-  any later re-execution used for §I closure is a separately recorded,
-  explained execution with its own task id or CLI invocation, A52 line
-  and counters, and more than one UNEXPLAINED initial task is a STOP.
+  the §I12 queue baseline and its durable `django_celery_results`
+  TaskResult row — Celery's own receive/start lines reach neither
+  worker stream, §G1d), its start/finish timestamps, and its complete result
+  (privately) — and export each evidence TaskResult row — every one of
+  the 1 + K initial-task rows (the release execution AND the K
+  pre-declared re-executions whose per-window reconciliation lives in
+  their complete results), every closure re-execution row and the §I15
+  replacement row — (`task_id`, `status`, `date_started`, `date_done`,
+  `result`) into `preflight/`
+  BEFORE §I16: once beat runs, the DatabaseScheduler-installed
+  `celery.backend_cleanup` (04:00 UTC daily — `CELERY_TIMEZONE` is
+  UTC) deletes TaskResult rows older than `result_expires`, Celery's
+  default 24 h (the settings set no override); from §I16 on these
+  exports — not the live rows — are the §K source; require exactly
+  1 + K initial
+  tasks consumed on release,
+  where K is the number of successful embedded `token-exchange/` calls
+  after the J0 binding that the I13 sign-off pre-declared (each queues
+  one task through `complete_oauth_token_exchange`; session-login-only
+  launches queue none): the FIRST in queue order — the §I5 enqueue,
+  its id recorded in the §I12 queue baseline — is the release
+  execution; the other K are explained re-executions, each reconciled
+  against its OWN execution-time window (its own A52 pair; the
+  seven-day rule; `I13_SIGNOFF_TIMESTAMP < its date_started ≤ its
+  INITIAL_SYNC_STARTED_AT`), that may add exactly what newly qualified
+  since its predecessor, per record class. Two legs write orders and
+  refunds, and their counters differ: the orders leg fetches by
+  Shopify `created_at` inside its window W (that execution's A52
+  pair, evaluated by Shopify at second precision) and counts every
+  dispatch that did something in `created` — a new row, an in-place
+  promotion, an in-place cancellation disposition — and every benign
+  no-op in `skipped`; the refund leg selects by the CURRENT order
+  `updated_at` inside the same pair, books an unbooked parent through
+  the paid writer BEFORE its backfill and counts NO parent at all
+  (`scanned` counts every selected order, `refunds_created` the
+  refunds it booked); the products leg (no window) writes `Item`
+  rows and `ShopifyProduct` mappings — no order or refund row, no
+  event. A row's Shopify `shopify_created_at` tells the order legs
+  apart afterwards: inside W the orders leg wrote or dispatched it,
+  outside W the refund leg did — except an inside-W order whose
+  orders-leg paid-writer dispatch FAILED (its `Failed to process
+  order …` / `Error processing order …` line; a stamp or backfill
+  line only follows a committed booking) and which the refund leg
+  then booked. Five classes, each with its read-only identification
+  and its evidence:
+  (1) a parent order — a new `ShopifyOrder` row (local `created_at`
+  in [its `date_started`, its `date_done`]): an A record
+  (`shopify_created_at` inside W) booked by the orders leg — a
+  `pending` one as a PENDING_CAPTURE stub that books no journal —
+  explained by its Shopify `created_at` (orders export) inside
+  (predecessor's `INITIAL_SYNC_STARTED_AT`, own
+  `INITIAL_SYNC_STARTED_AT`] — or, when that `created_at` lies at
+  most 60 s at or before the predecessor's `INITIAL_SYNC_STARTED_AT`,
+  as a boundary record of the predecessor's read (the pair is
+  computed before the page read, Shopify stores `created_at` to the
+  second and documents no freshness guarantee for the search-backed
+  orders read), admitted only when no earlier execution's worker
+  stream carries a line naming that order id and the row is new in
+  this span, and recorded with the order id, its `created_at` and its
+  distance in seconds — older than 60 s is a STOP; or an order the
+  predecessor fetched in an unrouted status (voided, expired,
+  unknown — one of its `skipped`, no row) that moved to a paid-writer
+  or `pending` status in the gap, explained by that transition in the
+  order's Admin timeline inside (predecessor's
+  `INITIAL_SYNC_STARTED_AT`, own `date_done`] (it moves the
+  predecessor's `skipped` against this execution's `created` by one:
+  a named residual); or a B-only record (`shopify_created_at`
+  outside W) booked by the refund leg, explained by the in-gap refund
+  or edit that put its `updated_at` inside the pair
+  (transaction-history file / Admin timeline — order `updated_at` is
+  in neither the stored payload nor the orders CSV and is never read
+  from the system); a parent first booked already refunded brings its
+  complete refund history with it (refund rows of any date, explained
+  by the parent);
+  (2) a gap refund on an already-booked parent — a new `ShopifyRefund`
+  row: by the orders leg's backfill when that leg re-fetches the
+  parent (`shopify_created_at` inside W) already refunded, by the
+  refund leg when the parent lies outside W and its current
+  `updated_at` is inside the pair (a refund issued after
+  `created_at_max` moves `updated_at` past the pair, so that leg does
+  not SELECT an order for it — but its backfill reads the order's
+  complete refund list moments after the page read, so a refund
+  landing in between is booked too); the two legs never book one
+  refund twice; explained by the refund's Shopify timestamp
+  (transaction-history file / Admin timeline) inside (predecessor's
+  `INITIAL_SYNC_STARTED_AT`, own `date_done`] — an older refund only
+  when the record says why no earlier execution booked it: its
+  parent's `updated_at` first entered the pair in this execution
+  (an in-gap edit); its parent's `financial_status` first became
+  refunded or partially_refunded in the gap (its first money refund,
+  inside the bound) — the backfill then books every earlier Refund
+  object of that parent, restock-only and zero-amount ones included,
+  because no leg reads a paid parent's refund list; or a counted
+  backfill error of an earlier execution (the §I closure rule);
+  (3) a PENDING_CAPTURE stub promoted in place — a `pending` (COD)
+  order booked as a stub by an earlier execution (class 1 then),
+  re-fetched as paid and promoted by the paid writer: NO new
+  `ShopifyOrder` row (its auto-created Items and mappings, if any,
+  are class-5 rows explained by this order); identified as the
+  `ShopifyOrder` row whose local `created_at` lies BEFORE this
+  execution's `date_started` and whose `event_id` names a
+  `BusinessEvent` whose `recorded_at` lies in [its `date_started`,
+  its `date_done`]; by the orders leg when `shopify_created_at` is
+  inside W, by the refund leg when it is outside; explained by the
+  transaction — payment, partial payment or authorization — that
+  moved Shopify's `financial_status` to a paid-writer status (paid,
+  authorized, partially_paid, refunded, partially_refunded; for COD
+  the merchant's mark-as-paid) in the order's Admin timeline
+  — inside (predecessor's `INITIAL_SYNC_STARTED_AT`, own `date_done`]
+  when the orders leg promoted it; when the refund leg did, the
+  payment may be older and the in-pair `updated_at` (the refund or
+  edit that selected the order) is the explanation;
+  (4) a never-captured cancellation dispositioned in place — an order
+  inside W that Shopify reports cancelled with a never-captured
+  `financial_status` (authorized, voided, pending, expired, unknown)
+  while a local row exists: a stub, which the cancellation writer
+  flips to CANCELLED the first time and re-stamps on every later
+  execution, or a BOOKED row — an order booked while `authorized`
+  and voided since — whose `raw_payload` the writer re-stamps; NO
+  new row, NO event, NO journal, yet counted in `created` and in
+  `cancelled_no_effect_skipped` — one without a local row counts in
+  `skipped` and in `cancelled_no_effect_skipped` instead; identified
+  from the orders export, per execution: the cancelled never-captured
+  orders with Shopify `created_at` inside W and `cancelled_at` before
+  this execution's `date_started` that have a local row (any status);
+  one whose `cancelled_at` lies in [its `date_started`, its
+  `date_done`] was cancelled during the run — it is explained by that
+  `cancelled_at` either way; record it as such and let its counter
+  effect fall into the residual below; explained by that
+  `cancelled_at`: inside (predecessor's `INITIAL_SYNC_STARTED_AT`, own
+  `date_started`] for the first disposition, earlier for a re-stamp
+  (explained by its earlier one); (4b) a captured-money cancellation
+  stamped in place — a cancelled order whose money was captured
+  (paid, partially_paid, refunded, partially_refunded), inside W or
+  selected by the refund leg, whose local row is already booked: the
+  paid writer is a no-op (`skipped`), the cancellation writer stamps
+  `cancelled_at` into `raw_payload`, and the leg counts it in
+  `cancelled_financial_candidates` / `cancelled_financial_processed`
+  — no row, no event, no journal, never `created`; identified from
+  the orders export per execution (cancelled orders with a
+  captured-money status inside W, or selected by the refund leg, that
+  have a booked local row); explained by that `cancelled_at`;
+  (5) a product — a new `ShopifyProduct` mapping row (local
+  `created_at` in [its `date_started`, its `date_done`]): the paid
+  writer's when a worker INFO line of the paid writer's form
+  `Auto-created Item <code> (<title>) cost=… (inventory=…, cogs=…)`
+  naming its Item code lies in the execution's span — the paid writer
+  auto-creates an Item and a mapping for a line whose Item code (the
+  SKU, else a synthetic code from the variant or product id) is
+  unknown and was prepared before the admission lock; it skips a
+  line with no identifiable handle, one whose code already exists,
+  and a second variant-less line (at most one variant-id-0 mapping
+  exists per company), which leaves a `Failed to auto-create Item
+  <code>: …` WARNING, no Item and no mapping while the order still
+  books — expected, record the order id beside the warning; the
+  products leg's own lines read `… with cost=…, accounts: …` —
+  explained by the order that line's booking belongs to (a
+  paid-writer line whose booking then failed, its `Failed to process
+  order …` line following, left no row: a named residual);
+  every other new mapping is the products leg's (counted in products
+  `created` or `linked`), explained by construction, not by a
+  timestamp: the products leg has no window and reads the whole
+  catalog on every execution, so a mapping it first creates belongs
+  to a variant that did not exist, or carried no SKU, at the
+  predecessor's read — PROVIDED the predecessor's products leg
+  completed on its counter shape (`created` / `linked` / `updated` /
+  `skipped` / `errors`, no `status` key; its `unavailable` and `error`
+  shapes leave the addition unexplained: STOP; an execution whose OWN
+  products leg ended on a non-counter shape cannot be reconciled for
+  this class: STOP); no Shopify product timestamp exists in the
+  system (the product query requests no product or variant timestamp
+  and a mapping's `raw_data` holds at most the variant snapshot), and
+  the leg books no journal;
+  or a re-selection that CLOSES a counted error of an earlier
+  execution, recorded per the §I closure rule (a pre-declared
+  re-execution may be that closer); anything else a STOP. The STOP
+  criterion is the rows and in-place changes: every new
+  `ShopifyOrder` / `ShopifyRefund` / `ShopifyProduct` row with local
+  `created_at` in [its `date_started`, its `date_done`], every
+  `BusinessEvent` recorded in that span, and every class-4
+  disposition, is explained by its class as above — one that is not
+  is a STOP (single worker, webhooks blocked, beat stopped). The
+  counters corroborate and never decide (founder decision D14 (B),
+  2026-09-24): normally orders leg `created` = class-1 A rows +
+  orders-leg class-3 promotions + class-4 dispositions, orders leg
+  `refunds_backfilled` + refund leg `refunds_created` = every new
+  `ShopifyRefund` row, and products `created + linked` + the paid
+  writer's `Auto-created Item … cost=… (inventory=…, cogs=…)` lines
+  in the execution's span of the worker stream (from its A52 start
+  line to the next task's A52 start line or the end of the stream;
+  one prefork process) = every new `ShopifyProduct` row; the legs'
+  post-commit error paths (stamp, fulfillment and refund backfills —
+  they leave the booking, its mapping and its line in place), an
+  in-execution closure by the refund leg and a same-second boundary
+  can each move a counter by a small count — record any residual with
+  its explanation in the execution's row; a residual that no row,
+  line or warning explains is a STOP. The exact merchant-path counter
+  algebra belongs to the merchant-cutover document of the post-G1
+  runbook split, not to this revision. Record every addition — the
+  new rows of classes 1, 2 and 5 and the in-place rows of classes 3
+  and 4 — by identity (Shopify order id, refund id,
+  `shopify_product_id` / `shopify_variant_id`; numeric ids only — for
+  an auto-created mapping whose variant id is unknown, stored as 0,
+  the Item code and the booking order's id) with the execution's row
+  in the control pack. On the synthetic
+  store, where nothing is created or edited between executions, that
+  is zero additions and the counters are exact: orders leg
+  `created 0`, `skipped` equal to
+  `fetched`, `errors 0`, `refunds_backfilled 0`,
+  `pilot_scope_skipped 0`; refund leg `refunds_created 0`, `errors 0`,
+  `fetch_failures 0`, `pilot_scope_skipped 0`; products `created 0`,
+  `linked 0`, `updated` equal to the release execution's products
+  `created + linked + updated`, `skipped` equal to the release
+  execution's `skipped`. Their ids equal the pre-declared ids in
+  order. Any
+  other re-execution used for §I closure is a separately recorded,
+  explained execution with its own task id and TaskResult row (the
+  worker-task form of the §I closure rule — the CLI prints four
+  counters and discards the rest), A52 line and counters, and any
+  UNEXPLAINED initial task is a STOP.
   Record, from the worker's private `[A52] _sync_orders start …
   created_at_min=… created_at_max=…` INFO line (transcribe ONLY the two
   timestamps — the line also carries the shop domain and store id; the
@@ -1661,8 +2199,11 @@ independent completeness control.
   `REFUND_CANDIDATE_UPDATED_WINDOW_START` / `_END` = the same pair
   (the refund leg is passed the identical values and logs no window of
   its own); and, separately, `TASK_RECEIVED_AT` from the TaskResult
-  row's start time, corroborated by the Celery received/started log
-  line. This is the FIRST point at which these values exist (they never
+  row's `date_started` (the earliest timestamp the row carries — the
+  enqueue time is recorded nowhere; Celery's received/started lines
+  reach neither worker stream on this logging configuration, §G1d),
+  corroborated by the `[A52] _sync_orders start` line that must follow
+  it within seconds. This is the FIRST point at which these values exist (they never
   appear in the I13 sign-off). Reconcile them to the I13 authorization
   — `INTAKE_CONTRACT_VERSION` and `INITIAL_LOOKBACK_DAYS = 7` — by the
   §I rule: `created_at_max − created_at_min` = exactly 7 days;
@@ -1745,11 +2286,31 @@ independent completeness control.
     cancellation writer failed, appears in
     `errors`/`cancelled_processing_errors` and is dispositioned and
     closed there (§I no-financial-effect closure), never silently;
-  - the A union B parent-order set is deduplicated by Shopify order
-    id — reconcile the union from order ids in the §K control pack,
-    NEVER by summing leg counters: an overlapping A/B order
-    legitimately appears in both legs' counters (`fetched` and
-    `scanned`, and — when cancelled — in both legs'
+  - `AUTHORIZED_PARENT_ORDER_SET` — the union over the 1 + K
+    executions of each one's own A_k ∪ B_k — is deduplicated by
+    Shopify order id and reconciled from durable identities, NEVER
+    by summing leg counters: each A_k from the orders export (Shopify
+    `created_at` inside that execution's pair — the windows overlap,
+    so one order may sit in several A_k; its row is ADDED by exactly
+    one execution, normally the first that selects it, after a
+    counted error its closer, and every later execution that
+    re-selects it sees a `skipped` no-op or an in-place change of its
+    §I14 class, never a second row), each B_k by its size (that
+    execution's refund-leg `scanned`) and by the parents that leg
+    dispatched — booked or promoted, and dispatched-and-failed by its
+    `[A159] Could not book parent order …` / `[A159] Parent-order
+    booking failed for …` WARNING lines, order id only (§I definition
+    — the selected set itself is not reconstructed; a selected order
+    already booked, by an earlier execution or by this execution's
+    own orders leg (an A/B overlap), is a traceless `skipped` no-op,
+    in the set through its adder) — so the union is
+    evaluated as the union of the A_k plus every parent a refund leg
+    of the 1 + K dispatched; every parent row booked by the 1 + K
+    executions and their recorded closure re-executions must be in
+    it (a closure's booking of a previously failed selected parent
+    included); an overlapping
+    A/B order legitimately appears in both legs' counters (`fetched`
+    and `scanned`, and — when cancelled — in both legs'
     `cancelled_financial_candidates`);
   - the §K per-order line-item completeness control holds: every
     intake order's line-item count from the Shopify export equals the
@@ -1762,8 +2323,13 @@ independent completeness control.
     days.
   Record: `OLDEST_IMPORTED_PARENT_ORDER_CREATED_AT`,
   `OLDEST_IMPORTED_REFUND_CREATED_AT`,
-  `NEWEST_IMPORTED_REFUND_CREATED_AT`, `CANDIDATE_ORDER_COUNT_A`,
-  `CANDIDATE_ORDER_COUNT_B`, `CANDIDATE_ORDER_UNION_COUNT`,
+  `NEWEST_IMPORTED_REFUND_CREATED_AT`, `CANDIDATE_ORDER_COUNT_A` /
+  `_B` per execution (A_k from the export, B_k = that execution's
+  refund-leg `scanned`, for each of the 1 + K initial tasks),
+  `CANDIDATE_ORDER_UNION_COUNT` (= |`AUTHORIZED_PARENT_ORDER_SET`|,
+  evaluated as the union of the A_k plus every parent a refund leg
+  dispatched — booked, promoted or dispatched-and-failed — over the
+  1 + K executions),
   `COMPLETE_REFUND_COUNT`, `REFUND_FETCH_FAILURES`, and the per-leg
   counters `PILOT_SCOPE_SKIPPED_A` / `_B` (must be 0),
   `CANCELLED_FINANCIAL_CANDIDATES_A` / `_B`,
@@ -1799,26 +2365,176 @@ independent completeness control.
   fails; a cancelled B candidate is classified as harmless, skipped,
   or outside the required parent/evidence set; the refund leg's
   `status = "ok"` is read as proof of zero errors; the task result has
-  no leg keys or the task raised before any leg; the A52 start line is
-  absent, or the recorded windows do not match its
-  `created_at_min`/`created_at_max`, or
-  `created_at_max − created_at_min ≠ 7 days`, or
+  no leg keys or the task raised before any leg; an `initial_store_sync`
+  execution's A52 start line is absent, or the recorded windows do not
+  match its `created_at_min`/`created_at_max`, or its
+  `created_at_max − created_at_min ≠ 7 days` (an explicit-window
+  closure re-execution is reconciled to its declared window instead),
+  or
   `I13_SIGNOFF_TIMESTAMP < TASK_RECEIVED_AT ≤ INITIAL_SYNC_STARTED_AT`
   fails; a closure re-execution booked an order outside
-  AUTHORIZED_PARENT_ORDER_SET; counts across A, B, and their union
-  cannot be reconciled; an older imported parent/refund is omitted
+  AUTHORIZED_PARENT_ORDER_SET; the A_k (from the export), the
+  refund-leg `scanned` counts and the union (the A_k plus every
+  refund-leg-dispatched parent = AUTHORIZED_PARENT_ORDER_SET) cannot be
+  reconciled; an older imported parent/refund is omitted
   merely to preserve a seven-day timestamp narrative; or a per-order
   line-item count differs between the export and the stored order
   evidence (the §K completeness control over the PR #143 drained
   reads).
+  STOP also if, after the release drain is complete (queue 0 / unacked
+  0, `/_health/alerts` `total_lag 0`): any `ProjectionFailureLog` row
+  is unresolved or `/_health/alerts` is not 200 (the release must
+  leave health stable — §I16 cannot open on a 503; distinguish a
+  CONSUMED failure — applied marker present, `total_lag 0`,
+  `errored_consumers 0`, `occurrences 1`, unchanged by later passes —
+  from a RETRYABLE one — lag or errored consumers nonzero, self-heals
+  on the next pass; only the former is unhealable in-window); any
+  refund with a nonzero amount has no POSTED credit note (one posted
+  credit note per nonzero `ShopifyRefund`); or journal entries are not
+  in ingest order — the pass condition is that journal-entry ids,
+  `entry_number`s and their source events' company sequence numbers
+  ascend together and `posted_at` is non-decreasing (a partial
+  inversion also fails; entry numbers descending against ids was the
+  fingerprint of a nested projection drain — the 2026-09-22 rehearsal
+  STOP, fixed by PR #152 `17dd1a9`). A consumed refund cannot be
+  healed in-window: re-sync dedups on the existing row, resolving the
+  failure row edits only the log, rebuild is pilot-blocked and direct
+  repair is an §O abort — the disposition is a code fix, a new §B pin
+  and a fresh database (§C).
 - [ ] **I15. Webhook release and retry reconciliation.** Unblock the
   Shopify webhook routes — every I4-enumerated endpoint, the generic
   platform endpoint included — while beat remains stopped. Allow queued
   Shopify retries to arrive; verify idempotency — duplicate deliveries
   create no duplicate financial effects; account for the webhook
   backlog.
+  Retry clock (Shopify documentation as read 2026-09-24: 8 retries over
+  ~4 hours after the FIRST delivery attempt; after 8 consecutive
+  failures a subscription is deleted only if it was created through the
+  Admin API — the §E3 app declares its subscriptions in its app version,
+  so that rule is not expected to apply: an inference, re-confirmed at
+  §E3): a synthetic order's deliveries are first attempted at its
+  creation under the §I4 hold, so the routes must be unblocked no later
+  than ~4 hours after the FIRST synthetic order whose retries this proof
+  relies on — plan §I13 → §I14 → §I15 inside one sitting and reach the
+  §I14 read-back verdict with margin (by about three hours after that
+  first synthetic order). This clock is
+  separate from the 8-hour stale-source clock that starts at the first
+  §I5 Connect click and is defused by the §I14 first sync. Evidence
+  (`preflight/`): per topic, the count of retried deliveries answered
+  200 after unblocking (proxy log — statuses and timestamps only);
+  `ShopifyOrder`, `ShopifyRefund` and `JournalEntry` counts unchanged by
+  those deliveries; 0 new `ProjectionFailureLog` or
+  `ShopifyRejectedEvidence` rows; `/_health/alerts` 200. If the clock
+  was missed, record the backlog as LAPSED. Neither §I13 (a sign-off)
+  nor §I14 (the consumption of already-queued sync tasks) creates a
+  webhook delivery, so repeating them produces nothing for Shopify to
+  retry: to exercise this proof the path restarts at the synthetic
+  ORDER CREATION under the webhook block (new orders and refunds in the
+  synthetic store, whose deliveries are then held and retried — §I4
+  items 1–2 must be re-established (if the routes were already opened)
+  and re-verified in force before they are created, with
+  beat still stopped; the worker keeps running, as it has since §I14,
+  because the replacement execution below runs in it), then —
+  because every 1 + K initial task was consumed at §I14 and creating
+  an order enqueues no sync — a RECORDED replacement execution that
+  books the replacement orders BEFORE the routes open. It is NOT a §I
+  closure re-execution: every replacement order is created after the
+  LAST of the 1 + K executions' `INITIAL_SYNC_STARTED_AT`, so it lies
+  outside every execution's `ORDER_CREATED_WINDOW` and therefore
+  outside `AUTHORIZED_PARENT_ORDER_SET` by construction,
+  and a closure re-execution that books outside that set is a STOP
+  (§I14, §O). It is authorized by its own signed set instead: BEFORE
+  the task is enqueued, sign a dated replacement addendum in
+  `signoff/` (the I13 twin in authority, not in form: its window is
+  declared here in advance because this execution takes an explicit
+  window — the §O bullet against pre-recorded window values binds
+  the GO record and the I13 sign-off, whose windows are
+  execution-relative; this addendum is neither, and its window is
+  declared, not effective; the I13 sign-off does not cover it) that
+  lists `REPLACEMENT_ORDER_SET` — the replacement
+  orders by Shopify order id, none cancelled, each paid at creation,
+  with their refunds (issued BEFORE the addendum is signed, so the
+  addendum lists refunds that exist) — and
+  `REPLACEMENT_WINDOW` — the `created_at_min`/`created_at_max` pair =
+  [T0, T1], the UTC timestamps read on the deployment host at least
+  one minute before the first and one minute after the last
+  replacement order was created — records that
+  nobody edits any earlier order in Shopify Admin (this
+  leg selects by `created_at` within `REPLACEMENT_WINDOW` only and
+  runs no `updated_at` refund leg, so no earlier order is reachable;
+  the rule keeps the read-back attributable to the declared set and
+  the §K B-set evidence unchanged), records
+  that no embedded launch may occur between the first replacement
+  order's creation and the replacement execution's read-back (the
+  worker is running, so a launch's `initial_store_sync` would be
+  consumed at once, book the replacement orders under a window of its
+  own and stand outside the 1 + K pre-declaration — a STOP, not a
+  re-sign), authorizes the same contract at `INTAKE_CONTRACT_VERSION`
+  (its own window rule is `REPLACEMENT_WINDOW`'s equality, not the
+  seven-day rule), names the planned unblock time (≤ ~4 h after the
+  first replacement order), and carries the operator's signature with
+  `I15_REPLACEMENT_SIGNOFF_TIMESTAMP` (UTC, to the
+  second). Then enqueue the worker task `shopify.sync_store_orders`
+  with exactly `REPLACEMENT_WINDOW` (the enqueue form and its I5-rule
+  status are in the §I closure rule above; the CLI
+  `resync_shopify_orders` prints four counters and discards the rest,
+  so it is not the evidence-bearing form here), recorded as its own
+  execution: its task id (printed at enqueue and written into the
+  replacement execution's `preflight/` record at that moment — task
+  id, then the A52 pair, then the exported TaskResult row; the
+  addendum, signed earlier, pre-declares
+  exactly ONE `shopify.sync_store_orders` task by name and count, never
+  an id; it is not an initial task and does not disturb the 1 + K
+  count), its TaskResult row
+  (`date_started` and the complete orders-leg result), its own `[A52]
+  _sync_orders start` line on the worker's streams whose
+  `created_at_min`/`created_at_max` equal `REPLACEMENT_WINDOW`
+  verbatim, and a §K row, with `I15_REPLACEMENT_SIGNOFF_TIMESTAMP` <
+  `REPLACEMENT_EXECUTION_STARTED_AT` (that row's `date_started`).
+  Replacement evidence contract, read from that TaskResult row (the
+  read-only shell form in the §I closure rule; export the row into
+  `preflight/` before §I16 — §I14) against the addendum:
+  `status` "ok"; `created` = |`REPLACEMENT_ORDER_SET`| (their
+  deliveries were held, so none was ingested before) AND every member
+  present in the read-back — together the proof that nothing outside
+  the set was booked; `skipped` = `fetched` − `created` (0 when the
+  window holds only replacement orders); `errors` = 0 (this counter
+  folds in every refund-backfill fetch failure — the orders leg has
+  no separate `fetch_failures` field); `refunds_backfilled` = the
+  refund count the addendum lists (only an order already
+  refunded/partially_refunded at fetch time is backfilled — refund
+  the replacement orders BEFORE the addendum is signed, hence before
+  the enqueue); `pilot_scope_skipped` =
+  0; the four `cancelled_*` counters 0 (`REPLACEMENT_ORDER_SET`
+  contains no cancelled order by definition);
+  `cogs_fulfillments` recorded, no financial effect expected under
+  the pilot profile (§I definition, mechanical side effects); its
+  refund backfill books their refunds. Any order it
+  books outside `REPLACEMENT_ORDER_SET` is a STOP (a re-selection of an
+  already-booked order that adds nothing is the idempotent §I closure
+  behaviour, not a booking); `AUTHORIZED_PARENT_ORDER_SET`, the I13
+  sign-off and the §I14 verdict are unchanged by it. The execution is
+  verified in a read-back (rows, events and journals present, 0
+  failures), and only then the unblock within ~4 hours of the first
+  replacement order — the held deliveries then arrive as true
+  duplicates of existing effects. Orders created AFTER the unblock are
+  first ingestions, not duplicates. Otherwise
+  record an explicit gap against J1's duplicate-delivery proof — never
+  a lapsed backlog as exercised.
+  STOP if: any retried delivery creates a duplicate row, event or
+  journal; a subscription declared by the §E3 app version is found
+  missing after the hold; or a replacement execution ran before its
+  addendum was signed, or booked an order outside
+  `REPLACEMENT_ORDER_SET`, or its A52 window differs from
+  `REPLACEMENT_WINDOW`, or it is not recorded as its own execution, or
+  its TaskResult row is absent or fails the replacement evidence
+  contract ("ran before its addendum was signed" =
+  `I15_REPLACEMENT_SIGNOFF_TIMESTAMP` not earlier than
+  `REPLACEMENT_EXECUTION_STARTED_AT`).
 - [ ] **I16. Beat restart LAST + drift cadence.** Once the initial task
-  and webhook retries are reconciled and health is stable, start Celery
+  and webhook retries are reconciled, health is stable and every
+  evidence TaskResult row is exported into `preflight/` (§I14 — beat
+  installs the 24 h `celery.backend_cleanup`), start Celery
   beat. Rerun the go-live preflight and `/_health/alerts`. From here on,
   rerun the go-live preflight after every subsequent sync/import or
   supported configuration action and before every later phase sign-off.
@@ -1914,20 +2630,20 @@ Minimum schema:
 | Control | Source of truth |
 |---|---|
 | Shopify order/refund IDs, counts, gross totals | Shopify admin/exports |
-| Initial-intake set A: order count, ids, totals (`created_at` window) | Shopify admin/exports |
-| Initial-intake set B: refund-candidate order count and ids (order-`updated_at` window) | Shopify admin/exports |
-| A union B order count after deduplication + A/B overlap count | Shopify admin/exports vs system |
-| Complete refund count and totals per B candidate | Shopify admin/exports vs system |
+| Initial-intake set A per execution — A_k for each of the 1 + K initial tasks: order count, ids, totals (that execution's `created_at` window; the windows overlap, so an order may sit in several A_k — the execution whose dispatch of it first succeeded is the one that added it, normally the first that selected it) | Shopify admin/exports |
+| Initial-intake set B per execution — B_k for each of the 1 + K initial tasks: its size (that execution's refund-leg `scanned`) and the identities of the parents that leg dispatched: booked (rows in its span with `shopify_created_at` outside its window; inside-window rows whose orders-leg dispatch left a `Failed to process order …` / `Error processing order …` line — the in-execution closure; plus its promotions) or dispatched-and-failed (the order ids in its `[A159] Could not book parent order …` / `[A159] Parent-order booking failed for …` WARNING lines); a selected order already booked — by an earlier execution, or by this execution's own orders leg (an A/B overlap) — is a traceless `skipped` no-op: not enumerated, counted as `scanned` minus the identities above, in the set through its adder; the selected set itself is not reconstructed — Shopify evaluated it against an order `updated_at` the system neither requests nor stores (§I definition) | task result + system rows (private) |
+| `AUTHORIZED_PARENT_ORDER_SET` = the union over the 1 + K executions of A_k ∪ B_k, deduplicated by Shopify order id — evaluated as the union of the A_k plus every parent a refund leg dispatched and left a trace of (booked, promoted or dispatched-and-failed — a failed one stays in the set for its closure; a traceless dispatch of an already-booked order — booked by an earlier execution or by the same execution's orders leg — is in the set through its adder); a gap record's row is ADDED by exactly one execution (normally the first that selects it; after a counted error, its closer) and it may remain a member of later candidate sets as a `skipped` no-op or an in-place change of its class — plus, per execution, the refund-leg `scanned` count | Shopify admin/exports vs system |
+| Complete refund count and totals per refund-leg-dispatched parent (the B candidates as a class = the union over the 1 + K executions of the parents each refund leg dispatched — the "set B per execution" row; refund evidence supplies each one's complete refund history and totals over the order's whole life, never the membership; never `ShopifyOrder.financial_status`, which is written only at creation) | Shopify "Export transaction histories" file (the orders CSV carries only a per-order refunded amount) vs system |
 | Per-order line-item count for every intake order (must equal the stored order evidence's `line_items` count — an independent completeness control over the PR #143 drained reads; the stored list is unfiltered, so equality is exact. Deliberately no variant-count twin: the sync legitimately skips SKU-less variants and the NON_STOCK catalog collapses shared SKUs, so no export-vs-system variant equality exists to demand) | Shopify admin/exports vs stored order evidence (read-only) |
 | Oldest and newest imported parent-order dates | system (read-only) vs Shopify |
 | Oldest and newest imported refund dates | system (read-only) vs Shopify |
-| Refund fetch-failure count (must be 0 on the latest accounted execution; any earlier execution's fetch failure recorded with its §I closure) | `initial_store_sync` task result(s) — the release execution AND every recorded closure re-execution |
+| Refund fetch-failure count (must be 0 on the latest accounted execution; any earlier execution's fetch failure recorded with its §I closure) | every one of the 1 + K `initial_store_sync` task results (the release execution and the K pre-declared re-executions) — refund leg `fetch_failures` AND the orders leg's `errors`, which folds in every per-order refund-backfill fetch failure; for every recorded closure re-execution and any §I15 replacement execution — orders-leg-only `sync_store_orders` TaskResult rows — the `errors` counter, which folds in every refund-backfill fetch failure (that leg has no `fetch_failures` field) and must be 0 |
 | Cancelled B candidates: count and ids; for each — local parent present, complete refund count/totals, and the cancellation provenance stamp verified per §I (no stamp-failure entry in `cancelled_processing_errors` and no "Cancellation provenance stamp failed" warning for that order; raw-payload `cancelled_at` corroboration only) | Shopify admin/exports vs system (read-only) + task result / worker log (private) |
 | Cancelled A orders: captured-money (booked + stamped) vs never-captured (no financial effect) split | Shopify admin/exports vs `cancelled_financial_processed` (booked + stamped) / `cancelled_no_effect_skipped` (never captured, writer succeeded); any `cancelled_financial_candidates` − `cancelled_financial_processed` gap must be accounted for by `cancelled_processing_errors` + `pilot_scope_skipped` per the §I inequality (row below) |
-| Per-leg pilot/cancelled counters (`pilot_scope_skipped`, `cancelled_financial_candidates`, `cancelled_financial_processed`, `cancelled_no_effect_skipped` (orders leg only), `cancelled_processing_errors`) and the inequality check per leg | `initial_store_sync` task result |
-| `pilot_scope_skipped` per leg (must be 0 on the EGP store) | `initial_store_sync` task result |
-| `INITIAL_SYNC_STARTED_AT`, effective window boundaries (timestamps only), `TASK_RECEIVED_AT`, `INTAKE_CONTRACT_VERSION` | worker log `[A52] _sync_orders start` line + Celery task log (private) vs the §B runbook revision |
-| The complete `initial_store_sync` task result, plus the complete result of every recorded closure re-execution (each with its own task id or CLI invocation, A52 line, counters, and inequality) | worker log / task result / TaskResult rows (private) |
+| Per-leg pilot/cancelled counters (`pilot_scope_skipped`, `cancelled_financial_candidates`, `cancelled_financial_processed`, `cancelled_no_effect_skipped` (orders leg only), `cancelled_processing_errors`) and the inequality check per leg | every one of the 1 + K `initial_store_sync` task results (the K re-executions reconciled per §I14 / §Q step 12 — zero additions on the synthetic store) |
+| `pilot_scope_skipped` per leg (must be 0 on the EGP store) | every one of the 1 + K `initial_store_sync` task results (the K re-executions reconciled per §I14 / §Q step 12 — zero additions on the synthetic store) |
+| `INITIAL_SYNC_STARTED_AT`, effective window boundaries (timestamps only), `TASK_RECEIVED_AT`, `INTAKE_CONTRACT_VERSION` | worker log `[A52] _sync_orders start` line + the TaskResult row's `date_started` (private) vs the §B runbook revision |
+| The complete `initial_store_sync` task result of every one of the 1 + K initial tasks (the release execution and the K pre-declared re-executions, each reconciled against its own execution-time window per §I14 / §Q step 12 — additions only for records that newly qualified since the predecessor, per the five §I14 record classes and their own bounds (parent orders by the gap between consecutive executions' `INITIAL_SYNC_STARTED_AT`; refunds and in-place promotions up to the execution's own `date_done`; in-place cancellations by `cancelled_at`; products by construction), the identity of every addition — Shopify order id, refund id, `shopify_product_id` / `shopify_variant_id`, numeric ids only (an auto-created mapping with variant id 0: the Item code and the booking order's id) — listed with the execution's row, together with any counter residual and its explanation (D14 (B): rows and in-place changes decide, counters corroborate): zero additions, an empty list and no residual on the synthetic store), plus the complete result of every recorded closure re-execution and of any §I15 replacement execution (each with its own task id and TaskResult row — the worker-task form of the §I closure rule; an orders-leg-only result carries the twelve `_sync_orders` fields and no refund-leg keys — A52 line, counters, and inequality; the replacement execution also with its signed addendum — `REPLACEMENT_ORDER_SET`, `REPLACEMENT_WINDOW`, `I15_REPLACEMENT_SIGNOFF_TIMESTAMP` — the A52-window equality and the replacement evidence contract) | worker log / task result / the pre-§I16 TaskResult exports in `preflight/` (§I14; the live rows expire 24 h after beat starts) (private) |
 | Settlement row count, gross, fee, net totals | the CSV files |
 | Bank line count, debit total, credit total | the CSV files |
 | Event counts by relevant type | system (read-only) |
@@ -2425,22 +3141,35 @@ Sign-off: operator ______ date ______
   per-leg result field before the worker has executed (a retrospective
   authorization — the contract wording names them as future values,
   which is required; a filled-in value is the violation), or that is
-  amended after signing to include one;
+  amended after signing to include one (the §I15 replacement addendum
+  declares `REPLACEMENT_WINDOW` in advance by design and is outside
+  this bullet);
 - a GO record whose "version <n>", or an I13 sign-off, does not name
   the `INTAKE_CONTRACT_VERSION` (the §B runbook revision) in force, or
   a merchant-run runbook revision whose §I definition block is not
   textually identical to the G1-rehearsed one;
-- the `[A52] _sync_orders start` line absent, or recorded windows not
-  matching its `created_at_min`/`created_at_max`, or
-  `created_at_max − created_at_min ≠ 7 days`, or the ordering
+- the release execution's `[A52] _sync_orders start` line absent, or
+  recorded windows not matching its `created_at_min`/`created_at_max`,
+  or `created_at_max − created_at_min ≠ 7 days` (the seven-day rule
+  binds `initial_store_sync` executions only; an explicit-window
+  closure or replacement execution is reconciled to its declared
+  window), or the ordering
   authorization sign-off `< TASK_RECEIVED_AT ≤ INITIAL_SYNC_STARTED_AT`
   failing (a larger-than-seconds gap between the last two is not an
   abort by itself but must be explained in the record), or a shop
   domain copied from that line into attachable evidence;
 - a closure re-execution that books any order outside
   AUTHORIZED_PARENT_ORDER_SET, or that is not recorded as an explained
-  second execution;
-- more than one unexplained initial task;
+  second execution in the worker-task form with its TaskResult row
+  (the CLI form's four printed counters cannot carry the §K contract);
+- a §I15 replacement execution (the lapsed-retry path) started before
+  its replacement addendum was signed (I15_REPLACEMENT_SIGNOFF_TIMESTAMP
+  not earlier than REPLACEMENT_EXECUTION_STARTED_AT), or that books any
+  order outside its signed REPLACEMENT_ORDER_SET, or whose A52 window
+  differs from REPLACEMENT_WINDOW, or that is not recorded as its own
+  execution, or whose TaskResult row is absent or fails the
+  replacement evidence contract;
+- any unexplained initial task (the expected count is 1 + K — §I14);
 - an older parent order or refund excluded merely because its date
   predates the seven-day window;
 - the §K per-order line-item completeness control missing or failed
@@ -2450,7 +3179,8 @@ Sign-off: operator ______ date ______
 - any claim that `import_mode="skip"` suppresses the refund catch-up;
 - an initial-sync result not observed and retained;
 - webhook release before initial-task reconciliation;
-- beat restarted before initial-task and webhook-retry reconciliation;
+- beat restarted before initial-task and webhook-retry reconciliation,
+  or before every evidence TaskResult row was exported (§I14);
 - a queue purge proposed as evidence of a clean cutover.
 
 The stop/go decision belongs to the **founder/operator**; every stop or go
@@ -2466,7 +3196,7 @@ secrets in Git:
 ```
 revision/           # §B pins
 environment/        # §C, §E, §G reports (secret-free)
-preflight/          # §F blockers, §H bootstrap, §I preflight outputs
+preflight/          # §F blockers, §H bootstrap, §I preflight outputs, the pre-§I16 TaskResult exports (§I14)
 source-controls/    # §K control pack + source-file hashes
 failure-injection/  # §J scenario evidence
 alerts/             # §L delivery proof
@@ -2497,7 +3227,8 @@ Before any GitHub attachment:
 
 1. Preserve the unmodified original in private encrypted storage.
 2. Create a separate sanitized copy.
-3. Inspect for and remove: names; email addresses; shop domains; company
+3. Inspect for and remove: names; email addresses; shop domains (in
+   screenshots: address bar, tab title, admin header, app panel); company
    slugs; customer/order/refund identifiers; source row contents;
    merchant amounts; hostnames/IP addresses where private; cookies;
    authorization headers; CSRF tokens; Shopify secrets/tokens;
@@ -2650,7 +3381,9 @@ after G1 and G2 are recorded complete in the
     non-financial connection event. Capture:
     `PRE_GO_INGESTION_BASELINE_HASH`, `PRE_GO_EVENT_TYPE_COUNTS`,
     `PRE_GO_JOURNAL_COUNT`, `PRE_GO_SHOPIFY_SOURCE_COUNTS`,
-    `PRE_GO_TIMESTAMP`. If merchant source or financial data has
+    `PRE_GO_INITIAL_TASK_IDS` (the queued `initial_store_sync` ids in
+    queue order from a read-only broker listing — never a purge;
+    expected 1 + K), `PRE_GO_TIMESTAMP`. If merchant source or financial data has
     already been ingested: STOP and recreate the fresh merchant
     environment — never delete it manually to recover the proof;
 11. sign the **dated GO decision**, using the intake-contract
@@ -2691,8 +3424,14 @@ after G1 and G2 are recorded complete in the
     `INITIAL_LOOKBACK_DAYS = 7`, `PRE_GO_INGESTION_BASELINE_HASH`, the
     authorized intake-contract version — `INTAKE_CONTRACT_VERSION`,
     the §B runbook revision SHA whose §I definition text is the
-    contract (this is the "version <n>" the wording cites) — and
-    merchant acknowledgement/approval where required. (The GO's
+    contract (this is the "version <n>" the wording cites) —
+    `INITIAL_TASKS_QUEUED = 1 + K` with `K` (the successful embedded
+    `token-exchange/` calls since the merchant store's connection) and
+    the ordered task ids copied from step 10's
+    `PRE_GO_INITIAL_TASK_IDS` (the first is the release execution; no
+    embedded launch may occur between signing and the step-12 worker
+    start — re-sign if one does), and merchant
+    acknowledgement/approval where required. (The GO's
     "complete parent order" (item 3) and "merchant product catalog"
     (item 4) are provable because the executed revision contains the
     PR #143 nested-collection pagination fix — §B requires it, and the
@@ -2722,8 +3461,83 @@ after G1 and G2 are recorded complete in the
     reviewed, and proven before connecting that merchant store;**
 12. release intake — **worker only**: keep webhooks blocked and beat
     stopped; start the Celery worker; observe the queued
-    `shopify.initial_store_sync` task; record its task id, start/end
-    timestamps, and complete result. **Post-execution controls — the
+    `shopify.initial_store_sync` task; record, for every one of the
+    1 + K initial tasks, its task id, start/end timestamps and complete
+    result (the release execution first in queue order; each of the K
+    pre-declared re-executions reconciled against its OWN
+    execution-time window — its own A52 pair, the seven-day rule and
+    `GO_TIMESTAMP < its date_started ≤ its INITIAL_SYNC_STARTED_AT` —
+    and permitted to add exactly what newly qualified since its
+    predecessor, because the merchant keeps trading while the hold is
+    on — per record class and evidence as §I14 states, its five
+    classes: (1) parent orders — an A record (`shopify_created_at`
+    inside this execution's window) booked by the orders leg,
+    explained by a Shopify `created_at` inside (predecessor's
+    `INITIAL_SYNC_STARTED_AT`, own `INITIAL_SYNC_STARTED_AT`] (or a
+    boundary record at most 60 s before the predecessor's start that
+    no earlier execution dispatched, or an order the predecessor
+    fetched unrouted that became routable in the gap — admitted and
+    recorded as §I14 states); a
+    B-only record (outside the window) booked by the refund leg,
+    explained by the in-gap refund or edit that put its `updated_at`
+    inside the pair; a parent first booked already refunded brings
+    its refund history; (2) gap refunds on already-booked parents by
+    the refund's Shopify timestamp inside (predecessor's
+    `INITIAL_SYNC_STARTED_AT`, own `date_done`] — older only when the
+    parent's `updated_at` first entered the pair in this execution,
+    when its `financial_status` first became refunded in the gap, or
+    as the closer of an earlier counted backfill error; (3)
+    PENDING_CAPTURE stubs promoted in place (a COD order paid in the
+    gap) — no new order row, identified by an `event_id` whose
+    `BusinessEvent` `recorded_at` lies in [its `date_started`, its
+    `date_done`] on a row created before `date_started`, explained by
+    the transaction that moved `financial_status` to a paid-writer
+    status in the order's Admin timeline (inside the class-2
+    bound when the orders leg promoted it; when the refund leg did,
+    by the in-pair `updated_at` that selected the order); (4)
+    never-captured cancellations dispositioned in place — a stub
+    flipped to CANCELLED or re-stamped, or a booked-while-authorized
+    row voided since and re-stamped: no row, no event, no journal;
+    identified from the orders export as the cancelled never-captured
+    orders inside the window with `cancelled_at` before this
+    execution's `date_started` that have a local row (one cancelled
+    during the run — `cancelled_at` in [its `date_started`, its
+    `date_done`] — is recorded as such and explained either way);
+    explained by that `cancelled_at` (a captured-money cancellation on
+    a booked row is only stamped — `skipped`, never `created` — and
+    is explained the same way); (5) products — a new
+    `ShopifyProduct` mapping is the paid writer's when a paid-writer
+    `Auto-created Item … cost=… (inventory=…, cogs=…)` line naming
+    its Item code lies in the execution's span, explained by that
+    line's order; every other new
+    mapping is the products leg's, explained by construction (the
+    windowless products leg read the whole catalog on the
+    predecessor, whose products leg must have completed on its
+    counter shape) with no Shopify timestamp (none is read into the
+    system); a closer of an earlier counted error per the §I closure
+    rule. The STOP criterion is the rows and in-place changes: every
+    local `ShopifyOrder` / `ShopifyRefund` / `ShopifyProduct` row
+    whose `created_at` lies in [its `date_started`, its `date_done`],
+    every `BusinessEvent` recorded in that span and every class-4
+    disposition explained by its class — an unexplained one is a
+    STOP; the counters corroborate and never decide (D14 (B)):
+    normally `created` = A rows + orders-leg promotions + class-4
+    dispositions, `refunds_backfilled + refunds_created` = every new
+    refund row, products `created + linked` + the paid writer's
+    `Auto-created Item … cost=… (inventory=…, cogs=…)` worker lines
+    in the execution's span = every new mapping; any residual is
+    recorded with its explanation (post-commit error paths,
+    in-execution closures, same-second boundaries), and a residual no
+    row, line or warning explains is a STOP; the exact merchant-path
+    counter algebra belongs to the merchant-cutover document of the
+    post-G1 runbook split; every addition's identity (order id,
+    refund id, `shopify_product_id` / `shopify_variant_id` — the Item
+    code and the booking order's id for an auto-created mapping with
+    variant id 0) recorded with the execution's row — and each parent-order
+    addition joins `AUTHORIZED_PARENT_ORDER_SET` for that execution,
+    anything else is a STOP; all 1 + K rows exported before
+    step 15). **Post-execution
+    controls — the
     FIRST place these values are recorded (they never appear in the
     step-11 GO record; the §K control pack copies them from here):**
     from the worker's private `[A52] _sync_orders start …
@@ -2735,8 +3549,9 @@ after G1 and G2 are recorded complete in the
     `REFUND_CANDIDATE_UPDATED_WINDOW_START`/`_END` = the same pair (the
     refund leg receives the identical values and logs no window of its
     own), plus `TASK_RECEIVED_AT` from the task's durable
-    `django_celery_results` TaskResult row (start time, keyed by task
-    id; corroborated by the Celery received/started log line), and
+    `django_celery_results` TaskResult row (`date_started`, keyed by
+    task id; corroborated by the `[A52] _sync_orders start` line that
+    follows within seconds — §I definition), and
     every per-leg result field; reconcile them to the step-11 GO
     record — `INTAKE_CONTRACT_VERSION` and `INITIAL_LOOKBACK_DAYS = 7`
     — by the §I rule: `created_at_max − created_at_min` = exactly 7
@@ -2744,12 +3559,21 @@ after G1 and G2 are recorded complete in the
     (the inequality failing is a STOP; the last two are normally
     seconds apart — a larger gap is not a STOP by itself but must be
     explained in the record) — before any merchant-facing checkpoint;
-    an absent A52 start line is a STOP. Require exactly one initial
-    task consumed on release; any later re-execution used for §I
-    closure is a separately recorded, explained execution (own task id
-    or CLI invocation, own A52 line, counters and inequality, retained
-    beside the release result), and more than one UNEXPLAINED initial
-    task is a STOP. A task result with NO leg keys (`skipped` "Store
+    an absent A52 start line is a STOP. Require exactly 1 + K initial
+    tasks consumed on release, K being the successful embedded
+    `token-exchange/` calls after the merchant's binding that the GO
+    record pre-declares from `PRE_GO_INITIAL_TASK_IDS` (each queues one
+    task — §I14; the first in queue order is the release execution, the
+    others explained re-executions that add only what newly qualified
+    since the predecessor, per the five §I14 record classes and
+    their own bounds — step 12); any later
+    re-execution used for §I closure is a separately recorded,
+    explained execution (own task id and TaskResult row — the
+    worker-task form of the §I closure rule, usable here only after a
+    recorded synthetic proof of the enqueue form — own A52 line,
+    counters and inequality, retained beside the release result), and
+    any UNEXPLAINED initial task is a STOP. A task result with NO leg
+    keys (`skipped` "Store
     not active" / "tenant not writable", `error` "Store not found"), or
     a task that raised before any leg (Celery FAILURE, no result dict),
     means the queued task was consumed without executing the
@@ -2759,10 +3583,23 @@ after G1 and G2 are recorded complete in the
     LEG (the top-level `status` is unconditionally `"ok"` when the legs
     run and proves nothing — §I definition).
     **Reconcile to the authorized intake contract** (§I definition),
-    not merely to source timestamps within seven days: record the A
-    and B candidate sets and their overlap; reconcile their union
-    from order ids without double counting (never by summing leg
-    counters); require, for every B candidate — cancelled or not — a
+    not merely to source timestamps within seven days: record, per
+    execution (each of the 1 + K), A_k from the orders export and B_k
+    by its `scanned` size and the parents its refund leg dispatched —
+    booked, promoted, or dispatched-and-failed by its `[A159]`
+    failure lines (the selected set itself is not reconstructed — §I
+    definition; a selected order already booked, by an earlier
+    execution or by this execution's own orders leg, is a traceless
+    `skipped` no-op, in the set through its adder; the B candidates
+    as a class are those dispatched parents,
+    §K, their refund histories checked against refund evidence);
+    reconcile `AUTHORIZED_PARENT_ORDER_SET` — the union of
+    the A_k plus every refund-leg-dispatched parent over the 1 + K
+    executions — from order ids without double counting (a gap
+    record's row is added by exactly one execution — normally the
+    first that selects it, after a counted error its closer — and it
+    may sit in later candidate sets as a `skipped` no-op or an
+    in-place change of its class; never by summing leg counters); require, for every B candidate — cancelled or not — a
     local parent order, its complete refund history, and — where
     Shopify shows `cancelled_at` — the cancellation provenance stamp
     verified from the task result and worker log (no stamp-failure
@@ -2818,8 +3655,30 @@ after G1 and G2 are recorded complete in the
     source/control totals;
 14. only after the initial task is accounted for, unblock Shopify
     webhooks; observe and reconcile webhook retries; prove duplicate
-    webhook delivery does not duplicate financial effects;
-15. start Celery beat **LAST**;
+    webhook delivery does not duplicate financial effects. The same
+    retry clock as §I15 binds this step: Shopify retries a held
+    delivery 8 times over ~4 hours from its first attempt, so the
+    hold must be lifted within ~4 hours of the FIRST merchant
+    delivery it held (plan steps 8–14 inside one sitting); a
+    delivery that lapsed reaches the ledger only through the
+    periodic catch-up after step 15 and cannot serve as the
+    duplicate-delivery proof — record any lapse explicitly. The
+    duplicate proof is carried by held deliveries for orders any of
+    the 1 + K step-12 executions already booked; a held delivery for
+    an order created after the LAST of those executions'
+    `INITIAL_SYNC_STARTED_AT` is a FIRST ingestion when it arrives
+    (not a duplicate — an order created in a gap between consecutive
+    executions was booked by the later one and its held delivery IS a
+    duplicate), and an order created after the unblock
+    is ordinary webhook intake;
+15. start Celery beat **LAST** — after every evidence TaskResult row
+    (every one of the 1 + K initial-task rows — the release execution
+    and the K pre-declared re-executions whose per-window
+    reconciliation step 12 reads from their complete results — and
+    every recorded
+    closure re-execution's) is exported as in §I14, because beat
+    installs the 24 h
+    `celery.backend_cleanup`;
 16. rerun the go-live preflight and alerts after beat starts;
 17. sign the final **intake-complete checkpoint**. Do NOT sign while:
     the refund catch-up leg's status is not `ok`, or `fetch_failures >
@@ -2875,7 +3734,7 @@ before GO; the GO record records a value for `INITIAL_SYNC_STARTED_AT`,
 an effective window boundary, or a per-leg result field that did not
 exist at signing, or is amended after signing; its intake differs from the
 authorized intake contract (§I definition); a cancelled B candidate is
-treated as skipped or outside the required evidence set; more than one
+treated as skipped or outside the required evidence set; any
 unexplained initial task runs; webhooks are
 unblocked before the initial task is accounted for; beat starts before
 initial intake and retries are reconciled; any unsupported
