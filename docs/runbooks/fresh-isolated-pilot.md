@@ -1344,7 +1344,11 @@ BEFORE that execution and then verifies equal to its A52 line):
 
 ```
 INITIAL_SYNC_STARTED_AT = the execution-time `now` the initial_store_sync
-                          task computes when its store sync begins
+                          task computes when its store sync begins —
+                          each of the 1 + K initial tasks computes its
+                          OWN, recorded per execution; the ordering
+                          rule and the GO / I13 reconciliation bind the
+                          release execution's —
                           (`_sync_store`: `now = tz.now()`) — the value
                           the code uses as BOTH window ends. It is
                           observable ONLY as the `created_at_max` value
@@ -1386,11 +1390,20 @@ REFUND_CANDIDATE_UPDATED_WINDOW =
       of its own)
 
 A = eligible Shopify orders whose created_at is in ORDER_CREATED_WINDOW
+    (computed per execution from that execution's window)
 
 B = orders currently refunded or partially_refunded whose Shopify
-    order.updated_at is in REFUND_CANDIDATE_UPDATED_WINDOW
+    order.updated_at is in REFUND_CANDIDATE_UPDATED_WINDOW (computed
+    per execution from that execution's window)
 
-AUTHORIZED_PARENT_ORDER_SET = A union B, deduplicated by Shopify order id
+AUTHORIZED_PARENT_ORDER_SET = the union, over the 1 + K initial tasks, of
+                          each execution's own A union B, deduplicated
+                          by Shopify order id — a record that newly
+                          qualifies between consecutive execution
+                          windows is authorized for the execution
+                          that first selects it (on the synthetic
+                          store the K later sets contribute no new
+                          record)
 
 REPLACEMENT_ORDER_SET   = (§I15 lapsed-retry path only) the synthetic
                           orders created under the re-verified webhook
@@ -1924,7 +1937,7 @@ independent completeness control.
   worker stream, §G1d), its start/finish timestamps, and its complete result
   (privately) — and export each evidence TaskResult row — every one of
   the 1 + K initial-task rows (the release execution AND the K
-  pre-declared re-executions whose "added nothing" proof lives in
+  pre-declared re-executions whose per-window reconciliation lives in
   their complete results), every closure re-execution row and the §I15
   replacement row — (`task_id`, `status`, `date_started`, `date_done`,
   `result`) into `preflight/`
@@ -1940,12 +1953,19 @@ independent completeness control.
   one task through `complete_oauth_token_exchange`; session-login-only
   launches queue none): the FIRST in queue order — the §I5 enqueue,
   its id recorded in the §I12 queue baseline — is the release
-  execution; the other K are explained re-executions that must ADD
-  nothing (orders leg `created 0`, `skipped` equal to `fetched`,
-  `errors 0`, `pilot_scope_skipped 0`; refund leg `refunds_created 0`,
-  `errors 0`, `fetch_failures 0`, `pilot_scope_skipped 0`; products
-  `created 0` with `updated` equal to the catalog size; each with its
-  own A52 pair) and whose ids equal the pre-declared ids in order. Any
+  execution; the other K are explained re-executions, each reconciled
+  against its OWN execution-time window (its own A52 pair; the
+  seven-day rule; `I13_SIGNOFF_TIMESTAMP < its date_started ≤ its
+  INITIAL_SYNC_STARTED_AT`), that may add exactly the records that
+  newly qualified between its predecessor's `INITIAL_SYNC_STARTED_AT`
+  and its own — each addition explained by a Shopify `created_at` /
+  `updated_at` inside that gap, anything else a STOP. On the
+  synthetic store, where nothing is created or edited between
+  executions, that is zero additions: orders leg `created 0`,
+  `skipped` equal to `fetched`, `errors 0`, `pilot_scope_skipped 0`;
+  refund leg `refunds_created 0`, `errors 0`, `fetch_failures 0`,
+  `pilot_scope_skipped 0`; products `created 0` with `updated` equal
+  to the catalog size. Their ids equal the pre-declared ids in order. Any
   other re-execution used for §I closure is a separately recorded,
   explained execution with its own task id and TaskResult row (the
   worker-task form of the §I closure rule — the CLI prints four
@@ -2374,10 +2394,10 @@ Minimum schema:
 | Refund fetch-failure count (must be 0 on the latest accounted execution; any earlier execution's fetch failure recorded with its §I closure) | every one of the 1 + K `initial_store_sync` task results (the release execution and the K pre-declared re-executions) — refund leg `fetch_failures` AND the orders leg's `errors`, which folds in every per-order refund-backfill fetch failure; for every recorded closure re-execution and any §I15 replacement execution — orders-leg-only `sync_store_orders` TaskResult rows — the `errors` counter, which folds in every refund-backfill fetch failure (that leg has no `fetch_failures` field) and must be 0 |
 | Cancelled B candidates: count and ids; for each — local parent present, complete refund count/totals, and the cancellation provenance stamp verified per §I (no stamp-failure entry in `cancelled_processing_errors` and no "Cancellation provenance stamp failed" warning for that order; raw-payload `cancelled_at` corroboration only) | Shopify admin/exports vs system (read-only) + task result / worker log (private) |
 | Cancelled A orders: captured-money (booked + stamped) vs never-captured (no financial effect) split | Shopify admin/exports vs `cancelled_financial_processed` (booked + stamped) / `cancelled_no_effect_skipped` (never captured, writer succeeded); any `cancelled_financial_candidates` − `cancelled_financial_processed` gap must be accounted for by `cancelled_processing_errors` + `pilot_scope_skipped` per the §I inequality (row below) |
-| Per-leg pilot/cancelled counters (`pilot_scope_skipped`, `cancelled_financial_candidates`, `cancelled_financial_processed`, `cancelled_no_effect_skipped` (orders leg only), `cancelled_processing_errors`) and the inequality check per leg | every one of the 1 + K `initial_store_sync` task results (the K re-executions must show the §I14 "added nothing" values) |
-| `pilot_scope_skipped` per leg (must be 0 on the EGP store) | every one of the 1 + K `initial_store_sync` task results (the K re-executions must show the §I14 "added nothing" values) |
+| Per-leg pilot/cancelled counters (`pilot_scope_skipped`, `cancelled_financial_candidates`, `cancelled_financial_processed`, `cancelled_no_effect_skipped` (orders leg only), `cancelled_processing_errors`) and the inequality check per leg | every one of the 1 + K `initial_store_sync` task results (the K re-executions reconciled per §I14 / §Q step 12 — zero additions on the synthetic store) |
+| `pilot_scope_skipped` per leg (must be 0 on the EGP store) | every one of the 1 + K `initial_store_sync` task results (the K re-executions reconciled per §I14 / §Q step 12 — zero additions on the synthetic store) |
 | `INITIAL_SYNC_STARTED_AT`, effective window boundaries (timestamps only), `TASK_RECEIVED_AT`, `INTAKE_CONTRACT_VERSION` | worker log `[A52] _sync_orders start` line + the TaskResult row's `date_started` (private) vs the §B runbook revision |
-| The complete `initial_store_sync` task result of every one of the 1 + K initial tasks (the release execution and the K pre-declared re-executions, each reconciled to the §I14 "added nothing" values), plus the complete result of every recorded closure re-execution and of any §I15 replacement execution (each with its own task id and TaskResult row — the worker-task form of the §I closure rule; an orders-leg-only result carries the twelve `_sync_orders` fields and no refund-leg keys — A52 line, counters, and inequality; the replacement execution also with its signed addendum — `REPLACEMENT_ORDER_SET`, `REPLACEMENT_WINDOW`, `I15_REPLACEMENT_SIGNOFF_TIMESTAMP` — the A52-window equality and the replacement evidence contract) | worker log / task result / the pre-§I16 TaskResult exports in `preflight/` (§I14; the live rows expire 24 h after beat starts) (private) |
+| The complete `initial_store_sync` task result of every one of the 1 + K initial tasks (the release execution and the K pre-declared re-executions, each reconciled against its own execution-time window per §I14 / §Q step 12 — additions only for records that newly qualified between consecutive windows, zero on the synthetic store), plus the complete result of every recorded closure re-execution and of any §I15 replacement execution (each with its own task id and TaskResult row — the worker-task form of the §I closure rule; an orders-leg-only result carries the twelve `_sync_orders` fields and no refund-leg keys — A52 line, counters, and inequality; the replacement execution also with its signed addendum — `REPLACEMENT_ORDER_SET`, `REPLACEMENT_WINDOW`, `I15_REPLACEMENT_SIGNOFF_TIMESTAMP` — the A52-window equality and the replacement evidence contract) | worker log / task result / the pre-§I16 TaskResult exports in `preflight/` (§I14; the live rows expire 24 h after beat starts) (private) |
 | Settlement row count, gross, fee, net totals | the CSV files |
 | Bank line count, debit total, credit total | the CSV files |
 | Event counts by relevant type | system (read-only) |
@@ -3198,8 +3218,16 @@ after G1 and G2 are recorded complete in the
     `shopify.initial_store_sync` task; record, for every one of the
     1 + K initial tasks, its task id, start/end timestamps and complete
     result (the release execution first in queue order; each of the K
-    pre-declared re-executions reconciled to the §I14 "added nothing"
-    values; all 1 + K rows exported before step 15). **Post-execution
+    pre-declared re-executions reconciled against its OWN
+    execution-time window — its own A52 pair, the seven-day rule and
+    `GO_TIMESTAMP < its date_started ≤ its INITIAL_SYNC_STARTED_AT` —
+    and permitted to add exactly the records that newly qualified
+    between its predecessor's `INITIAL_SYNC_STARTED_AT` and its own,
+    because the merchant keeps trading while the hold is on; each
+    addition is explained by a Shopify `created_at` / `updated_at`
+    inside that gap and joins `AUTHORIZED_PARENT_ORDER_SET` for that
+    execution, anything else is a STOP; all 1 + K rows exported before
+    step 15). **Post-execution
     controls — the
     FIRST place these values are recorded (they never appear in the
     step-11 GO record; the §K control pack copies them from here):**
@@ -3227,7 +3255,8 @@ after G1 and G2 are recorded complete in the
     `token-exchange/` calls after the merchant's binding that the GO
     record pre-declares from `PRE_GO_INITIAL_TASK_IDS` (each queues one
     task — §I14; the first in queue order is the release execution, the
-    others explained re-executions that add nothing); any later
+    others explained re-executions that add only what newly qualified
+    between consecutive execution windows — step 12); any later
     re-execution used for §I closure is a separately recorded,
     explained execution (own task id and TaskResult row — the
     worker-task form of the §I closure rule, usable here only after a
@@ -3318,8 +3347,9 @@ after G1 and G2 are recorded complete in the
     is ordinary webhook intake;
 15. start Celery beat **LAST** — after every evidence TaskResult row
     (every one of the 1 + K initial-task rows — the release execution
-    and the K pre-declared re-executions whose "added nothing" proof
-    step 12 reads from their complete results — and every recorded
+    and the K pre-declared re-executions whose per-window
+    reconciliation step 12 reads from their complete results — and
+    every recorded
     closure re-execution's) is exported as in §I14, because beat
     installs the 24 h
     `celery.backend_cleanup`;
