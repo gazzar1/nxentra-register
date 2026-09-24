@@ -3640,50 +3640,97 @@ def _drain_production_files() -> list[Path]:
     ]
 
 
+def _folded_string(node: ast.AST) -> str | None:
+    """The string a constant expression folds to, or None when it depends on a
+    runtime value: a ``str`` constant, ``+`` of foldable parts, an f-string of
+    foldable parts, ``"sep".join([foldable, ...])``."""
+    if isinstance(node, ast.Constant):
+        return node.value if isinstance(node.value, str) else None
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = _folded_string(node.left), _folded_string(node.right)
+        return None if left is None or right is None else left + right
+    if isinstance(node, ast.JoinedStr):
+        parts = [_folded_string(v.value if isinstance(v, ast.FormattedValue) else v) for v in node.values]
+        return None if any(p is None for p in parts) else "".join(parts)
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "join"
+        and len(node.args) == 1
+        and isinstance(node.args[0], ast.List | ast.Tuple)
+    ):
+        sep = _folded_string(node.func.value)
+        parts = [_folded_string(e) for e in node.args[0].elts]
+        return None if sep is None or any(p is None for p in parts) else sep.join(parts)
+    return None
+
+
 def _is_process_pending_call(node: ast.AST) -> bool:
     """Any reference to ``process_pending`` — the attribute ``x.process_pending``
-    (a call or a bound-method alias) OR the string constant ``"process_pending"``
-    (``getattr(x, "process_pending")``, ``operator.methodcaller`` /
-    ``attrgetter``, ``vars(x)["process_pending"]``). References, not just
-    calls, and every spelling, so neither aliasing nor reflection hides a
-    dispatch from the per-file count."""
+    (a call or a bound-method alias) OR any expression that folds to the string
+    ``"process_pending"`` (a constant, ``"process_" + "pending"``, an f-string,
+    ``"".join([...])`` — the ``getattr`` / ``operator.methodcaller`` /
+    ``attrgetter`` / ``vars(x)[...]`` spellings). References, not just calls,
+    and every spelling, so neither aliasing nor reflection hides a dispatch
+    from the per-file count. A name bound elsewhere to that string is counted
+    where the string is written."""
     if isinstance(node, ast.Attribute) and node.attr == "process_pending":
         return True
-    return isinstance(node, ast.Constant) and node.value == "process_pending"
+    if isinstance(node, ast.Constant):
+        return node.value == "process_pending"
+    if isinstance(node, ast.BinOp | ast.JoinedStr | ast.Call):
+        return _folded_string(node) == "process_pending"
+    return False
 
 
 def _loop_variable_names(target: ast.AST) -> set[str]:
     return {n.id for n in ast.walk(target) if isinstance(n, ast.Name)}
 
 
-def _getattr_process_pending_calls(node: ast.AST) -> list[ast.Call]:
-    return [
-        c
-        for c in ast.walk(node)
-        if isinstance(c, ast.Call)
-        and isinstance(c.func, ast.Name)
-        and c.func.id == "getattr"
-        and len(c.args) >= 2
-        and isinstance(c.args[1], ast.Constant)
-        and c.args[1].value == "process_pending"
-    ]
+def _is_getattr_call(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "getattr"
+        and len(node.args) >= 2
+    )
 
 
 def _dispatches_on(node: ast.AST, names: set[str]) -> bool:
-    """True when ``node`` dispatches ``process_pending`` on a loop variable:
-    ``<name>.process_pending`` or ``getattr(<name>, "process_pending")``. A bare
-    ``"process_pending"`` constant that is not a getattr target (methodcaller,
-    attrgetter, ``vars()[...]``) binds its receiver later, so it counts as a
-    dispatch on the loop variable — fail closed."""
-    getattr_calls = _getattr_process_pending_calls(node)
+    """True when ``node`` dispatches ``process_pending`` on a loop variable, or
+    could: ``<name>.process_pending``; ``getattr(<name>, <expr>)`` whose
+    ``<expr>`` folds to ``"process_pending"``; any INVOKED ``getattr(<name>,
+    <expr>)`` whose ``<expr>`` does NOT fold to a constant (``getattr(p,
+    name)(...)`` or ``fn = getattr(p, name)`` then ``fn(...)``) — the method
+    is chosen at runtime, so fail closed; a bare ``"process_pending"`` string
+    that is not a getattr target (methodcaller, attrgetter, ``vars()[...]``)
+    binds its receiver later — fail closed. A reflective READ on the loop
+    variable that is never called is not a dispatch."""
+    getattr_calls = [c for c in ast.walk(node) if _is_getattr_call(c)]
     getattr_targets = {id(c.args[1]) for c in getattr_calls}
     for c in ast.walk(node):
         if isinstance(c, ast.Attribute) and c.attr == "process_pending":
             if isinstance(c.value, ast.Name) and c.value.id in names:
                 return True
-        elif isinstance(c, ast.Constant) and c.value == "process_pending" and id(c) not in getattr_targets:
+        elif _is_process_pending_call(c) and id(c) not in getattr_targets and not isinstance(c, ast.Attribute):
             return True
-    return any(isinstance(c.args[0], ast.Name) and c.args[0].id in names for c in getattr_calls)
+    on_loop_var = [c for c in getattr_calls if isinstance(c.args[0], ast.Name) and c.args[0].id in names]
+    if any(_folded_string(c.args[1]) == "process_pending" for c in on_loop_var):
+        return True
+    dynamic = {id(c) for c in on_loop_var if _folded_string(c.args[1]) is None}
+    if not dynamic:
+        return False
+    # Invoked directly: getattr(p, name)(...)
+    if any(isinstance(c, ast.Call) and id(c.func) in dynamic for c in ast.walk(node)):
+        return True
+    # Bound to a name, then called: fn = getattr(p, name); fn(...)
+    bound: set[str] = set()
+    for c in ast.walk(node):
+        if isinstance(c, ast.Assign) and id(c.value) in dynamic:
+            bound |= {t.id for t in c.targets if isinstance(t, ast.Name)}
+        elif isinstance(c, ast.NamedExpr) and id(c.value) in dynamic and isinstance(c.target, ast.Name):
+            bound.add(c.target.id)
+    return any(isinstance(c, ast.Call) and isinstance(c.func, ast.Name) and c.func.id in bound for c in ast.walk(node))
 
 
 def _walk_drain_linenos(tree: ast.AST) -> list[int]:
@@ -3695,7 +3742,9 @@ def _walk_drain_linenos(tree: ast.AST) -> list[int]:
     for node in ast.walk(tree):
         if isinstance(node, ast.For | ast.AsyncFor):
             names = _loop_variable_names(node.target)
-            if any(_dispatches_on(stmt, names) for stmt in node.body):
+            # the WHOLE body at once: a reflective bind in one statement and its
+            # call in the next must meet
+            if _dispatches_on(ast.Module(body=node.body, type_ignores=[]), names):
                 found.append(node.lineno)
         elif isinstance(node, ast.ListComp | ast.SetComp | ast.GeneratorExp | ast.DictComp):
             names = set().union(*(_loop_variable_names(g.target) for g in node.generators))
@@ -3745,12 +3794,24 @@ def _registry_walk_drains() -> dict[str, list[int]]:
         ("for p in registry.all():\n    p.rebuild(company)\n", 0, False),
         ("for p in registry.all():\n    other.process_pending(company)\n", 1, False),
         ('"""process_pending is mentioned in this docstring."""\n', 0, False),
+        # round 3: a method name built by an expression or chosen at runtime
+        ("for p in registry.all():\n    getattr(p, 'process_' + 'pending')(company)\n", 1, True),
+        ("for p in registry.all():\n    getattr(p, f\"process_{'pending'}\")(company)\n", 1, True),
+        ("for p in registry.all():\n    getattr(p, ''.join(['process_', 'pending']))(company)\n", 1, True),
+        ("NAME = 'process_pending'\nfor p in registry.all():\n    getattr(p, NAME)(company)\n", 1, True),
+        ("for p in registry.all():\n    getattr(p, name)(company)\n", 0, True),
+        ("for p in registry.all():\n    fn = getattr(p, name)\n    fn(company)\n", 0, True),
+        ("for p in registry.all():\n    fn = getattr(p, name, None)\n    if fn:\n        fn(company)\n", 0, True),
+        ("for p in payouts:\n    ref = getattr(p, id_attr)\n    out.append(ref)\n", 0, False),
+        ("for p in registry.all():\n    getattr(other, name)(company)\n", 0, False),
     ],
 )
 def test_rule20_detector_recognises_every_dispatch_spelling(snippet: str, references: int, walk: bool):
     """The count pin and the walk detector must see a dispatch however it is
-    spelled — attribute, getattr, methodcaller, ``vars()[...]`` — or Rule 20
-    is bypassable by reflection (PR #155 review)."""
+    spelled — attribute, getattr, methodcaller, ``vars()[...]``, a folded
+    string expression, a runtime-chosen name that is invoked — or Rule 20 is
+    bypassable by reflection. A reflective read that is never called is not a
+    dispatch (bank_connector/exceptions.py reads a payout id that way)."""
     tree = ast.parse(snippet)
     assert sum(1 for node in ast.walk(tree) if _is_process_pending_call(node)) == references
     assert bool(_walk_drain_linenos(tree)) is walk
