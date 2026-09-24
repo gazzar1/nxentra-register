@@ -3607,6 +3607,16 @@ def test_exclude_line_has_a_single_production_call_site():
 # reflective dispatch with a runtime-chosen name in production code is frozen
 # per file (``_INVOKED_DYNAMIC_REFLECTIVE_DISPATCHES``), on any receiver.
 #
+# Threat model (founder decision, 2026-09-24): Rule 20 is a ratchet against
+# ACCIDENTAL duplication of the drain loop and against the reflective
+# spellings a reviewer or a refactor would reach for. It does not claim to
+# defeat deliberate evasion (an alias of an alias, a value passed through a
+# container or a call, dynamic import, exec). The two backstops are the
+# per-file reference count for the literal family and the tree-wide pin for
+# the reflective family: a new evasion spelling that production code does not
+# actually contain is answered by this statement, not by another detector
+# branch.
+#
 # Post-extraction state: the six command-layer copies, the emitter fallback
 # and the two seed commands all call projections.runtime. Outside
 # projections/ three single-projection drains survive with one reference
@@ -3750,6 +3760,22 @@ def _reflective_invocations(root: ast.AST) -> list[tuple[str, ast.AST | None, as
         for n in ast.walk(root)
         if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id in alias_of
     ]
+
+    def bound_names_of(value: ast.AST) -> set[str]:
+        p = parent.get(value)
+        if isinstance(p, ast.Assign) and p.value is value:
+            return {t.id for t in p.targets if isinstance(t, ast.Name)}
+        if isinstance(p, ast.NamedExpr) and p.value is value and isinstance(p.target, ast.Name):
+            return {p.target.id}
+        return set()
+
+    def a_load_is_applied(names_: set[str]) -> bool:
+        return any(
+            applied(n) is not None
+            for n in ast.walk(root)
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id in names_
+        )
+
     out: list[tuple[str, ast.AST | None, ast.AST]] = []
     for start, accessor in starts:
         parts = _reflective_accessor(accessor)
@@ -3759,8 +3785,11 @@ def _reflective_invocations(root: ast.AST) -> list[tuple[str, ast.AST | None, as
         if first is None:
             continue
         if kind == "attrgetter":
-            if applied(first) is None:
-                continue  # attrgetter(n)(x) alone is a read
+            # attrgetter(n)(x) alone is a read; it becomes a dispatch when that
+            # result is applied — directly, or through a name it was bound to
+            # (``method = attrgetter(n)(x)`` … ``method(...)``).
+            if applied(first) is None and not a_load_is_applied(bound_names_of(first)):
+                continue
             receiver = first.args[0] if first.args else None
         elif kind == "methodcaller":
             receiver = first.args[0] if first.args else None
@@ -3909,6 +3938,9 @@ def _registry_walk_drains() -> dict[str, list[int]]:
         ("for p in registry.all():\n    methodcaller(name)(other)\n", 0, False),
         ("for p in registry.all():\n    methodcaller('process_pending', company)(p)\n", 1, True),
         ("for p in registry.all():\n    attrgetter('process_' 'pending')(p)(company)\n", 1, True),
+        # round 5: a bound FIRST application of attrgetter, invoked later
+        ("for p in registry.all():\n    method = attrgetter(name)(p)\n    method(company)\n", 0, True),
+        ("for p in registry.all():\n    method = attrgetter(name)(p)\n    log(method)\n", 0, False),
     ],
 )
 def test_rule20_detector_recognises_every_dispatch_spelling(snippet: str, references: int, walk: bool):
@@ -3919,7 +3951,9 @@ def test_rule20_detector_recognises_every_dispatch_spelling(snippet: str, refere
     bypassable by reflection. A reflective read that is never invoked is not
     a dispatch (bank_connector/exceptions.py reads a payout id that way).
     Runtime-named dispatches on OTHER receivers are frozen tree-wide by
-    ``test_invoked_reflective_dispatches_with_runtime_names_are_frozen_per_file``."""
+    ``test_invoked_reflective_dispatches_with_runtime_names_are_frozen_per_file``.
+    Scope: accidental duplication and reviewer-reachable spellings, not
+    deliberate evasion — see the Rule 20 header."""
     tree = ast.parse(snippet)
     assert sum(1 for node in ast.walk(tree) if _is_process_pending_call(node)) == references
     assert bool(_walk_drain_linenos(tree)) is walk
