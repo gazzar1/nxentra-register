@@ -3603,7 +3603,9 @@ def test_exclude_line_has_a_single_production_call_site():
 # the attribute ``x.process_pending`` OR the string constant
 # ``"process_pending"`` — the ``getattr(x, "process_pending")``,
 # ``operator.methodcaller`` / ``attrgetter`` and ``vars(x)[...]`` spellings —
-# so no spelling of a dispatch escapes the count.
+# so no spelling of a dispatch escapes the count — and every INVOKED
+# reflective dispatch with a runtime-chosen name in production code is frozen
+# per file (``_INVOKED_DYNAMIC_REFLECTIVE_DISPATCHES``), on any receiver.
 #
 # Post-extraction state: the six command-layer copies, the emitter fallback
 # and the two seed commands all call projections.runtime. Outside
@@ -3687,50 +3689,140 @@ def _loop_variable_names(target: ast.AST) -> set[str]:
     return {n.id for n in ast.walk(target) if isinstance(n, ast.Name)}
 
 
-def _is_getattr_call(node: ast.AST) -> bool:
-    return (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "getattr"
-        and len(node.args) >= 2
-    )
+_REFLECTIVE_ACCESSOR_KINDS = frozenset(
+    {"getattr", "methodcaller", "attrgetter", "vars", "__dict__", "__getattribute__", "__getattr__"}
+)
+
+
+def _reflective_accessor(node: ast.AST) -> tuple[str, ast.AST | None, ast.AST] | None:
+    """``(kind, explicit_receiver, name_expr)`` when ``node`` looks an attribute
+    up by name at runtime: ``getattr(x, name[, d])``; ``methodcaller(name, ...)``
+    / ``attrgetter(name)`` (receiver supplied when the result is applied);
+    ``x.__getattribute__(name)`` / ``x.__getattr__(name)``; ``vars(x)[name]``;
+    ``x.__dict__[name]`` / ``type(x).__dict__[name]``."""
+    if isinstance(node, ast.Call):
+        f = node.func
+        kind = f.id if isinstance(f, ast.Name) else (f.attr if isinstance(f, ast.Attribute) else None)
+        if kind == "getattr" and len(node.args) >= 2:
+            return ("getattr", node.args[0], node.args[1])
+        if kind in {"methodcaller", "attrgetter"} and node.args:
+            return (kind, None, node.args[0])
+        if kind in {"__getattribute__", "__getattr__"} and node.args and isinstance(f, ast.Attribute):
+            return (kind, f.value, node.args[0])
+    if isinstance(node, ast.Subscript):
+        v = node.value
+        if isinstance(v, ast.Call) and isinstance(v.func, ast.Name) and v.func.id == "vars" and v.args:
+            return ("vars", v.args[0], node.slice)
+        if isinstance(v, ast.Attribute) and v.attr == "__dict__":
+            recv = v.value
+            if isinstance(recv, ast.Call) and isinstance(recv.func, ast.Name) and recv.func.id == "type" and recv.args:
+                recv = recv.args[0]
+            return ("__dict__", recv, node.slice)
+    return None
+
+
+def _reflective_invocations(root: ast.AST) -> list[tuple[str, ast.AST | None, ast.AST]]:
+    """Every reflective accessor in ``root`` whose looked-up attribute is
+    INVOKED — directly (``getattr(x, n)(...)``, ``methodcaller(n)(x)``,
+    ``attrgetter(n)(x)(...)``, ``vars(x)[n](...)``) or through a name it was
+    bound to (``fn = getattr(x, n)`` … ``fn(...)``; ``m = methodcaller(n)`` …
+    ``m(x)``) — as ``(kind, receiver, name_expr)``, the receiver resolved per
+    form (the applied argument for methodcaller / attrgetter)."""
+    parent: dict[ast.AST, ast.AST] = {}
+    for n in ast.walk(root):
+        for child in ast.iter_child_nodes(n):
+            parent[child] = n
+    accessors = {id(n): n for n in ast.walk(root) if _reflective_accessor(n) is not None}
+    alias_of: dict[str, ast.AST] = {}
+    for n in ast.walk(root):
+        if isinstance(n, ast.Assign) and id(n.value) in accessors:
+            alias_of.update({t.id: n.value for t in n.targets if isinstance(t, ast.Name)})
+        elif isinstance(n, ast.NamedExpr) and id(n.value) in accessors and isinstance(n.target, ast.Name):
+            alias_of[n.target.id] = n.value
+
+    def applied(node: ast.AST) -> ast.Call | None:
+        p = parent.get(node)
+        return p if isinstance(p, ast.Call) and p.func is node else None
+
+    starts: list[tuple[ast.AST, ast.AST]] = [(a, a) for a in accessors.values()]
+    starts += [
+        (n, alias_of[n.id])
+        for n in ast.walk(root)
+        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id in alias_of
+    ]
+    out: list[tuple[str, ast.AST | None, ast.AST]] = []
+    for start, accessor in starts:
+        parts = _reflective_accessor(accessor)
+        assert parts is not None
+        kind, receiver, name_expr = parts
+        first = applied(start)
+        if first is None:
+            continue
+        if kind == "attrgetter":
+            if applied(first) is None:
+                continue  # attrgetter(n)(x) alone is a read
+            receiver = first.args[0] if first.args else None
+        elif kind == "methodcaller":
+            receiver = first.args[0] if first.args else None
+        out.append((kind, receiver, name_expr))
+    return out
 
 
 def _dispatches_on(node: ast.AST, names: set[str]) -> bool:
     """True when ``node`` dispatches ``process_pending`` on a loop variable, or
-    could: ``<name>.process_pending``; ``getattr(<name>, <expr>)`` whose
-    ``<expr>`` folds to ``"process_pending"``; any INVOKED ``getattr(<name>,
-    <expr>)`` whose ``<expr>`` does NOT fold to a constant (``getattr(p,
-    name)(...)`` or ``fn = getattr(p, name)`` then ``fn(...)``) — the method
-    is chosen at runtime, so fail closed; a bare ``"process_pending"`` string
-    that is not a getattr target (methodcaller, attrgetter, ``vars()[...]``)
-    binds its receiver later — fail closed. A reflective READ on the loop
-    variable that is never called is not a dispatch."""
-    getattr_calls = [c for c in ast.walk(node) if _is_getattr_call(c)]
-    getattr_targets = {id(c.args[1]) for c in getattr_calls}
+    could: ``<name>.process_pending``; a reflective accessor whose looked-up
+    name folds to ``"process_pending"`` (any receiver — fail closed); a bare
+    ``"process_pending"`` string (methodcaller / attrgetter / ``vars()[...]``
+    bind their receiver later — fail closed); or any INVOKED reflective
+    accessor with a runtime-chosen name whose receiver is the loop variable
+    (``getattr(p, name)(...)``, ``methodcaller(name)(p)``,
+    ``attrgetter(name)(p)(...)``, ``vars(p)[name](...)``, bound-then-called) —
+    the method is chosen at runtime, so fail closed. A reflective READ on the
+    loop variable that is never invoked is not a dispatch."""
+
+    def is_loop_var(e: ast.AST | None) -> bool:
+        return isinstance(e, ast.Name) and e.id in names
+
+    accessor_names = {id(parts[2]) for n in ast.walk(node) if (parts := _reflective_accessor(n)) is not None}
     for c in ast.walk(node):
         if isinstance(c, ast.Attribute) and c.attr == "process_pending":
-            if isinstance(c.value, ast.Name) and c.value.id in names:
+            if is_loop_var(c.value):
                 return True
-        elif _is_process_pending_call(c) and id(c) not in getattr_targets and not isinstance(c, ast.Attribute):
+        elif _is_process_pending_call(c) and id(c) not in accessor_names:
             return True
-    on_loop_var = [c for c in getattr_calls if isinstance(c.args[0], ast.Name) and c.args[0].id in names]
-    if any(_folded_string(c.args[1]) == "process_pending" for c in on_loop_var):
-        return True
-    dynamic = {id(c) for c in on_loop_var if _folded_string(c.args[1]) is None}
-    if not dynamic:
-        return False
-    # Invoked directly: getattr(p, name)(...)
-    if any(isinstance(c, ast.Call) and id(c.func) in dynamic for c in ast.walk(node)):
-        return True
-    # Bound to a name, then called: fn = getattr(p, name); fn(...)
-    bound: set[str] = set()
-    for c in ast.walk(node):
-        if isinstance(c, ast.Assign) and id(c.value) in dynamic:
-            bound |= {t.id for t in c.targets if isinstance(t, ast.Name)}
-        elif isinstance(c, ast.NamedExpr) and id(c.value) in dynamic and isinstance(c.target, ast.Name):
-            bound.add(c.target.id)
-    return any(isinstance(c, ast.Call) and isinstance(c.func, ast.Name) and c.func.id in bound for c in ast.walk(node))
+    for n in ast.walk(node):
+        parts = _reflective_accessor(n)
+        if parts is not None and _folded_string(parts[2]) == "process_pending":
+            return True
+    return any(
+        _folded_string(name_expr) is None and is_loop_var(receiver)
+        for _kind, receiver, name_expr in _reflective_invocations(node)
+    )
+
+
+def _invoked_dynamic_reflective_dispatches() -> dict[str, int]:
+    """Per production file: invoked reflective dispatches whose attribute name
+    is chosen at runtime (does not fold to a constant) — on ANY receiver, in
+    ANY shape. Such a call could be a projection drain that no static count
+    can see, so the set is frozen."""
+    found: dict[str, int] = {}
+    for path in _drain_production_files():
+        rel = path.relative_to(BACKEND_ROOT).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        n = sum(1 for _kind, _recv, name_expr in _reflective_invocations(tree) if _folded_string(name_expr) is None)
+        if n:
+            found[rel] = n
+    return found
+
+
+# Every invoked reflective dispatch with a runtime-chosen name in production
+# code, frozen per file. One exists: the platform webhook view looks the
+# connector's parse method up by topic (``parser = getattr(connector,
+# parse_method, None)`` … ``parser(payload)``). A new one anywhere — loop or
+# not, whatever the receiver — edits this pin consciously (Rule 20).
+_INVOKED_DYNAMIC_REFLECTIVE_DISPATCHES: dict[str, int] = {
+    "platform_connectors/views.py": 1,
+}
 
 
 def _walk_drain_linenos(tree: ast.AST) -> list[int]:
@@ -3804,14 +3896,30 @@ def _registry_walk_drains() -> dict[str, list[int]]:
         ("for p in registry.all():\n    fn = getattr(p, name, None)\n    if fn:\n        fn(company)\n", 0, True),
         ("for p in payouts:\n    ref = getattr(p, id_attr)\n    out.append(ref)\n", 0, False),
         ("for p in registry.all():\n    getattr(other, name)(company)\n", 0, False),
+        # round 4: runtime-named methodcaller / attrgetter / vars / __dict__ / __getattribute__
+        ("for p in registry.all():\n    operator.methodcaller(name, company)(p)\n", 0, True),
+        ("for p in registry.all():\n    methodcaller(name)(p)\n", 0, True),
+        ("for p in registry.all():\n    attrgetter(name)(p)(company)\n", 0, True),
+        ("for p in registry.all():\n    attrgetter(name)(p)\n", 0, False),
+        ("for p in registry.all():\n    vars(p)[name](company)\n", 0, True),
+        ("for p in registry.all():\n    type(p).__dict__[name](p, company)\n", 0, True),
+        ("for p in registry.all():\n    p.__getattribute__(name)(company)\n", 0, True),
+        ("for p in registry.all():\n    m = methodcaller(name)\n    m(p)\n", 0, True),
+        ("for p in registry.all():\n    g = attrgetter(name)\n    g(p)(company)\n", 0, True),
+        ("for p in registry.all():\n    methodcaller(name)(other)\n", 0, False),
+        ("for p in registry.all():\n    methodcaller('process_pending', company)(p)\n", 1, True),
+        ("for p in registry.all():\n    attrgetter('process_' 'pending')(p)(company)\n", 1, True),
     ],
 )
 def test_rule20_detector_recognises_every_dispatch_spelling(snippet: str, references: int, walk: bool):
     """The count pin and the walk detector must see a dispatch however it is
-    spelled — attribute, getattr, methodcaller, ``vars()[...]``, a folded
-    string expression, a runtime-chosen name that is invoked — or Rule 20 is
-    bypassable by reflection. A reflective read that is never called is not a
-    dispatch (bank_connector/exceptions.py reads a payout id that way)."""
+    spelled — attribute, getattr, methodcaller, attrgetter, ``vars()[...]``,
+    ``__dict__[...]``, ``__getattribute__``, a folded string expression, a
+    runtime-chosen name that is invoked on the loop variable — or Rule 20 is
+    bypassable by reflection. A reflective read that is never invoked is not
+    a dispatch (bank_connector/exceptions.py reads a payout id that way).
+    Runtime-named dispatches on OTHER receivers are frozen tree-wide by
+    ``test_invoked_reflective_dispatches_with_runtime_names_are_frozen_per_file``."""
     tree = ast.parse(snippet)
     assert sum(1 for node in ast.walk(tree) if _is_process_pending_call(node)) == references
     assert bool(_walk_drain_linenos(tree)) is walk
@@ -3841,6 +3949,28 @@ def test_no_registry_walk_drain_outside_the_allowlisted_files():
     )
     stale = sorted(_REGISTRY_WALK_DRAINS_OUTSIDE_PROJECTIONS - set(found))
     assert not stale, f"Rule 20 registry-walk allowlist entries no longer needed — shrink it: {stale}"
+
+
+def test_invoked_reflective_dispatches_with_runtime_names_are_frozen_per_file():
+    """A drain spelled through reflection with a runtime-chosen name —
+    ``getattr(p, name)(...)``, ``methodcaller(name)(p)``,
+    ``attrgetter(name)(p)(...)``, ``vars(p)[name](...)``, bound-then-called —
+    is invisible to the reference count by construction, so every such
+    invocation in production code is frozen per file, on any receiver and in
+    any shape (PR #155 review, rounds 2–3)."""
+    found = _invoked_dynamic_reflective_dispatches()
+    drifted = {
+        k: (v, _INVOKED_DYNAMIC_REFLECTIVE_DISPATCHES.get(k))
+        for k, v in found.items()
+        if k not in _INVOKED_DYNAMIC_REFLECTIVE_DISPATCHES or v != _INVOKED_DYNAMIC_REFLECTIVE_DISPATCHES[k]
+    }
+    assert not drifted, (
+        f"invoked reflective dispatch(es) with a runtime-chosen name changed (found vs pinned): {drifted}. "
+        "Such a call could be a projection drain no static count can see — name the method statically or "
+        "edit this pin consciously (Rule 20)."
+    )
+    stale = sorted(set(_INVOKED_DYNAMIC_REFLECTIVE_DISPATCHES) - set(found))
+    assert not stale, f"Rule 20 reflective-dispatch pins no longer needed — shrink the dict: {stale}"
 
 
 def test_projection_runtime_is_a_walker_not_a_transaction_or_rls_owner():
