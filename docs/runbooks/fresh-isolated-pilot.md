@@ -1402,27 +1402,35 @@ B = orders currently refunded or partially_refunded whose Shopify
 AUTHORIZED_PARENT_ORDER_SET = the union, over the 1 + K initial tasks, of
                           each execution's own A union B, deduplicated
                           by Shopify order id — a record that newly
-                          qualifies between consecutive execution
-                          windows is authorized for the execution
-                          that first selects it (on the synthetic
-                          store the K later sets contribute no new
-                          record)
+                          qualifies in the gap between consecutive
+                          executions' INITIAL_SYNC_STARTED_AT (the
+                          windows themselves overlap: each reaches
+                          seven days back from its own start) is
+                          authorized for the execution that first
+                          selects it (on the synthetic store the K
+                          later sets contribute no new record)
 
 REPLACEMENT_ORDER_SET   = (§I15 lapsed-retry path only) the synthetic
                           orders created under the re-verified webhook
                           block (§I4 items 1–2, beat still stopped, the
                           worker running since §I14)
-                          AFTER INITIAL_SYNC_STARTED_AT, listed by
+                          AFTER the LAST of the 1 + K executions'
+                          INITIAL_SYNC_STARTED_AT (an order created
+                          between two of them lies inside the later
+                          one's ORDER_CREATED_WINDOW), listed by
                           Shopify order id in a dated replacement
                           addendum signed BEFORE the replacement
-                          execution; outside
+                          execution; outside every execution's
+                          ORDER_CREATED_WINDOW and therefore outside
                           AUTHORIZED_PARENT_ORDER_SET by construction;
                           contains no cancelled order of any kind (a
-                          never-captured one counts in `skipped`, not
-                          `created`; a captured-money one books through
-                          the paid writer but breaks the `cancelled_*`
-                          = 0 clause — the cancelled path is exercised
-                          at §I14 and §J, not here), and every member
+                          never-captured one counts in `skipped` and
+                          in `cancelled_no_effect_skipped`; a
+                          captured-money one books through the paid
+                          writer and counts in `cancelled_financial_*`
+                          — either breaks the `cancelled_*` = 0
+                          clause; the cancelled path is exercised at
+                          §I14 and §J, not here), and every member
                           is paid at creation (Shopify
                           `financial_status` paid, partially_paid,
                           refunded or partially_refunded — a pending
@@ -1713,8 +1721,9 @@ and a STOP:
    line, counters and inequality, in the §K pack), and any order it
    books outside AUTHORIZED_PARENT_ORDER_SET is an intake-contract
    variance and a STOP. (The §I15 lapsed-retry path runs the same
-   worker task for orders created AFTER `INITIAL_SYNC_STARTED_AT`; that is
-   not a closure re-execution — it is authorized by its own signed
+   worker task for orders created AFTER the LAST of the 1 + K
+   executions' `INITIAL_SYNC_STARTED_AT`; that is not a closure
+   re-execution — it is authorized by its own signed
    `REPLACEMENT_ORDER_SET`, §I15.)
    The interactive resync endpoint is NOT a
    closure path: it accepts only a `days` lookback ending at its own
@@ -1961,31 +1970,193 @@ independent completeness control.
   against its OWN execution-time window (its own A52 pair; the
   seven-day rule; `I13_SIGNOFF_TIMESTAMP < its date_started ≤ its
   INITIAL_SYNC_STARTED_AT`), that may add exactly what newly qualified
-  since its predecessor, per record class: a parent-order addition
-  explained by a Shopify `created_at` (A) or order `updated_at` (B)
-  inside (predecessor's `INITIAL_SYNC_STARTED_AT`, own
-  `INITIAL_SYNC_STARTED_AT`]; a refund booked by the orders leg's
-  backfill, or a product, explained by a Shopify timestamp inside
-  (predecessor's `INITIAL_SYNC_STARTED_AT`, own `date_done`] — the
-  backfill pulls the order's complete current refund list and the
-  products leg has no window, both running after `now` is computed;
+  since its predecessor, per record class. Two legs write orders and
+  refunds, and their counters differ: the orders leg fetches by
+  Shopify `created_at` inside its window W (that execution's A52
+  pair, evaluated by Shopify at second precision) and counts every
+  dispatch that did something in `created` — a new row, an in-place
+  promotion, an in-place cancellation disposition — and every benign
+  no-op in `skipped`; the refund leg selects by the CURRENT order
+  `updated_at` inside the same pair, books an unbooked parent through
+  the paid writer BEFORE its backfill and counts NO parent at all
+  (`scanned` counts every selected order, `refunds_created` the
+  refunds it booked); the products leg (no window) writes `Item`
+  rows and `ShopifyProduct` mappings — no order or refund row, no
+  event. A row's Shopify `shopify_created_at` tells the order legs
+  apart afterwards: inside W the orders leg wrote or dispatched it,
+  outside W the refund leg did — except an inside-W order whose
+  orders-leg paid-writer dispatch FAILED (its `Failed to process
+  order …` / `Error processing order …` line; a stamp or backfill
+  line only follows a committed booking) and which the refund leg
+  then booked. Five classes, each with its read-only identification
+  and its evidence:
+  (1) a parent order — a new `ShopifyOrder` row (local `created_at`
+  in [its `date_started`, its `date_done`]): an A record
+  (`shopify_created_at` inside W) booked by the orders leg — a
+  `pending` one as a PENDING_CAPTURE stub that books no journal —
+  explained by its Shopify `created_at` (orders export) inside
+  (predecessor's `INITIAL_SYNC_STARTED_AT`, own
+  `INITIAL_SYNC_STARTED_AT`] — or, when that `created_at` lies at
+  most 60 s at or before the predecessor's `INITIAL_SYNC_STARTED_AT`,
+  as a boundary record of the predecessor's read (the pair is
+  computed before the page read, Shopify stores `created_at` to the
+  second and documents no freshness guarantee for the search-backed
+  orders read), admitted only when no earlier execution's worker
+  stream carries a line naming that order id and the row is new in
+  this span, and recorded with the order id, its `created_at` and its
+  distance in seconds — older than 60 s is a STOP; or an order the
+  predecessor fetched in an unrouted status (voided, expired,
+  unknown — one of its `skipped`, no row) that moved to a paid-writer
+  or `pending` status in the gap, explained by that transition in the
+  order's Admin timeline inside (predecessor's
+  `INITIAL_SYNC_STARTED_AT`, own `date_done`] (it moves the
+  predecessor's `skipped` against this execution's `created` by one:
+  a named residual); or a B-only record (`shopify_created_at`
+  outside W) booked by the refund leg, explained by the in-gap refund
+  or edit that put its `updated_at` inside the pair
+  (transaction-history file / Admin timeline — order `updated_at` is
+  in neither the stored payload nor the orders CSV and is never read
+  from the system); a parent first booked already refunded brings its
+  complete refund history with it (refund rows of any date, explained
+  by the parent);
+  (2) a gap refund on an already-booked parent — a new `ShopifyRefund`
+  row: by the orders leg's backfill when that leg re-fetches the
+  parent (`shopify_created_at` inside W) already refunded, by the
+  refund leg when the parent lies outside W and its current
+  `updated_at` is inside the pair (a refund issued after
+  `created_at_max` moves `updated_at` past the pair, so that leg does
+  not SELECT an order for it — but its backfill reads the order's
+  complete refund list moments after the page read, so a refund
+  landing in between is booked too); the two legs never book one
+  refund twice; explained by the refund's Shopify timestamp
+  (transaction-history file / Admin timeline) inside (predecessor's
+  `INITIAL_SYNC_STARTED_AT`, own `date_done`] — an older refund only
+  when the record says why no earlier execution booked it: its
+  parent's `updated_at` first entered the pair in this execution
+  (an in-gap edit); its parent's `financial_status` first became
+  refunded or partially_refunded in the gap (its first money refund,
+  inside the bound) — the backfill then books every earlier Refund
+  object of that parent, restock-only and zero-amount ones included,
+  because no leg reads a paid parent's refund list; or a counted
+  backfill error of an earlier execution (the §I closure rule);
+  (3) a PENDING_CAPTURE stub promoted in place — a `pending` (COD)
+  order booked as a stub by an earlier execution (class 1 then),
+  re-fetched as paid and promoted by the paid writer: NO new
+  `ShopifyOrder` row (its auto-created Items and mappings, if any,
+  are class-5 rows explained by this order); identified as the
+  `ShopifyOrder` row whose local `created_at` lies BEFORE this
+  execution's `date_started` and whose `event_id` names a
+  `BusinessEvent` whose `recorded_at` lies in [its `date_started`,
+  its `date_done`]; by the orders leg when `shopify_created_at` is
+  inside W, by the refund leg when it is outside; explained by the
+  transaction — payment, partial payment or authorization — that
+  moved Shopify's `financial_status` to a paid-writer status (paid,
+  authorized, partially_paid, refunded, partially_refunded; for COD
+  the merchant's mark-as-paid) in the order's Admin timeline
+  — inside (predecessor's `INITIAL_SYNC_STARTED_AT`, own `date_done`]
+  when the orders leg promoted it; when the refund leg did, the
+  payment may be older and the in-pair `updated_at` (the refund or
+  edit that selected the order) is the explanation;
+  (4) a never-captured cancellation dispositioned in place — an order
+  inside W that Shopify reports cancelled with a never-captured
+  `financial_status` (authorized, voided, pending, expired, unknown)
+  while a local row exists: a stub, which the cancellation writer
+  flips to CANCELLED the first time and re-stamps on every later
+  execution, or a BOOKED row — an order booked while `authorized`
+  and voided since — whose `raw_payload` the writer re-stamps; NO
+  new row, NO event, NO journal, yet counted in `created` and in
+  `cancelled_no_effect_skipped` — one without a local row counts in
+  `skipped` and in `cancelled_no_effect_skipped` instead; identified
+  from the orders export, per execution: the cancelled never-captured
+  orders with Shopify `created_at` inside W and `cancelled_at` before
+  this execution's `date_started` that have a local row (any status);
+  one whose `cancelled_at` lies in [its `date_started`, its
+  `date_done`] was cancelled during the run — it is explained by that
+  `cancelled_at` either way; record it as such and let its counter
+  effect fall into the residual below; explained by that
+  `cancelled_at`: inside (predecessor's `INITIAL_SYNC_STARTED_AT`, own
+  `date_started`] for the first disposition, earlier for a re-stamp
+  (explained by its earlier one); (4b) a captured-money cancellation
+  stamped in place — a cancelled order whose money was captured
+  (paid, partially_paid, refunded, partially_refunded), inside W or
+  selected by the refund leg, whose local row is already booked: the
+  paid writer is a no-op (`skipped`), the cancellation writer stamps
+  `cancelled_at` into `raw_payload`, and the leg counts it in
+  `cancelled_financial_candidates` / `cancelled_financial_processed`
+  — no row, no event, no journal, never `created`; identified from
+  the orders export per execution (cancelled orders with a
+  captured-money status inside W, or selected by the refund leg, that
+  have a booked local row); explained by that `cancelled_at`;
+  (5) a product — a new `ShopifyProduct` mapping row (local
+  `created_at` in [its `date_started`, its `date_done`]): the paid
+  writer's when a worker INFO line of the paid writer's form
+  `Auto-created Item <code> (<title>) cost=… (inventory=…, cogs=…)`
+  naming its Item code lies in the execution's span — the paid writer
+  auto-creates an Item and a mapping for a line whose Item code (the
+  SKU, else a synthetic code from the variant or product id) is
+  unknown and was prepared before the admission lock; it skips a
+  line with no identifiable handle, one whose code already exists,
+  and a second variant-less line (at most one variant-id-0 mapping
+  exists per company), which leaves a `Failed to auto-create Item
+  <code>: …` WARNING, no Item and no mapping while the order still
+  books — expected, record the order id beside the warning; the
+  products leg's own lines read `… with cost=…, accounts: …` —
+  explained by the order that line's booking belongs to (a
+  paid-writer line whose booking then failed, its `Failed to process
+  order …` line following, left no row: a named residual);
+  every other new mapping is the products leg's (counted in products
+  `created` or `linked`), explained by construction, not by a
+  timestamp: the products leg has no window and reads the whole
+  catalog on every execution, so a mapping it first creates belongs
+  to a variant that did not exist, or carried no SKU, at the
+  predecessor's read — PROVIDED the predecessor's products leg
+  completed on its counter shape (`created` / `linked` / `updated` /
+  `skipped` / `errors`, no `status` key; its `unavailable` and `error`
+  shapes leave the addition unexplained: STOP; an execution whose OWN
+  products leg ended on a non-counter shape cannot be reconciled for
+  this class: STOP); no Shopify product timestamp exists in the
+  system (the product query requests no product or variant timestamp
+  and a mapping's `raw_data` holds at most the variant snapshot), and
+  the leg books no journal;
   or a re-selection that CLOSES a counted error of an earlier
   execution, recorded per the §I closure rule (a pre-declared
-  re-execution may be that closer); anything else a STOP. An
-  execution's additions are identified read-only as the
-  `ShopifyOrder` / `ShopifyRefund` rows whose local `created_at` lies
-  in [its `date_started`, its `date_done`] (single worker, webhooks
-  blocked, beat stopped); an A addition is explained from the order's
-  `created_at` in the Shopify orders export, a B addition from the
-  in-gap refund or edit event (transaction-history file / Admin
-  timeline — order `updated_at` is in neither the stored payload nor
-  the orders CSV and is never read from the system). On the synthetic
+  re-execution may be that closer); anything else a STOP. The STOP
+  criterion is the rows and in-place changes: every new
+  `ShopifyOrder` / `ShopifyRefund` / `ShopifyProduct` row with local
+  `created_at` in [its `date_started`, its `date_done`], every
+  `BusinessEvent` recorded in that span, and every class-4
+  disposition, is explained by its class as above — one that is not
+  is a STOP (single worker, webhooks blocked, beat stopped). The
+  counters corroborate and never decide (founder decision D14 (B),
+  2026-09-24): normally orders leg `created` = class-1 A rows +
+  orders-leg class-3 promotions + class-4 dispositions, orders leg
+  `refunds_backfilled` + refund leg `refunds_created` = every new
+  `ShopifyRefund` row, and products `created + linked` + the paid
+  writer's `Auto-created Item … cost=… (inventory=…, cogs=…)` lines
+  in the execution's span of the worker stream (from its A52 start
+  line to the next task's A52 start line or the end of the stream;
+  one prefork process) = every new `ShopifyProduct` row; the legs'
+  post-commit error paths (stamp, fulfillment and refund backfills —
+  they leave the booking, its mapping and its line in place), an
+  in-execution closure by the refund leg and a same-second boundary
+  can each move a counter by a small count — record any residual with
+  its explanation in the execution's row; a residual that no row,
+  line or warning explains is a STOP. The exact merchant-path counter
+  algebra belongs to the merchant-cutover document of the post-G1
+  runbook split, not to this revision. Record every addition — the
+  new rows of classes 1, 2 and 5 and the in-place rows of classes 3
+  and 4 — by identity (Shopify order id, refund id,
+  `shopify_product_id` / `shopify_variant_id`; numeric ids only — for
+  an auto-created mapping whose variant id is unknown, stored as 0,
+  the Item code and the booking order's id) with the execution's row
+  in the control pack. On the synthetic
   store, where nothing is created or edited between executions, that
-  is zero additions: orders leg `created 0`, `skipped` equal to
+  is zero additions and the counters are exact: orders leg
+  `created 0`, `skipped` equal to
   `fetched`, `errors 0`, `refunds_backfilled 0`,
   `pilot_scope_skipped 0`; refund leg `refunds_created 0`, `errors 0`,
   `fetch_failures 0`, `pilot_scope_skipped 0`; products `created 0`,
-  `updated` equal to the release execution's products
+  `linked 0`, `updated` equal to the release execution's products
   `created + linked + updated`, `skipped` equal to the release
   execution's `skipped`. Their ids equal the pre-declared ids in
   order. Any
@@ -2222,9 +2393,10 @@ independent completeness control.
   because every 1 + K initial task was consumed at §I14 and creating
   an order enqueues no sync — a RECORDED replacement execution that
   books the replacement orders BEFORE the routes open. It is NOT a §I
-  closure re-execution: every replacement order is created after
-  `INITIAL_SYNC_STARTED_AT`, so it lies outside `ORDER_CREATED_WINDOW`
-  and therefore outside `AUTHORIZED_PARENT_ORDER_SET` by construction,
+  closure re-execution: every replacement order is created after the
+  LAST of the 1 + K executions' `INITIAL_SYNC_STARTED_AT`, so it lies
+  outside every execution's `ORDER_CREATED_WINDOW` and therefore
+  outside `AUTHORIZED_PARENT_ORDER_SET` by construction,
   and a closure re-execution that books outside that set is a STOP
   (§I14, §O). It is authorized by its own signed set instead: BEFORE
   the task is enqueued, sign a dated replacement addendum in
@@ -2426,7 +2598,7 @@ Minimum schema:
 | Per-leg pilot/cancelled counters (`pilot_scope_skipped`, `cancelled_financial_candidates`, `cancelled_financial_processed`, `cancelled_no_effect_skipped` (orders leg only), `cancelled_processing_errors`) and the inequality check per leg | every one of the 1 + K `initial_store_sync` task results (the K re-executions reconciled per §I14 / §Q step 12 — zero additions on the synthetic store) |
 | `pilot_scope_skipped` per leg (must be 0 on the EGP store) | every one of the 1 + K `initial_store_sync` task results (the K re-executions reconciled per §I14 / §Q step 12 — zero additions on the synthetic store) |
 | `INITIAL_SYNC_STARTED_AT`, effective window boundaries (timestamps only), `TASK_RECEIVED_AT`, `INTAKE_CONTRACT_VERSION` | worker log `[A52] _sync_orders start` line + the TaskResult row's `date_started` (private) vs the §B runbook revision |
-| The complete `initial_store_sync` task result of every one of the 1 + K initial tasks (the release execution and the K pre-declared re-executions, each reconciled against its own execution-time window per §I14 / §Q step 12 — additions only for records that newly qualified between consecutive windows, zero on the synthetic store), plus the complete result of every recorded closure re-execution and of any §I15 replacement execution (each with its own task id and TaskResult row — the worker-task form of the §I closure rule; an orders-leg-only result carries the twelve `_sync_orders` fields and no refund-leg keys — A52 line, counters, and inequality; the replacement execution also with its signed addendum — `REPLACEMENT_ORDER_SET`, `REPLACEMENT_WINDOW`, `I15_REPLACEMENT_SIGNOFF_TIMESTAMP` — the A52-window equality and the replacement evidence contract) | worker log / task result / the pre-§I16 TaskResult exports in `preflight/` (§I14; the live rows expire 24 h after beat starts) (private) |
+| The complete `initial_store_sync` task result of every one of the 1 + K initial tasks (the release execution and the K pre-declared re-executions, each reconciled against its own execution-time window per §I14 / §Q step 12 — additions only for records that newly qualified since the predecessor, per the five §I14 record classes and their own bounds (parent orders by the gap between consecutive executions' `INITIAL_SYNC_STARTED_AT`; refunds and in-place promotions up to the execution's own `date_done`; in-place cancellations by `cancelled_at`; products by construction), the identity of every addition — Shopify order id, refund id, `shopify_product_id` / `shopify_variant_id`, numeric ids only (an auto-created mapping with variant id 0: the Item code and the booking order's id) — listed with the execution's row, together with any counter residual and its explanation (D14 (B): rows and in-place changes decide, counters corroborate): zero additions, an empty list and no residual on the synthetic store), plus the complete result of every recorded closure re-execution and of any §I15 replacement execution (each with its own task id and TaskResult row — the worker-task form of the §I closure rule; an orders-leg-only result carries the twelve `_sync_orders` fields and no refund-leg keys — A52 line, counters, and inequality; the replacement execution also with its signed addendum — `REPLACEMENT_ORDER_SET`, `REPLACEMENT_WINDOW`, `I15_REPLACEMENT_SIGNOFF_TIMESTAMP` — the A52-window equality and the replacement evidence contract) | worker log / task result / the pre-§I16 TaskResult exports in `preflight/` (§I14; the live rows expire 24 h after beat starts) (private) |
 | Settlement row count, gross, fee, net totals | the CSV files |
 | Bank line count, debit total, credit total | the CSV files |
 | Event counts by relevant type | system (read-only) |
@@ -3252,16 +3424,71 @@ after G1 and G2 are recorded complete in the
     `GO_TIMESTAMP < its date_started ≤ its INITIAL_SYNC_STARTED_AT` —
     and permitted to add exactly what newly qualified since its
     predecessor, because the merchant keeps trading while the hold is
-    on — per record class and evidence exactly as §I14 states: parent
-    orders by a Shopify `created_at` (A) or order `updated_at` (B)
-    inside (predecessor's `INITIAL_SYNC_STARTED_AT`, own
-    `INITIAL_SYNC_STARTED_AT`]; backfilled refunds and products by a
-    Shopify timestamp inside (predecessor's `INITIAL_SYNC_STARTED_AT`,
-    own `date_done`]; a closer of an earlier counted error per the §I
-    closure rule; additions identified as the local `ShopifyOrder` /
-    `ShopifyRefund` rows whose `created_at` lies in [its `date_started`,
-    its `date_done`]; `refunds_backfilled` is the counter that carries
-    a gap refund on an already-booked parent — and each parent-order
+    on — per record class and evidence as §I14 states, its five
+    classes: (1) parent orders — an A record (`shopify_created_at`
+    inside this execution's window) booked by the orders leg,
+    explained by a Shopify `created_at` inside (predecessor's
+    `INITIAL_SYNC_STARTED_AT`, own `INITIAL_SYNC_STARTED_AT`] (or a
+    boundary record at most 60 s before the predecessor's start that
+    no earlier execution dispatched, or an order the predecessor
+    fetched unrouted that became routable in the gap — admitted and
+    recorded as §I14 states); a
+    B-only record (outside the window) booked by the refund leg,
+    explained by the in-gap refund or edit that put its `updated_at`
+    inside the pair; a parent first booked already refunded brings
+    its refund history; (2) gap refunds on already-booked parents by
+    the refund's Shopify timestamp inside (predecessor's
+    `INITIAL_SYNC_STARTED_AT`, own `date_done`] — older only when the
+    parent's `updated_at` first entered the pair in this execution,
+    when its `financial_status` first became refunded in the gap, or
+    as the closer of an earlier counted backfill error; (3)
+    PENDING_CAPTURE stubs promoted in place (a COD order paid in the
+    gap) — no new order row, identified by an `event_id` whose
+    `BusinessEvent` `recorded_at` lies in [its `date_started`, its
+    `date_done`] on a row created before `date_started`, explained by
+    the transaction that moved `financial_status` to a paid-writer
+    status in the order's Admin timeline (inside the class-2
+    bound when the orders leg promoted it; when the refund leg did,
+    by the in-pair `updated_at` that selected the order); (4)
+    never-captured cancellations dispositioned in place — a stub
+    flipped to CANCELLED or re-stamped, or a booked-while-authorized
+    row voided since and re-stamped: no row, no event, no journal;
+    identified from the orders export as the cancelled never-captured
+    orders inside the window with `cancelled_at` before this
+    execution's `date_started` that have a local row (one cancelled
+    during the run — `cancelled_at` in [its `date_started`, its
+    `date_done`] — is recorded as such and explained either way);
+    explained by that `cancelled_at` (a captured-money cancellation on
+    a booked row is only stamped — `skipped`, never `created` — and
+    is explained the same way); (5) products — a new
+    `ShopifyProduct` mapping is the paid writer's when a paid-writer
+    `Auto-created Item … cost=… (inventory=…, cogs=…)` line naming
+    its Item code lies in the execution's span, explained by that
+    line's order; every other new
+    mapping is the products leg's, explained by construction (the
+    windowless products leg read the whole catalog on the
+    predecessor, whose products leg must have completed on its
+    counter shape) with no Shopify timestamp (none is read into the
+    system); a closer of an earlier counted error per the §I closure
+    rule. The STOP criterion is the rows and in-place changes: every
+    local `ShopifyOrder` / `ShopifyRefund` / `ShopifyProduct` row
+    whose `created_at` lies in [its `date_started`, its `date_done`],
+    every `BusinessEvent` recorded in that span and every class-4
+    disposition explained by its class — an unexplained one is a
+    STOP; the counters corroborate and never decide (D14 (B)):
+    normally `created` = A rows + orders-leg promotions + class-4
+    dispositions, `refunds_backfilled + refunds_created` = every new
+    refund row, products `created + linked` + the paid writer's
+    `Auto-created Item … cost=… (inventory=…, cogs=…)` worker lines
+    in the execution's span = every new mapping; any residual is
+    recorded with its explanation (post-commit error paths,
+    in-execution closures, same-second boundaries), and a residual no
+    row, line or warning explains is a STOP; the exact merchant-path
+    counter algebra belongs to the merchant-cutover document of the
+    post-G1 runbook split; every addition's identity (order id,
+    refund id, `shopify_product_id` / `shopify_variant_id` — the Item
+    code and the booking order's id for an auto-created mapping with
+    variant id 0) recorded with the execution's row — and each parent-order
     addition joins `AUTHORIZED_PARENT_ORDER_SET` for that execution,
     anything else is a STOP; all 1 + K rows exported before
     step 15). **Post-execution
@@ -3293,7 +3520,8 @@ after G1 and G2 are recorded complete in the
     record pre-declares from `PRE_GO_INITIAL_TASK_IDS` (each queues one
     task — §I14; the first in queue order is the release execution, the
     others explained re-executions that add only what newly qualified
-    between consecutive execution windows — step 12); any later
+    since the predecessor, per the five §I14 record classes and
+    their own bounds — step 12); any later
     re-execution used for §I closure is a separately recorded,
     explained execution (own task id and TaskResult row — the
     worker-task form of the §I closure rule, usable here only after a
