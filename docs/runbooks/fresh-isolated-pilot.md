@@ -781,7 +781,7 @@ introduce infrastructure this repository does not use.
   | Service | Startup command (verified) | Health signal |
   |---|---|---|
   | Web (Django) | `gunicorn nxentra_backend.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120` | `GET /_health/live` → 200; `GET /_health/ready` → 200 (through the proxy, or on loopback with the `Host` + `X-Forwarded-Proto` headers — §G1f) |
-  | Worker | `celery -A nxentra_backend worker -l INFO --concurrency 1` — one prefork process is the worker form this runbook prescribes for the pilot (founder decision D12, 2026-09-23, after rehearsal deviation D8; a deployment-topology rule, not a supported-product-contract change): `process_pending` has no mutual exclusion across connections, so a second worker process could run the same projection for the same company concurrently (an open hazard, review finding F-K), and the §I14 expectations (one contiguous release pass, entry numbers in ingest order) assume a single process. The checked-in `docker-compose.yml` says `--concurrency=2` and a process manager restarting from a saved definition silently reverts to the CPU count — §G1e proves the running value. | worker log shows ready; `/_health/alerts` not reporting missing consumers after first drain. Log streams (Celery re-homes the root logger onto STDERR after Django's logging setup; nothing in the settings disables it): loggers named in `ops/logging_config.py` (`projections`, `events`, `accounts`, `tenant`, `ops`, `nxentra.accounting.*`) keep their STDOUT JSON handler — the `projections.base` "terminally skipped" / deferred WARNING lines land there; every other application logger (`shopify_connector.*`: the `[A52]` lines, "Queued initial Shopify sync", partial-response warnings) propagates to the root and lands on STDERR in plain text (A52 re-execution lines print naive timestamps — transcribe as UTC); Celery's own "Task received/succeeded" lines are expected on NEITHER stream (the `celery` logger does not propagate and the re-homing empties its handlers — observed 2026-09-22 as zero such lines for the release execution). Read BOTH streams; the startup banner (`concurrency: 1 (prefork)`) is written to the process's original stdout — record which file holds it. |
+  | Worker | `celery -A nxentra_backend worker -l INFO --concurrency 1` — one prefork process is the worker form this runbook prescribes for the pilot (founder decision D12, 2026-09-23, after rehearsal deviation D8; a deployment-topology rule, not a supported-product-contract change): `process_pending` has no mutual exclusion across connections, so a second worker process could run the same projection for the same company concurrently (an open hazard, review finding F-K), and the §I14 expectations (one contiguous release pass, entry numbers in ingest order) assume a single process. The checked-in `docker-compose.yml` says `--concurrency=2` and a process manager restarting from a saved definition silently reverts to the CPU count — §G1e proves the running value. | worker log shows ready; `/_health/alerts` not reporting missing consumers after first drain. Log streams (Celery re-homes the root logger onto STDERR after Django's logging setup; nothing in the settings disables it): loggers named in `ops/logging_config.py` (`projections`, `events`, `accounts`, `tenant`, `ops`, `nxentra.accounting.*`) keep their STDOUT JSON handler — the `projections.base` "terminally skipped" / deferred WARNING lines land there; every other application logger (`shopify_connector.*`: the `[A52]` lines, "Queued initial Shopify sync", partial-response warnings) propagates to the root and lands on STDERR in plain text (copy every A52 timestamp verbatim, never re-render; the window values of `initial_store_sync` and of the prescribed `sync_store_orders` task are aware `+00:00` strings); Celery's own "Task received/succeeded" lines are expected on NEITHER stream (the `celery` logger does not propagate and the re-homing empties its handlers — observed 2026-09-22 as zero such lines for the release execution). Read BOTH streams; the startup banner (`concurrency: 1 (prefork)`) is written to the process's original stdout — record which file holds it. |
   | Beat | `celery -A nxentra_backend beat -l INFO --scheduler django_celery_beat.schedulers:DatabaseScheduler` | beat log ticking; scheduled tasks appear in worker log |
   | Broker | Redis reachable at `REDIS_URL` | `/_health/full` `redis` check |
   | Frontend | `npm run start` (Next.js, port 3000; the checked-in PM2 app name for the frontend is `nxentra-web`) | `GET /` on the frontend → 200 |
@@ -1177,9 +1177,19 @@ pre-activation check:
     blocked, repair the broker condition; do not rely silently on the
     periodic catch-up and do not blindly enqueue a second task while the
     first task's existence is uncertain. Any manual enqueue recovery
-    command must first be verified against live code, must return a
-    recorded task id, and must be proven on the synthetic rehearsal
-    before it may appear in this runbook.
+    command for the INITIAL sync must first be verified against live
+    code, must return a recorded task id, and must be proven on the
+    synthetic rehearsal before it may appear in this runbook (none
+    does). One enqueue form is named elsewhere in this runbook — the
+    explicit-window re-execution task `shopify.sync_store_orders` (the
+    §I closure rule; the §I15 replacement execution) — and §I5 grants
+    it a CONTROLLED FIRST SYNTHETIC PROOF: on the synthetic rehearsal
+    only, with the worker running (§I14 onward), enqueued once per
+    recorded need and recorded as its own execution (task id at
+    enqueue, TaskResult row, A52 line, §K row). That record is its
+    proof; until it exists the form may not be used on the merchant
+    path (§Q), and a merchant-path need arising before then is a STOP
+    for founder decision.
   - STOP if: any active `ShopifyUserBinding` already exists before J0;
     the connect path automatically authenticates the embedded user; the
     store was connected through a path that bypasses the intended
@@ -1324,7 +1334,7 @@ pre-activation check:
   id is the §I14 release execution.
 
 **Initial-intake contract — reusable definition** (used by I13, I14, the
-§K controls, §Q and — for its two replacement terms — §I15; every
+§K controls, §Q and — for its three replacement terms — §I15; every
 initial-sync window is computed at EXECUTION time, when the worker
 starts the task — never at OAuth time; the one exception is
 `REPLACEMENT_WINDOW`, which the operator declares in the §I15 addendum
@@ -1388,14 +1398,28 @@ REPLACEMENT_ORDER_SET   = (§I15 lapsed-retry path only) the synthetic
                           Shopify order id in a dated replacement
                           addendum signed BEFORE the replacement
                           execution; outside
-                          AUTHORIZED_PARENT_ORDER_SET by construction
+                          AUTHORIZED_PARENT_ORDER_SET by construction;
+                          contains no cancelled order (a cancelled
+                          never-captured order counts in `skipped`,
+                          not `created` — the cancelled path is
+                          exercised at §I14 and §J, not here)
 
 REPLACEMENT_WINDOW      = that execution's [created_at_min,
-                          created_at_max] task arguments = the
-                          narrowest created_at window containing exactly
-                          REPLACEMENT_ORDER_SET, both bounds recorded
-                          and passed as YYYY-MM-DDTHH:MM:SS+00:00 (aware
-                          UTC, second precision, no Z, no date-only);
+                          created_at_max] task arguments = [T0, T1],
+                          T0 a UTC timestamp read on the deployment
+                          host (`date -u`, to the second) at least one
+                          minute BEFORE the first replacement order is
+                          created and T1 one read at least one minute
+                          AFTER the last (the margin absorbs clock
+                          skew against Shopify; no Shopify `created_at`
+                          needs to be read to the second); the
+                          synthetic store receives no other order
+                          creation in [T0, T1] (the operator controls
+                          it), so the window contains exactly
+                          REPLACEMENT_ORDER_SET; both
+                          bounds recorded and passed as
+                          YYYY-MM-DDTHH:MM:SS+00:00 (aware UTC, second
+                          precision, no Z, no date-only);
                           must equal, byte for byte, the
                           created_at_min / created_at_max of its own
                           `[A52] _sync_orders start` line (the task
@@ -1596,7 +1620,9 @@ and a STOP:
    operator command and none may be used as one; any OPERATOR
    enqueue-recovery command must be verified against live code,
    return a recorded task id, and be proven on the synthetic rehearsal
-   before it may appear here (the I5 rule). The
+   before it may appear here (the I5 rule; its one exception is the
+   controlled first synthetic proof §I5 grants the re-execution task
+   below). The
    A-leg re-execution that DOES take an explicit `created_at` window
    is the worker task `shopify.sync_store_orders` with explicit
    `created_at_min` / `created_at_max` — the evidence-bearing form:
@@ -1606,7 +1632,7 @@ and a STOP:
    `cancelled_*` counters) and the django-db result backend stores it
    in the task's TaskResult row beside its `date_started`; its A52
    lines land on the worker's streams (§G1d). Enqueue it from
-   `backend/` under the deployment's environment (operator action;
+   `backend/` with the deployment `.env` in place (operator action;
    `<store_id>` is the `store_id` printed on the §I14 A52 start line —
    private, never in attachable evidence; both timestamps as ISO
    strings with an explicit `+00:00` offset, which the task passes
@@ -1622,10 +1648,20 @@ and a STOP:
    Record the printed task id at once. This enqueue form is verified
    against live code at this revision (the task's signature and
    return value; it is the same call the application's own import
-   path makes); its first recorded use on the synthetic rehearsal is
-   its proof (the I5 rule), and on the merchant path it may be used
-   only after such a recorded synthetic proof exists — otherwise the
+   path makes); §I5 grants it a controlled first synthetic proof — its
+   first recorded use on the synthetic rehearsal, with the worker
+   running, is that proof — and on the merchant path it may be used
+   only after such a recorded synthetic proof exists; otherwise the
    closure is a STOP for founder decision, never an improvised run.
+   Read the execution's TaskResult row (read-only, same environment):
+
+   ```bash
+   python manage.py shell -c "
+   from django_celery_results.models import TaskResult
+   r = TaskResult.objects.get(task_id='<task id>')
+   print(r.status, r.date_started, r.date_done); print(r.result)"
+   ```
+
    The CLI `python manage.py resync_shopify_orders --company <slug>
    --from <ISO> --to <ISO>` runs the same orders leg but prints only
    `fetched`, `created`, `skipped` and `errors` (its A52 done line
@@ -1644,7 +1680,7 @@ and a STOP:
    line, counters and inequality, in the §K pack), and any order it
    books outside AUTHORIZED_PARENT_ORDER_SET is an intake-contract
    variance and a STOP. (The §I15 lapsed-retry path runs the same
-   command for orders created AFTER `INITIAL_SYNC_STARTED_AT`; that is
+   worker task for orders created AFTER `INITIAL_SYNC_STARTED_AT`; that is
    not a closure re-execution — it is authorized by its own signed
    `REPLACEMENT_ORDER_SET`, §I15.)
    The interactive resync endpoint is NOT a
@@ -1870,7 +1906,14 @@ independent completeness control.
   the §I12 queue baseline and its durable `django_celery_results`
   TaskResult row — Celery's own receive/start lines reach neither
   worker stream, §G1d), its start/finish timestamps, and its complete result
-  (privately); require exactly 1 + K initial tasks consumed on release,
+  (privately) — and export each evidence TaskResult row (`task_id`,
+  `status`, `date_started`, `date_done`, `result`) into `preflight/`
+  BEFORE §I16: once beat runs, the DatabaseScheduler-installed
+  `celery.backend_cleanup` (04:00 daily) deletes TaskResult rows older
+  than `result_expires`, Celery's default 24 h (the settings set no
+  override); the same export applies to every closure re-execution
+  row and the §I15 replacement row; require exactly 1 + K initial
+  tasks consumed on release,
   where K is the number of successful embedded `token-exchange/` calls
   after the J0 binding that the I13 sign-off pre-declared (each queues
   one task through `complete_oauth_token_exchange`; session-login-only
@@ -2038,10 +2081,12 @@ independent completeness control.
   fails; a cancelled B candidate is classified as harmless, skipped,
   or outside the required parent/evidence set; the refund leg's
   `status = "ok"` is read as proof of zero errors; the task result has
-  no leg keys or the task raised before any leg; the A52 start line is
-  absent, or the recorded windows do not match its
-  `created_at_min`/`created_at_max`, or
-  `created_at_max − created_at_min ≠ 7 days`, or
+  no leg keys or the task raised before any leg; an `initial_store_sync`
+  execution's A52 start line is absent, or the recorded windows do not
+  match its `created_at_min`/`created_at_max`, or its
+  `created_at_max − created_at_min ≠ 7 days` (an explicit-window
+  closure re-execution is reconciled to its declared window instead),
+  or
   `I13_SIGNOFF_TIMESTAMP < TASK_RECEIVED_AT ≤ INITIAL_SYNC_STARTED_AT`
   fails; a closure re-execution booked an order outside
   AUTHORIZED_PARENT_ORDER_SET; counts across A, B, and their union
@@ -2113,13 +2158,17 @@ independent completeness control.
   the task is enqueued, sign a dated replacement addendum in
   `signoff/` (the I13 twin in authority, not in form: its window is
   declared here in advance because this execution takes an explicit
-  window — the §O retrospective-authorization rule binds
-  execution-relative windows only; the I13 sign-off does not cover
-  it) that lists `REPLACEMENT_ORDER_SET` — the replacement
-  orders by Shopify order id, with their refunds — and
-  `REPLACEMENT_WINDOW` — the `created_at_min`/`created_at_max` pair,
-  the narrowest `created_at` window containing exactly those orders —
-  records that nobody edits any earlier order in Shopify Admin (this
+  window — the §O bullet against pre-recorded window values binds
+  the GO record and the I13 sign-off, whose windows are
+  execution-relative; this addendum is neither, and its window is
+  declared, not effective; the I13 sign-off does not cover it) that
+  lists `REPLACEMENT_ORDER_SET` — the replacement
+  orders by Shopify order id, none cancelled, with their refunds — and
+  `REPLACEMENT_WINDOW` — the `created_at_min`/`created_at_max` pair =
+  [T0, T1], the UTC timestamps read on the deployment host at least
+  one minute before the first and one minute after the last
+  replacement order was created — records that
+  nobody edits any earlier order in Shopify Admin (this
   leg selects by `created_at` within `REPLACEMENT_WINDOW` only and
   runs no `updated_at` refund leg, so no earlier order is reachable;
   the rule keeps the read-back attributable to the declared set and
@@ -2139,16 +2188,19 @@ independent completeness control.
   status are in the §I closure rule above; the CLI
   `resync_shopify_orders` prints four counters and discards the rest,
   so it is not the evidence-bearing form here), recorded as its own
-  execution: its task id (printed at enqueue; the addendum names it
-  as the one expected `sync_store_orders` task — it is not an initial
-  task and does not disturb the 1 + K count), its TaskResult row
+  execution: its task id (printed at enqueue and written into the
+  record at that moment — the addendum, signed earlier, pre-declares
+  exactly ONE `shopify.sync_store_orders` task by name and count, never
+  an id; it is not an initial task and does not disturb the 1 + K
+  count), its TaskResult row
   (`date_started` and the complete orders-leg result), its own `[A52]
   _sync_orders start` line on the worker's streams whose
   `created_at_min`/`created_at_max` equal `REPLACEMENT_WINDOW`
   verbatim, and a §K row, with `I15_REPLACEMENT_SIGNOFF_TIMESTAMP` <
   `REPLACEMENT_EXECUTION_STARTED_AT` (that row's `date_started`).
-  Replacement evidence contract, read from that TaskResult row
-  against the addendum:
+  Replacement evidence contract, read from that TaskResult row (the
+  read-only shell form in the §I closure rule; export the row into
+  `preflight/` before §I16 — §I14) against the addendum:
   `status` "ok"; `created` = |`REPLACEMENT_ORDER_SET`| (their
   deliveries were held, so none was ingested before) AND every member
   present in the read-back — together the proof that nothing outside
@@ -2159,8 +2211,8 @@ independent completeness control.
   refund count the addendum lists (only an order already
   refunded/partially_refunded at fetch time is backfilled — refund
   the replacement orders BEFORE the enqueue); `pilot_scope_skipped` =
-  0; the four `cancelled_*` counters 0 unless the addendum names a
-  cancelled replacement, in which case the §I inequality applies;
+  0; the four `cancelled_*` counters 0 (`REPLACEMENT_ORDER_SET`
+  contains no cancelled order by definition);
   `cogs_fulfillments` recorded, no financial effect expected under
   the pilot profile (§I definition, mechanical side effects); its
   refund backfill books their refunds. Any order it
@@ -2289,7 +2341,7 @@ Minimum schema:
 | Per-order line-item count for every intake order (must equal the stored order evidence's `line_items` count — an independent completeness control over the PR #143 drained reads; the stored list is unfiltered, so equality is exact. Deliberately no variant-count twin: the sync legitimately skips SKU-less variants and the NON_STOCK catalog collapses shared SKUs, so no export-vs-system variant equality exists to demand) | Shopify admin/exports vs stored order evidence (read-only) |
 | Oldest and newest imported parent-order dates | system (read-only) vs Shopify |
 | Oldest and newest imported refund dates | system (read-only) vs Shopify |
-| Refund fetch-failure count (must be 0 on the latest accounted execution; any earlier execution's fetch failure recorded with its §I closure) | the release execution's `initial_store_sync` task result (refund leg `fetch_failures`); for every recorded closure re-execution and any §I15 replacement execution — orders-leg-only `sync_store_orders` TaskResult rows — the `errors` counter, which folds in every refund-backfill fetch failure (that leg has no `fetch_failures` field) and must be 0 |
+| Refund fetch-failure count (must be 0 on the latest accounted execution; any earlier execution's fetch failure recorded with its §I closure) | the release execution's `initial_store_sync` task result — refund leg `fetch_failures` AND its orders leg's `errors`, which folds in every per-order refund-backfill fetch failure; for every recorded closure re-execution and any §I15 replacement execution — orders-leg-only `sync_store_orders` TaskResult rows — the `errors` counter, which folds in every refund-backfill fetch failure (that leg has no `fetch_failures` field) and must be 0 |
 | Cancelled B candidates: count and ids; for each — local parent present, complete refund count/totals, and the cancellation provenance stamp verified per §I (no stamp-failure entry in `cancelled_processing_errors` and no "Cancellation provenance stamp failed" warning for that order; raw-payload `cancelled_at` corroboration only) | Shopify admin/exports vs system (read-only) + task result / worker log (private) |
 | Cancelled A orders: captured-money (booked + stamped) vs never-captured (no financial effect) split | Shopify admin/exports vs `cancelled_financial_processed` (booked + stamped) / `cancelled_no_effect_skipped` (never captured, writer succeeded); any `cancelled_financial_candidates` − `cancelled_financial_processed` gap must be accounted for by `cancelled_processing_errors` + `pilot_scope_skipped` per the §I inequality (row below) |
 | Per-leg pilot/cancelled counters (`pilot_scope_skipped`, `cancelled_financial_candidates`, `cancelled_financial_processed`, `cancelled_no_effect_skipped` (orders leg only), `cancelled_processing_errors`) and the inequality check per leg | `initial_store_sync` task result |
@@ -2793,7 +2845,9 @@ Sign-off: operator ______ date ______
   per-leg result field before the worker has executed (a retrospective
   authorization — the contract wording names them as future values,
   which is required; a filled-in value is the violation), or that is
-  amended after signing to include one;
+  amended after signing to include one (the §I15 replacement addendum
+  declares `REPLACEMENT_WINDOW` in advance by design and is outside
+  this bullet);
 - a GO record whose "version <n>", or an I13 sign-off, does not name
   the `INTAKE_CONTRACT_VERSION` (the §B runbook revision) in force, or
   a merchant-run runbook revision whose §I definition block is not
