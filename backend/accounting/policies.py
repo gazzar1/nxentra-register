@@ -171,7 +171,7 @@ def can_change_account_type(actor, account) -> tuple[bool, str]:
     ).exists():
         return False, "Cannot change type of an account that has posted transactions."
 
-    # Durable-evidence scan (Codex rounds 1+3 P1): projection state — rows OR
+    # Durable-evidence scan: projection state — rows OR
     # applied-markers — cannot prove the account is unreferenced. An
     # unmaterialized posted event has no rows yet; a pre-boundary
     # marker-with-partial-application (a projector that marked the event
@@ -201,7 +201,7 @@ def can_change_account_type(actor, account) -> tuple[bool, str]:
             # An unreadable posted payload might reference this account —
             # fail closed (unavailability over contradictory history).
             return cannot_verify
-        # Codex round-4 P2: malformed payload SHAPES fail closed exactly like
+        # Malformed payload SHAPES fail closed exactly like
         # resolution exceptions — a non-dict payload, a non-list lines
         # container, or a non-dict line entry could all hide a reference a
         # later repair/rebuild would reveal; "no readable references" is not

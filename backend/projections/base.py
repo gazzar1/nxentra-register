@@ -354,7 +354,7 @@ class BaseProjection(ABC):
                             # A163) showed already-healed failures forever.
                             # Cheap conditional UPDATE: (company,
                             # projection_name, event) is the table's unique key.
-                            # A3-PR3 (Codex round-14 P1): stamp ALL failure rows
+                            # A3-PR3: stamp ALL failure rows
                             # for this key — including manually-resolved ones —
                             # as SELF-HEALED (resolved_by NULL is the persisted
                             # mark of a genuine successful re-apply, and the
@@ -445,7 +445,7 @@ class BaseProjection(ABC):
                 # via the ProjectionAppliedEvent unique constraint — they'll
                 # short-circuit on the get_or_create check on the second pass.
                 #
-                # A5-PR1b (PR #133 Codex P1): the rewind sits in a `finally`
+                # A5-PR1b: the rewind sits in a `finally`
                 # because a propagating exception from an except-branch's own
                 # writes (the terminal-consume evidence transaction; a
                 # mark_error fault) would otherwise exit before it ran — a

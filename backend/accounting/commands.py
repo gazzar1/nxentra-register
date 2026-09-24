@@ -192,7 +192,7 @@ def _posted_journal_invalid_result(exc: PostedJournalInvalid) -> CommandResult:
 
 
 def translate_posted_journal_invalid(fn):
-    """A3-PR2 correction (Codex P2 finding 1): public-boundary translation for
+    """A3-PR2: public-boundary translation for
     the raise-through pattern. Applied ABOVE ``@transaction.atomic`` so a
     :class:`PostedJournalInvalid` raised anywhere inside the decorated command
     escapes the ENTIRE owning transaction first — rolling back the complete
@@ -262,7 +262,7 @@ def _return_original_je_or_conflict(actor: ActorContext, existing_event, content
             "This request ID already created a journal entry, but it is not yet projected; retry shortly."
         )
     result = CommandResult.ok(entry, event=existing_event)
-    # A5-PR4a (Codex PR #134 round-4 P2): mark the reuse so the caller can
+    # A5-PR4a: mark the reuse so the caller can
     # distinguish "this request MINTED the entry" from "this request replayed
     # an existing one" — side-band writes keyed off creation (e.g. the
     # period-override audit) must be creator-only, or a concurrent retry
@@ -1209,7 +1209,7 @@ def update_journal_entry(
     # A5-PR4a: validate a supplied source stamp BEFORE change tracking and any
     # event emission — the manual door may only carry the pilot-adjustment
     # discriminator with a same-company-resolvable reference (or clear both
-    # to ""), and (round-8 P1) may never edit or clear an entry whose CURRENT
+    # to ""), and may never edit or clear an entry whose CURRENT
     # stamp is system-owned (provider flows persist failed journals as
     # INCOMPLETE drafts carrying join-load-bearing provenance). Raises; no
     # event, entry untouched.
@@ -1343,7 +1343,7 @@ def update_journal_entry(
     # Only emit event if there were changes
     event = None
     if changes:
-        # Codex PR #134 round-5 P2: the changes-hash alone made an
+        # The changes-hash alone made an
         # edit-cycle (A→B, B→A, A→B) reproduce the FIRST update's key — the
         # emitter returned the consumed event, no new event landed, and the
         # entry silently stayed on the intermediate state while the command
@@ -1548,7 +1548,7 @@ def save_journal_entry_complete(
     # INCOMPLETE — the emitter returned the OLD event, no new event landed,
     # and the entry could never reach DRAFT again.
     #
-    # Key rules (Codex PR #134 rounds 1-3):
+    # Key rules:
     # 1. TRUE RETRY — a completion whose latest stored SAVED_COMPLETE has no
     #    UPDATED event after it and carries the SAME content digest reuses
     #    that stored event's OWN key (whatever its shape, legacy included),
@@ -1693,7 +1693,7 @@ def post_journal_entry_or_raise(actor: ActorContext, entry_id: int, *, _process_
     line_data = []
     # A142: collect the FX rate(s) actually used to convert lines carried in
     # the ENTRY's currency. When the rate is looked up per-line
-    # (convert-or-quarantine, PR #34) the aggregate still holds the 1.0
+    # (convert-or-quarantine) the aggregate still holds the 1.0
     # default, and stamping that on the header/event misreports the JE
     # (live: JE-000070 showed "1 USD = 1.000000 EGP" over lines converted @48).
     entry_currency = aggregate.currency or entry.currency or actor.company.default_currency
@@ -1802,7 +1802,7 @@ def post_journal_entry_or_raise(actor: ActorContext, entry_id: int, *, _process_
             # Shopify_R config: default USD / functional EGP). If no rate is on
             # file, QUARANTINE by failing the post (entry stays unposted with a
             # clear reason); it posts once a rate — even a genuine 1.0 peg — is
-            # added for the pair. Mirrors build_journal_entry (PR #33).
+            # added for the pair. Mirrors build_journal_entry.
             if line_exchange_rate == Decimal("1.0"):
                 from datetime import datetime
 
@@ -4614,7 +4614,7 @@ def record_customer_receipt(
         if not looked_up:
             # A203: never book a foreign amount at a guessed 1:1 — refuse
             # loudly, same class as post_journal_entry's missing-rate refusal
-            # (PR #33) and operator-safety Rule 2.
+            # and operator-safety Rule 2.
             return CommandResult.fail(
                 f"Missing {receipt_currency}→{functional_currency} exchange rate for {receipt_date}. "
                 f"Add the rate (Settings → Exchange Rates) — or, if this receipt is really in "

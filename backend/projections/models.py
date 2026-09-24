@@ -179,7 +179,7 @@ class AccountBalance(ProjectionOwnedModel):
 
         account_public_id = str(self.account.public_id)
 
-        # A3-PR3 (Codex round-11 P1): account-derived memo classification —
+        # A3-PR3: account-derived memo classification —
         # verifying against the raw payload flag would disagree with the
         # apply boundary and the balance consumers whenever the flag lies.
         from accounting.posted_journal_apply import (
@@ -196,13 +196,13 @@ class AccountBalance(ProjectionOwnedModel):
         from accounting.posted_journal_apply import canonical_line_account_id
 
         for event in events:
-            # A3-PR3 (Codex round-12 P1): fold only apply-accepted events —
+            # A3-PR3: fold only apply-accepted events —
             # see AccountBalanceProjection.verify_all_balances.
             if not posted_event_accepted_for_apply(event, apply_facts_cache, apply_excluded_ids):
                 continue
             lines = event.get_data().get("lines", [])
             for line_data in lines:
-                # Codex round-18 P1: canonical identity comparison.
+                # Canonical identity comparison.
                 if canonical_line_account_id(line_data) != account_public_id:
                     continue
                 if line_is_memo(line_data, memo_ids):
@@ -1197,7 +1197,7 @@ class ProjectionStatus(models.Model):
 # The framework-owned mark of a GENUINE successful re-apply (A105 self-heal,
 # written only by BaseProjection.process_pending on a successful handle).
 # The event-fold acceptance filter keys on this persisted resolution KIND;
-# mark_resolved refuses to reproduce it (Codex round-15 P1).
+# mark_resolved refuses to reproduce it.
 SELF_HEALED_RESOLUTION_NOTE = "Self-healed: event processed successfully on retry."
 
 
@@ -1320,7 +1320,7 @@ class ProjectionFailureLog(models.Model):
     def mark_resolved(self, user=None, note: str = ""):
         """Operator action: mark this failure as resolved.
 
-        A3-PR3 (Codex round-15 P1): an operator resolution must never be
+        A3-PR3: an operator resolution must never be
         able to produce the framework's SELF-HEALED signature — the
         event-fold acceptance filter keys on the persisted resolution KIND
         (the framework-owned resolution_note sentinel; resolved_by is a

@@ -164,7 +164,7 @@ class PeriodAccountBalanceProjection(BaseProjection):
             logger.error(f"Account {account_public_id} not found in event {event.id}")
             return
 
-        # A3-PR3 (Codex round-2 P1): memo classification from the RESOLVED
+        # A3-PR3: memo classification from the RESOLVED
         # ACCOUNT (the canonical invariant's authority rule), never the raw
         # payload flag — see AccountBalanceProjection._apply_line.
         if account.is_memo_account:

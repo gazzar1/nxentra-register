@@ -153,7 +153,7 @@ class AccountBalanceProjection(BaseProjection):
                 f"account.company_id={account.company_id} company.id={company.id}"
             )
 
-        # A3-PR3 (Codex round-2 P1): memo classification comes from the
+        # A3-PR3: memo classification comes from the
         # RESOLVED ACCOUNT — the same authority rule the canonical invariant
         # applies. The payload is_memo_line flag is historical metadata: a
         # historical/foreign payload whose flag disagrees with the account
@@ -344,7 +344,7 @@ class AccountBalanceProjection(BaseProjection):
             event_type=EventTypes.JOURNAL_ENTRY_POSTED,
         ).order_by("company_sequence")
 
-        # A3-PR3 (Codex round-11 P1): account-derived memo classification —
+        # A3-PR3: account-derived memo classification —
         # the raw payload flag would disagree with the projected balances.
         from accounting.posted_journal_apply import (
             excluded_posted_event_ids,
@@ -358,7 +358,7 @@ class AccountBalanceProjection(BaseProjection):
         apply_excluded_ids = excluded_posted_event_ids(company)
 
         for event in events:
-            # A3-PR3 (Codex round-12 P1): verify against exactly what the
+            # A3-PR3: verify against exactly what the
             # apply boundary ACCEPTS — a quarantined event is deliberately
             # absent from balances, and folding it would report a false
             # integrity mismatch.
@@ -368,7 +368,7 @@ class AccountBalanceProjection(BaseProjection):
             data = event.get_data()
             lines = data.get("lines", [])
             for line_data in lines:
-                # Codex round-18 P1: canonical identity for the aggregation
+                # Canonical identity for the aggregation
                 # key — accepted payloads may spell UUIDs in any equivalent
                 # form, and the comparison below keys on str(public_id).
                 from accounting.posted_journal_apply import canonical_line_account_id

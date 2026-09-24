@@ -239,7 +239,7 @@ class TrialBalanceView(DimensionFilterMixin, APIView):
         ).order_by("company_sequence")
 
         # Process events
-        # A3-PR3 (Codex round-11 P1): memo classification for event-fold
+        # A3-PR3: memo classification for event-fold
         # readers comes from the RESOLVED ACCOUNT (the invariant's rule),
         # never the raw payload flag — otherwise these reports disagree
         # with the accepted journal and the projected balances.
@@ -255,7 +255,7 @@ class TrialBalanceView(DimensionFilterMixin, APIView):
         apply_facts_cache: dict = {}
         apply_excluded_ids = excluded_posted_event_ids(actor.company)
         for event in events:
-            # A3-PR3 (Codex round-12 P1): fold only events the apply boundary
+            # A3-PR3: fold only events the apply boundary
             # ACCEPTS — a quarantined/deferred event is not in the canonical
             # balances, and folding it would misstate the report.
             if not posted_event_accepted_for_apply(event, apply_facts_cache, apply_excluded_ids):
@@ -725,7 +725,7 @@ class BalanceSheetView(DimensionFilterMixin, APIView):
         ).order_by("company_sequence")
 
         # Process events
-        # A3-PR3 (Codex round-11 P1): memo classification for event-fold
+        # A3-PR3: memo classification for event-fold
         # readers comes from the RESOLVED ACCOUNT (the invariant's rule),
         # never the raw payload flag — otherwise these reports disagree
         # with the accepted journal and the projected balances.
@@ -741,7 +741,7 @@ class BalanceSheetView(DimensionFilterMixin, APIView):
         apply_facts_cache: dict = {}
         apply_excluded_ids = excluded_posted_event_ids(actor.company)
         for event in events:
-            # A3-PR3 (Codex round-12 P1): fold only events the apply boundary
+            # A3-PR3: fold only events the apply boundary
             # ACCEPTS — a quarantined/deferred event is not in the canonical
             # balances, and folding it would misstate the report.
             if not posted_event_accepted_for_apply(event, apply_facts_cache, apply_excluded_ids):
@@ -1242,7 +1242,7 @@ class IncomeStatementView(DimensionFilterMixin, APIView):
         _debug_sample_tags = []
 
         # Process events
-        # A3-PR3 (Codex round-11 P1): memo classification for event-fold
+        # A3-PR3: memo classification for event-fold
         # readers comes from the RESOLVED ACCOUNT (the invariant's rule),
         # never the raw payload flag — otherwise these reports disagree
         # with the accepted journal and the projected balances.
@@ -1258,7 +1258,7 @@ class IncomeStatementView(DimensionFilterMixin, APIView):
         apply_facts_cache: dict = {}
         apply_excluded_ids = excluded_posted_event_ids(actor.company)
         for event in events:
-            # A3-PR3 (Codex round-12 P1): fold only events the apply boundary
+            # A3-PR3: fold only events the apply boundary
             # ACCEPTS — a quarantined/deferred event is not in the canonical
             # balances, and folding it would misstate the report.
             if not posted_event_accepted_for_apply(event, apply_facts_cache, apply_excluded_ids):
@@ -2174,7 +2174,7 @@ class DimensionPLComparisonView(DimensionFilterMixin, APIView):
             event_type=EventTypes.JOURNAL_ENTRY_POSTED,
         ).order_by("company_sequence")
 
-        # A3-PR3 (Codex round-11 P1): memo classification for event-fold
+        # A3-PR3: memo classification for event-fold
         # readers comes from the RESOLVED ACCOUNT (the invariant's rule),
         # never the raw payload flag — otherwise these reports disagree
         # with the accepted journal and the projected balances.
@@ -2190,7 +2190,7 @@ class DimensionPLComparisonView(DimensionFilterMixin, APIView):
         apply_facts_cache: dict = {}
         apply_excluded_ids = excluded_posted_event_ids(actor.company)
         for event in events:
-            # A3-PR3 (Codex round-12 P1): fold only events the apply boundary
+            # A3-PR3: fold only events the apply boundary
             # ACCEPTS — a quarantined/deferred event is not in the canonical
             # balances, and folding it would misstate the report.
             if not posted_event_accepted_for_apply(event, apply_facts_cache, apply_excluded_ids):
@@ -3490,7 +3490,7 @@ class DashboardChartsView(APIView):
         # Track account activity for top accounts
         account_activity = defaultdict(lambda: {"debits": Decimal("0.00"), "credits": Decimal("0.00"), "count": 0})
 
-        # A3-PR3 (Codex round-11 P1): memo classification for event-fold
+        # A3-PR3: memo classification for event-fold
         # readers comes from the RESOLVED ACCOUNT (the invariant's rule),
         # never the raw payload flag — otherwise these reports disagree
         # with the accepted journal and the projected balances.
@@ -3506,7 +3506,7 @@ class DashboardChartsView(APIView):
         apply_facts_cache: dict = {}
         apply_excluded_ids = excluded_posted_event_ids(actor.company)
         for event in events:
-            # A3-PR3 (Codex round-12 P1): fold only events the apply boundary
+            # A3-PR3: fold only events the apply boundary
             # ACCEPTS — a quarantined/deferred event is not in the canonical
             # balances, and folding it would misstate the report.
             if not posted_event_accepted_for_apply(event, apply_facts_cache, apply_excluded_ids):
@@ -3739,7 +3739,7 @@ class DashboardWidgetsView(APIView):
             # ═══════════════════════════════════════════════════════════════
             # 3. Recent Activity — last 10 posted journal entries
             # ═══════════════════════════════════════════════════════════════
-            # Codex round-18 P2: slice AFTER the acceptance filter — the ten
+            # Slice AFTER the acceptance filter — the ten
             # newest STORED events may include quarantined ones, and slicing
             # first would shrink (or empty) the widget while older accepted
             # journals exist. Iterate newest-first and stop at ten accepted.
@@ -3753,7 +3753,7 @@ class DashboardWidgetsView(APIView):
             )
 
             recent_activity = []
-            # A3-PR3 (Codex round-11 P1): memo classification for event-fold
+            # A3-PR3: memo classification for event-fold
             # readers comes from the RESOLVED ACCOUNT (the invariant's rule),
             # never the raw payload flag — otherwise these reports disagree
             # with the accepted journal and the projected balances.
@@ -3768,7 +3768,7 @@ class DashboardWidgetsView(APIView):
             apply_facts_cache: dict = {}
             apply_excluded_ids = excluded_posted_event_ids(actor.company)
             for event in recent_events:
-                # A3-PR3 (Codex round-12 P1): fold only events the apply boundary
+                # A3-PR3: fold only events the apply boundary
                 # ACCEPTS — a quarantined/deferred event is not in the canonical
                 # balances, and folding it would misstate the report.
                 if len(recent_activity) >= 10:
