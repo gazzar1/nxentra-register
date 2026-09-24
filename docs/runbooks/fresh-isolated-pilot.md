@@ -2022,9 +2022,20 @@ independent completeness control.
   retry: to exercise this proof the path restarts at the synthetic
   ORDER CREATION under the §I4 hold (new orders and refunds in the
   synthetic store, whose deliveries are then held and retried — the
-  hold must be verified in force before they are created), followed by
-  the unblock within ~4 hours of the first of them; orders created
-  AFTER the unblock are first ingestions, not duplicates. Otherwise
+  hold must be verified in force before they are created), then —
+  because every 1 + K initial task was consumed at §I14 and creating
+  an order enqueues no sync — a RECORDED re-execution that books the
+  replacement orders BEFORE the routes open (the §I closure's A-leg
+  re-execution: `python manage.py resync_shopify_orders --company
+  <slug> --from <ISO> --to <ISO>` with the narrowest window that
+  selects only the replacement orders, recorded as an explained second
+  execution with its own task id or CLI invocation, `[A52]` line,
+  counters and §K row; its refund backfill books their refunds),
+  verified in a read-back (rows, events and journals present, 0
+  failures), and only then the unblock within ~4 hours of the first
+  replacement order — the held deliveries then arrive as true
+  duplicates of existing effects. Orders created AFTER the unblock are
+  first ingestions, not duplicates. Otherwise
   record an explicit gap against J1's duplicate-delivery proof — never
   a lapsed backlog as exercised.
   STOP if: any retried delivery creates a duplicate row, event or
@@ -2907,8 +2918,14 @@ after G1 and G2 are recorded complete in the
     `INITIAL_LOOKBACK_DAYS = 7`, `PRE_GO_INGESTION_BASELINE_HASH`, the
     authorized intake-contract version — `INTAKE_CONTRACT_VERSION`,
     the §B runbook revision SHA whose §I definition text is the
-    contract (this is the "version <n>" the wording cites) — and
-    merchant acknowledgement/approval where required. (The GO's
+    contract (this is the "version <n>" the wording cites) —
+    `INITIAL_TASKS_QUEUED = 1 + K` with `K` (the successful embedded
+    `token-exchange/` calls since the merchant store's connection) and
+    the ordered task ids copied from step 10's
+    `PRE_GO_INITIAL_TASK_IDS` (the first is the release execution; no
+    embedded launch may occur between signing and the step-12 worker
+    start — re-sign if one does), and merchant
+    acknowledgement/approval where required. (The GO's
     "complete parent order" (item 3) and "merchant product catalog"
     (item 4) are provable because the executed revision contains the
     PR #143 nested-collection pagination fix — §B requires it, and the
@@ -3047,7 +3064,12 @@ after G1 and G2 are recorded complete in the
     delivery it held (plan steps 8–14 inside one sitting); a
     delivery that lapsed reaches the ledger only through the
     periodic catch-up after step 15 and cannot serve as the
-    duplicate-delivery proof — record any lapse explicitly;
+    duplicate-delivery proof — record any lapse explicitly. The
+    duplicate proof is carried by held deliveries for orders the
+    step-12 initial sync already booked; a held delivery for an order
+    created after that sync's window is a FIRST ingestion when it
+    arrives (not a duplicate), and an order created after the unblock
+    is ordinary webhook intake;
 15. start Celery beat **LAST**;
 16. rerun the go-live preflight and alerts after beat starts;
 17. sign the final **intake-complete checkpoint**. Do NOT sign while:
