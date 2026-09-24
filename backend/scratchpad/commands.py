@@ -20,7 +20,6 @@ import uuid
 from decimal import Decimal
 from uuid import UUID
 
-from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
@@ -37,20 +36,6 @@ from events.types import EventTypes
 
 from .models import ScratchpadRow
 from .validation import validate_group_balance, validate_row
-
-
-def _process_projections(company, exclude: set = None) -> None:
-    """Process pending projection events for a company."""
-    if not settings.PROJECTIONS_SYNC:
-        return
-
-    from projections.base import projection_registry
-
-    excluded = exclude or set()
-    for projection in projection_registry.all():
-        if projection.name in excluded:
-            continue
-        projection.process_pending(company, limit=1000)
 
 
 def commit_scratchpad_groups(

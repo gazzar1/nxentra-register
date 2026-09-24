@@ -66,8 +66,10 @@ class _ReentryProbe(BaseProjection):
 
                 _process_projections(event.company)
             elif mode == "emitter_loop":
-                for projection in projection_registry.all():
-                    projection.process_pending(event.company, limit=100)
+                # the emitter's synchronous fallback (events/emitter.py) calls this
+                from projections.runtime import drain_company
+
+                drain_company(event.company, limit=100)
             elif mode == "peer":
                 assert self.peer is not None
                 target, target_company = self.peer

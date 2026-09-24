@@ -32,9 +32,9 @@ logger = logging.getLogger(__name__)
 # --- Pass re-entrancy guard (G1 rehearsal §I14 STOP, 2026-09-22) -------------
 #
 # A pass is the unit of company-stream order. Commands invoked from inside a
-# handler drain EVERY projection synchronously (accounting.commands
-# `_process_projections` and its copies, the emitter's synchronous fallback
-# loop). Before this guard such a drain re-entered the SAME projection while
+# handler drain EVERY projection synchronously (projections.runtime:
+# `command_drain`, called by the command modules, and `drain_company`, the
+# emitter's synchronous fallback). Before this guard such a drain re-entered the SAME projection while
 # the outer handler was mid-flight: it read the outer event's applied marker
 # (written before the handler runs, inside the still-open per-event
 # transaction) and treated the in-flight event as complete — a refund pending

@@ -23,9 +23,10 @@ import logging
 import uuid
 from decimal import Decimal
 
-from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.utils import timezone
+
+from projections.runtime import command_drain as _process_projections
 
 logger = logging.getLogger("nxentra.accounting.commands")
 
@@ -482,19 +483,6 @@ def _resolve_analysis_tags_to_public_ids(company, analysis_tags: list) -> list:
             )
 
     return result
-
-
-def _process_projections(company, exclude: set[str] | None = None) -> None:
-    if not settings.PROJECTIONS_SYNC:
-        return
-
-    from projections.base import projection_registry
-
-    excluded = exclude or set()
-    for projection in projection_registry.all():
-        if projection.name in excluded:
-            continue
-        projection.process_pending(company, limit=1000)
 
 
 def _verify_account_materialization(

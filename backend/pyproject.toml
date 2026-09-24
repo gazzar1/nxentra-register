@@ -124,6 +124,7 @@ module = [
     "events.models",
     # Projection engine
     "projections.base",
+    "projections.runtime",
     "projections.write_barrier",
     "projections.models",
     # Tenant isolation

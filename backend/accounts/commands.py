@@ -58,6 +58,7 @@ from events.types import (
     UserRejectedData,
     UserUpdatedData,
 )
+from projections.runtime import command_drain as _process_projections
 from projections.write_barrier import auth_writes_allowed, bootstrap_writes_allowed, command_writes_allowed
 
 logger = logging.getLogger(__name__)
@@ -105,16 +106,6 @@ def _idempotency_hash(prefix: str, payload: dict) -> str:
     normalized = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     digest = hashlib.sha256(normalized).hexdigest()[:16]
     return f"{prefix}:{digest}"
-
-
-def _process_projections(company) -> None:
-    if not settings.PROJECTIONS_SYNC:
-        return
-
-    from projections.base import projection_registry
-
-    for projection in projection_registry.all():
-        projection.process_pending(company, limit=1000)
 
 
 # =============================================================================

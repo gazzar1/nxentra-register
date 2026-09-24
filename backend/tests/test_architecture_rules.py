@@ -40,6 +40,8 @@ Why source scans instead of behavior tests:
 import ast
 from pathlib import Path
 
+import pytest
+
 # =============================================================================
 # Helpers
 # =============================================================================
@@ -3586,3 +3588,454 @@ def test_exclude_line_has_a_single_production_call_site():
     assert callers == ["accounting/bank_views.py", "reconciliation/commands.py"], (
         f"unexpected exclude_line call sites: {callers}"
     )
+
+
+# Rule 20 (projection runtime): every projection DRAIN door is frozen.
+# A drain is a reference to ``BaseProjection.process_pending`` — the A3 apply
+# choke point and the PR #152 in-flight guard live there. Registry-walk drains
+# (a loop over the projections that dispatches ``process_pending`` on the loop
+# variable) are the shape the September 2026 re-entrancy bug hid behind: the
+# same loop existed in six command modules, the emitter and two seed commands.
+# The dicts below pin every reference per file (exact counts); a new
+# ``process_pending`` reference outside ``projections/`` must go through
+# ``projections.runtime`` or edit this test consciously. Detection is
+# AST-based (``.process_pending(`` also appears in docstrings): a reference is
+# the attribute ``x.process_pending`` OR the string constant
+# ``"process_pending"`` — the ``getattr(x, "process_pending")``,
+# ``operator.methodcaller`` / ``attrgetter`` and ``vars(x)[...]`` spellings —
+# so no spelling of a dispatch escapes the count — and every INVOKED
+# reflective dispatch with a runtime-chosen name in production code is frozen
+# per file (``_INVOKED_DYNAMIC_REFLECTIVE_DISPATCHES``), on any receiver.
+#
+# Threat model (founder decision, 2026-09-24): Rule 20 is a ratchet against
+# ACCIDENTAL duplication of the drain loop and against the reflective
+# spellings a reviewer or a refactor would reach for. It does not claim to
+# defeat deliberate evasion (an alias of an alias, a value passed through a
+# container or a call, dynamic import, exec). The two backstops are the
+# per-file reference count for the literal family and the tree-wide pin for
+# the reflective family: a new evasion spelling that production code does not
+# actually contain is answered by this statement, not by another detector
+# branch.
+#
+# Post-extraction state: the six command-layer copies, the emitter fallback
+# and the two seed commands all call projections.runtime. Outside
+# projections/ three single-projection drains survive with one reference
+# each, and ONE dispatch-shaped registry walk survives — the tenant replay
+# operator command, consciously not routed (per-projection CommandError
+# wrap, dry-run and tenant_context interleave with its loop).
+_PROCESS_PENDING_CALLS_OUTSIDE_PROJECTIONS: dict[str, int] = {
+    "reconciliation/commands.py": 1,  # single projection, fresh instance, ungated (shape pinned by test_v5b in the characterisation suite)
+    "platform_connectors/management/commands/payments_canonical_backfill.py": 1,  # loop-until-zero after rebuild
+    "tenant/management/commands/replay_projections.py": 1,  # whole-registry operator replay under tenant_context
+}
+_PROCESS_PENDING_CALLS_INSIDE_PROJECTIONS: dict[str, int] = {
+    "projections/base.py": 1,  # rebuild()'s drain-to-zero loop
+    "projections/runtime.py": 1,  # drain_company — THE registry-walk drain
+    "projections/tasks.py": 1,  # process_company_projections
+    "projections/views.py": 1,  # AdminProjectionProcessView
+    "projections/management/commands/run_projections.py": 2,  # _run_once + _run_daemon
+}
+_REGISTRY_WALK_DRAINS_OUTSIDE_PROJECTIONS: frozenset[str] = frozenset(
+    {
+        # operator replay: `projections_to_run = projection_registry.all()` then a
+        # loop that wraps each pass in its own CommandError / dry-run handling
+        "tenant/management/commands/replay_projections.py",
+    }
+)
+
+
+def _drain_production_files() -> list[Path]:
+    return [
+        p
+        for p in _python_files_under(BACKEND_ROOT, exclude=("migrations/", "tests/", "venv", ".venv", "__pycache__"))
+        if not p.name.startswith("test_")
+    ]
+
+
+def _folded_string(node: ast.AST) -> str | None:
+    """The string a constant expression folds to, or None when it depends on a
+    runtime value: a ``str`` constant, ``+`` of foldable parts, an f-string of
+    foldable parts, ``"sep".join([foldable, ...])``."""
+    if isinstance(node, ast.Constant):
+        return node.value if isinstance(node.value, str) else None
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = _folded_string(node.left), _folded_string(node.right)
+        return None if left is None or right is None else left + right
+    if isinstance(node, ast.JoinedStr):
+        parts = [_folded_string(v.value if isinstance(v, ast.FormattedValue) else v) for v in node.values]
+        return None if any(p is None for p in parts) else "".join(parts)
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "join"
+        and len(node.args) == 1
+        and isinstance(node.args[0], ast.List | ast.Tuple)
+    ):
+        sep = _folded_string(node.func.value)
+        parts = [_folded_string(e) for e in node.args[0].elts]
+        return None if sep is None or any(p is None for p in parts) else sep.join(parts)
+    return None
+
+
+def _is_process_pending_call(node: ast.AST) -> bool:
+    """Any reference to ``process_pending`` — the attribute ``x.process_pending``
+    (a call or a bound-method alias) OR any expression that folds to the string
+    ``"process_pending"`` (a constant, ``"process_" + "pending"``, an f-string,
+    ``"".join([...])`` — the ``getattr`` / ``operator.methodcaller`` /
+    ``attrgetter`` / ``vars(x)[...]`` spellings). References, not just calls,
+    and every spelling, so neither aliasing nor reflection hides a dispatch
+    from the per-file count. A name bound elsewhere to that string is counted
+    where the string is written."""
+    if isinstance(node, ast.Attribute) and node.attr == "process_pending":
+        return True
+    if isinstance(node, ast.Constant):
+        return node.value == "process_pending"
+    if isinstance(node, ast.BinOp | ast.JoinedStr | ast.Call):
+        return _folded_string(node) == "process_pending"
+    return False
+
+
+def _loop_variable_names(target: ast.AST) -> set[str]:
+    return {n.id for n in ast.walk(target) if isinstance(n, ast.Name)}
+
+
+_REFLECTIVE_ACCESSOR_KINDS = frozenset(
+    {"getattr", "methodcaller", "attrgetter", "vars", "__dict__", "__getattribute__", "__getattr__"}
+)
+
+
+def _reflective_accessor(node: ast.AST) -> tuple[str, ast.AST | None, ast.AST] | None:
+    """``(kind, explicit_receiver, name_expr)`` when ``node`` looks an attribute
+    up by name at runtime: ``getattr(x, name[, d])``; ``methodcaller(name, ...)``
+    / ``attrgetter(name)`` (receiver supplied when the result is applied);
+    ``x.__getattribute__(name)`` / ``x.__getattr__(name)``; ``vars(x)[name]``;
+    ``x.__dict__[name]`` / ``type(x).__dict__[name]``."""
+    if isinstance(node, ast.Call):
+        f = node.func
+        kind = f.id if isinstance(f, ast.Name) else (f.attr if isinstance(f, ast.Attribute) else None)
+        if kind == "getattr" and len(node.args) >= 2:
+            return ("getattr", node.args[0], node.args[1])
+        if kind in {"methodcaller", "attrgetter"} and node.args:
+            return (kind, None, node.args[0])
+        if kind in {"__getattribute__", "__getattr__"} and node.args and isinstance(f, ast.Attribute):
+            return (kind, f.value, node.args[0])
+    if isinstance(node, ast.Subscript):
+        v = node.value
+        if isinstance(v, ast.Call) and isinstance(v.func, ast.Name) and v.func.id == "vars" and v.args:
+            return ("vars", v.args[0], node.slice)
+        if isinstance(v, ast.Attribute) and v.attr == "__dict__":
+            recv = v.value
+            if isinstance(recv, ast.Call) and isinstance(recv.func, ast.Name) and recv.func.id == "type" and recv.args:
+                recv = recv.args[0]
+            return ("__dict__", recv, node.slice)
+    return None
+
+
+def _reflective_invocations(root: ast.AST) -> list[tuple[str, ast.AST | None, ast.AST]]:
+    """Every reflective accessor in ``root`` whose looked-up attribute is
+    INVOKED — directly (``getattr(x, n)(...)``, ``methodcaller(n)(x)``,
+    ``attrgetter(n)(x)(...)``, ``vars(x)[n](...)``) or through a name it was
+    bound to (``fn = getattr(x, n)`` … ``fn(...)``; ``m = methodcaller(n)`` …
+    ``m(x)``) — as ``(kind, receiver, name_expr)``, the receiver resolved per
+    form (the applied argument for methodcaller / attrgetter)."""
+    parent: dict[ast.AST, ast.AST] = {}
+    for n in ast.walk(root):
+        for child in ast.iter_child_nodes(n):
+            parent[child] = n
+    accessors = {id(n): n for n in ast.walk(root) if _reflective_accessor(n) is not None}
+    alias_of: dict[str, ast.AST] = {}
+    for n in ast.walk(root):
+        if isinstance(n, ast.Assign) and id(n.value) in accessors:
+            alias_of.update({t.id: n.value for t in n.targets if isinstance(t, ast.Name)})
+        elif isinstance(n, ast.NamedExpr) and id(n.value) in accessors and isinstance(n.target, ast.Name):
+            alias_of[n.target.id] = n.value
+
+    def applied(node: ast.AST) -> ast.Call | None:
+        p = parent.get(node)
+        return p if isinstance(p, ast.Call) and p.func is node else None
+
+    starts: list[tuple[ast.AST, ast.AST]] = [(a, a) for a in accessors.values()]
+    starts += [
+        (n, alias_of[n.id])
+        for n in ast.walk(root)
+        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id in alias_of
+    ]
+
+    def bound_names_of(value: ast.AST) -> set[str]:
+        p = parent.get(value)
+        if isinstance(p, ast.Assign) and p.value is value:
+            return {t.id for t in p.targets if isinstance(t, ast.Name)}
+        if isinstance(p, ast.NamedExpr) and p.value is value and isinstance(p.target, ast.Name):
+            return {p.target.id}
+        return set()
+
+    def a_load_is_applied(names_: set[str]) -> bool:
+        return any(
+            applied(n) is not None
+            for n in ast.walk(root)
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id in names_
+        )
+
+    out: list[tuple[str, ast.AST | None, ast.AST]] = []
+    for start, accessor in starts:
+        parts = _reflective_accessor(accessor)
+        assert parts is not None
+        kind, receiver, name_expr = parts
+        first = applied(start)
+        if first is None:
+            continue
+        if kind == "attrgetter":
+            # attrgetter(n)(x) alone is a read; it becomes a dispatch when that
+            # result is applied — directly, or through a name it was bound to
+            # (``method = attrgetter(n)(x)`` … ``method(...)``).
+            if applied(first) is None and not a_load_is_applied(bound_names_of(first)):
+                continue
+            receiver = first.args[0] if first.args else None
+        elif kind == "methodcaller":
+            receiver = first.args[0] if first.args else None
+        out.append((kind, receiver, name_expr))
+    return out
+
+
+def _dispatches_on(node: ast.AST, names: set[str]) -> bool:
+    """True when ``node`` dispatches ``process_pending`` on a loop variable, or
+    could: ``<name>.process_pending``; a reflective accessor whose looked-up
+    name folds to ``"process_pending"`` (any receiver — fail closed); a bare
+    ``"process_pending"`` string (methodcaller / attrgetter / ``vars()[...]``
+    bind their receiver later — fail closed); or any INVOKED reflective
+    accessor with a runtime-chosen name whose receiver is the loop variable
+    (``getattr(p, name)(...)``, ``methodcaller(name)(p)``,
+    ``attrgetter(name)(p)(...)``, ``vars(p)[name](...)``, bound-then-called) —
+    the method is chosen at runtime, so fail closed. A reflective READ on the
+    loop variable that is never invoked is not a dispatch."""
+
+    def is_loop_var(e: ast.AST | None) -> bool:
+        return isinstance(e, ast.Name) and e.id in names
+
+    accessor_names = {id(parts[2]) for n in ast.walk(node) if (parts := _reflective_accessor(n)) is not None}
+    for c in ast.walk(node):
+        if isinstance(c, ast.Attribute) and c.attr == "process_pending":
+            if is_loop_var(c.value):
+                return True
+        elif _is_process_pending_call(c) and id(c) not in accessor_names:
+            return True
+    for n in ast.walk(node):
+        parts = _reflective_accessor(n)
+        if parts is not None and _folded_string(parts[2]) == "process_pending":
+            return True
+    return any(
+        _folded_string(name_expr) is None and is_loop_var(receiver)
+        for _kind, receiver, name_expr in _reflective_invocations(node)
+    )
+
+
+def _invoked_dynamic_reflective_dispatches() -> dict[str, int]:
+    """Per production file: invoked reflective dispatches whose attribute name
+    is chosen at runtime (does not fold to a constant) — on ANY receiver, in
+    ANY shape. Such a call could be a projection drain that no static count
+    can see, so the set is frozen."""
+    found: dict[str, int] = {}
+    for path in _drain_production_files():
+        rel = path.relative_to(BACKEND_ROOT).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        n = sum(1 for _kind, _recv, name_expr in _reflective_invocations(tree) if _folded_string(name_expr) is None)
+        if n:
+            found[rel] = n
+    return found
+
+
+# Every invoked reflective dispatch with a runtime-chosen name in production
+# code, frozen per file. One exists: the platform webhook view looks the
+# connector's parse method up by topic (``parser = getattr(connector,
+# parse_method, None)`` … ``parser(payload)``). A new one anywhere — loop or
+# not, whatever the receiver — edits this pin consciously (Rule 20).
+_INVOKED_DYNAMIC_REFLECTIVE_DISPATCHES: dict[str, int] = {
+    "platform_connectors/views.py": 1,
+}
+
+
+def _walk_drain_linenos(tree: ast.AST) -> list[int]:
+    """Line numbers of dispatch-shaped walks in ``tree``: a ``for`` / ``async
+    for`` / comprehension whose loop variable is the receiver of a
+    ``process_pending`` dispatch in its body — whatever the iterable is
+    (``x.all()``, a name bound earlier, ``list(...)``)."""
+    found: list[int] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.For | ast.AsyncFor):
+            names = _loop_variable_names(node.target)
+            # the WHOLE body at once: a reflective bind in one statement and its
+            # call in the next must meet
+            if _dispatches_on(ast.Module(body=node.body, type_ignores=[]), names):
+                found.append(node.lineno)
+        elif isinstance(node, ast.ListComp | ast.SetComp | ast.GeneratorExp | ast.DictComp):
+            names = set().union(*(_loop_variable_names(g.target) for g in node.generators))
+            if _dispatches_on(node, names):
+                found.append(node.lineno)
+    return found
+
+
+def _process_pending_call_counts() -> tuple[dict[str, int], dict[str, int]]:
+    outside: dict[str, int] = {}
+    inside: dict[str, int] = {}
+    for path in _drain_production_files():
+        rel = path.relative_to(BACKEND_ROOT).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        n = sum(1 for node in ast.walk(tree) if _is_process_pending_call(node))
+        if n:
+            (inside if rel.startswith("projections/") else outside)[rel] = n
+    return outside, inside
+
+
+def _registry_walk_drains() -> dict[str, list[int]]:
+    """Files (outside projections/) with a dispatch-shaped walk (see
+    ``_walk_drain_linenos``)."""
+    found: dict[str, list[int]] = {}
+    for path in _drain_production_files():
+        rel = path.relative_to(BACKEND_ROOT).as_posix()
+        if rel.startswith("projections/"):
+            continue
+        linenos = _walk_drain_linenos(ast.parse(path.read_text(encoding="utf-8")))
+        if linenos:
+            found[rel] = linenos
+    return found
+
+
+@pytest.mark.parametrize(
+    ("snippet", "references", "walk"),
+    [
+        ("for p in registry.all():\n    p.process_pending(company)\n", 1, True),
+        ("for p in registry.all():\n    getattr(p, 'process_pending')(company, limit=100)\n", 1, True),
+        ("for p in registry.all():\n    fn = getattr(p, 'process_pending')\n    fn(company)\n", 1, True),
+        ("for p in registry.all():\n    operator.methodcaller('process_pending', company)(p)\n", 1, True),
+        ("for p in registry.all():\n    vars(type(p))['process_pending'](p, company)\n", 1, True),
+        ("[getattr(p, 'process_pending')(company) for p in registry.all()]\n", 1, True),
+        ("async def f():\n    async for p in registry.stream():\n        p.process_pending(company)\n", 1, True),
+        ("drain = projection.process_pending\ndrain(company)\n", 1, False),
+        ("getattr(projection, 'process_pending')(company)\n", 1, False),
+        ("for p in registry.all():\n    p.rebuild(company)\n", 0, False),
+        ("for p in registry.all():\n    other.process_pending(company)\n", 1, False),
+        ('"""process_pending is mentioned in this docstring."""\n', 0, False),
+        # round 3: a method name built by an expression or chosen at runtime
+        ("for p in registry.all():\n    getattr(p, 'process_' + 'pending')(company)\n", 1, True),
+        ("for p in registry.all():\n    getattr(p, f\"process_{'pending'}\")(company)\n", 1, True),
+        ("for p in registry.all():\n    getattr(p, ''.join(['process_', 'pending']))(company)\n", 1, True),
+        ("NAME = 'process_pending'\nfor p in registry.all():\n    getattr(p, NAME)(company)\n", 1, True),
+        ("for p in registry.all():\n    getattr(p, name)(company)\n", 0, True),
+        ("for p in registry.all():\n    fn = getattr(p, name)\n    fn(company)\n", 0, True),
+        ("for p in registry.all():\n    fn = getattr(p, name, None)\n    if fn:\n        fn(company)\n", 0, True),
+        ("for p in payouts:\n    ref = getattr(p, id_attr)\n    out.append(ref)\n", 0, False),
+        ("for p in registry.all():\n    getattr(other, name)(company)\n", 0, False),
+        # round 4: runtime-named methodcaller / attrgetter / vars / __dict__ / __getattribute__
+        ("for p in registry.all():\n    operator.methodcaller(name, company)(p)\n", 0, True),
+        ("for p in registry.all():\n    methodcaller(name)(p)\n", 0, True),
+        ("for p in registry.all():\n    attrgetter(name)(p)(company)\n", 0, True),
+        ("for p in registry.all():\n    attrgetter(name)(p)\n", 0, False),
+        ("for p in registry.all():\n    vars(p)[name](company)\n", 0, True),
+        ("for p in registry.all():\n    type(p).__dict__[name](p, company)\n", 0, True),
+        ("for p in registry.all():\n    p.__getattribute__(name)(company)\n", 0, True),
+        ("for p in registry.all():\n    m = methodcaller(name)\n    m(p)\n", 0, True),
+        ("for p in registry.all():\n    g = attrgetter(name)\n    g(p)(company)\n", 0, True),
+        ("for p in registry.all():\n    methodcaller(name)(other)\n", 0, False),
+        ("for p in registry.all():\n    methodcaller('process_pending', company)(p)\n", 1, True),
+        ("for p in registry.all():\n    attrgetter('process_' 'pending')(p)(company)\n", 1, True),
+        # round 5: a bound FIRST application of attrgetter, invoked later
+        ("for p in registry.all():\n    method = attrgetter(name)(p)\n    method(company)\n", 0, True),
+        ("for p in registry.all():\n    method = attrgetter(name)(p)\n    log(method)\n", 0, False),
+    ],
+)
+def test_rule20_detector_recognises_every_dispatch_spelling(snippet: str, references: int, walk: bool):
+    """The count pin and the walk detector must see a dispatch however it is
+    spelled — attribute, getattr, methodcaller, attrgetter, ``vars()[...]``,
+    ``__dict__[...]``, ``__getattribute__``, a folded string expression, a
+    runtime-chosen name that is invoked on the loop variable — or Rule 20 is
+    bypassable by reflection. A reflective read that is never invoked is not
+    a dispatch (bank_connector/exceptions.py reads a payout id that way).
+    Runtime-named dispatches on OTHER receivers are frozen tree-wide by
+    ``test_invoked_reflective_dispatches_with_runtime_names_are_frozen_per_file``.
+    Scope: accidental duplication and reviewer-reachable spellings, not
+    deliberate evasion — see the Rule 20 header."""
+    tree = ast.parse(snippet)
+    assert sum(1 for node in ast.walk(tree) if _is_process_pending_call(node)) == references
+    assert bool(_walk_drain_linenos(tree)) is walk
+
+
+def test_process_pending_call_sites_are_frozen_per_file():
+    outside, inside = _process_pending_call_counts()
+    for label, found, pinned in (
+        ("outside projections/", outside, _PROCESS_PENDING_CALLS_OUTSIDE_PROJECTIONS),
+        ("inside projections/", inside, _PROCESS_PENDING_CALLS_INSIDE_PROJECTIONS),
+    ):
+        drifted = {k: (v, pinned.get(k)) for k, v in found.items() if k not in pinned or v != pinned[k]}
+        assert not drifted, (
+            f"projection drain door(s) {label} changed (found vs pinned): {drifted}. A drain is a reference to "
+            "process_pending; route new ones through projections.runtime or edit this pin consciously (Rule 20)."
+        )
+        stale = sorted(set(pinned) - set(found))
+        assert not stale, f"Rule 20 pins {label} no longer needed — shrink the dict: {stale}"
+
+
+def test_no_registry_walk_drain_outside_the_allowlisted_files():
+    found = _registry_walk_drains()
+    extra = {k: v for k, v in found.items() if k not in _REGISTRY_WALK_DRAINS_OUTSIDE_PROJECTIONS}
+    assert not extra, (
+        f"new registry-walk drain(s) outside projections/: {extra}. This is the shape the September 2026 "
+        "re-entrancy bug hid behind — use projections.runtime (Rule 20)."
+    )
+    stale = sorted(_REGISTRY_WALK_DRAINS_OUTSIDE_PROJECTIONS - set(found))
+    assert not stale, f"Rule 20 registry-walk allowlist entries no longer needed — shrink it: {stale}"
+
+
+def test_invoked_reflective_dispatches_with_runtime_names_are_frozen_per_file():
+    """A drain spelled through reflection with a runtime-chosen name —
+    ``getattr(p, name)(...)``, ``methodcaller(name)(p)``,
+    ``attrgetter(name)(p)(...)``, ``vars(p)[name](...)``, bound-then-called —
+    is invisible to the reference count by construction, so every such
+    invocation in production code is frozen per file, on any receiver and in
+    any shape (PR #155 review, rounds 2–3)."""
+    found = _invoked_dynamic_reflective_dispatches()
+    drifted = {
+        k: (v, _INVOKED_DYNAMIC_REFLECTIVE_DISPATCHES.get(k))
+        for k, v in found.items()
+        if k not in _INVOKED_DYNAMIC_REFLECTIVE_DISPATCHES or v != _INVOKED_DYNAMIC_REFLECTIVE_DISPATCHES[k]
+    }
+    assert not drifted, (
+        f"invoked reflective dispatch(es) with a runtime-chosen name changed (found vs pinned): {drifted}. "
+        "Such a call could be a projection drain no static count can see — name the method statically or "
+        "edit this pin consciously (Rule 20)."
+    )
+    stale = sorted(set(_INVOKED_DYNAMIC_REFLECTIVE_DISPATCHES) - set(found))
+    assert not stale, f"Rule 20 reflective-dispatch pins no longer needed — shrink the dict: {stale}"
+
+
+def test_projection_runtime_is_a_walker_not_a_transaction_or_rls_owner():
+    """projections/runtime.py dispatches through process_pending and nothing
+    else: no handler call, no transaction, savepoint, on_commit, RLS or tenant
+    context of its own (the caller's context is the contract), no logging."""
+    source = (BACKEND_ROOT / "projections" / "runtime.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    dispatches = [node for node in ast.walk(tree) if _is_process_pending_call(node)]
+    assert len(dispatches) == 1, "the runtime has exactly one process_pending dispatch"
+    # Identifiers, not source text: the module docstring may NAME what it must not do.
+    used = {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)} | {
+        node.id for node in ast.walk(tree) if isinstance(node, ast.Name)
+    }
+    forbidden = {
+        "atomic",
+        "on_commit",
+        "savepoint",
+        "rls_bypass",
+        "set_current_company_id",
+        "tenant_context",
+        "getLogger",
+        "warning",
+        "error",
+        "exception",
+        "info",
+        "debug",
+        "objects",
+        "delay",
+        "apply_async",
+        "handle",
+        "rebuild",
+    }
+    assert not (used & forbidden), f"projections/runtime.py must not use {sorted(used & forbidden)}"

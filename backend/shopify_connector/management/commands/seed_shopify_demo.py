@@ -746,11 +746,9 @@ class Command(BaseCommand):
         # If not running sync projections, run them explicitly
         if not getattr(settings, "PROJECTIONS_SYNC", False):
             self.stdout.write("  Running projections...")
-            from projections.base import ProjectionRegistry
+            from projections.runtime import drain_company
 
-            registry = ProjectionRegistry()
-            for projection in registry.all():
-                projection.process_pending(company=company, limit=10000)
+            drain_company(company, limit=10000)
 
         self.stdout.write(f"  Emitted {event_count} events")
 

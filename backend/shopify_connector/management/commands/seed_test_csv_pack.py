@@ -358,11 +358,9 @@ class Command(BaseCommand):
     def _run_projections(self, company: Company) -> None:
         if getattr(settings, "PROJECTIONS_SYNC", False):
             return
-        from projections.base import ProjectionRegistry
+        from projections.runtime import drain_company
 
-        registry = ProjectionRegistry()
-        for projection in registry.all():
-            projection.process_pending(company=company, limit=10000)
+        drain_company(company, limit=10000)
 
     # -----------------------------------------------------------------------
     # Flush

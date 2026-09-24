@@ -22,6 +22,7 @@ SPINE_FILES = [
     "events/types.py",
     "events/models.py",
     "projections/base.py",
+    "projections/runtime.py",
     "projections/apply_validation.py",
     "projections/write_barrier.py",
     "projections/models.py",
