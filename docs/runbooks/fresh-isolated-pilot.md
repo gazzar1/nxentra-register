@@ -3195,8 +3195,12 @@ after G1 and G2 are recorded complete in the
     reviewed, and proven before connecting that merchant store;**
 12. release intake — **worker only**: keep webhooks blocked and beat
     stopped; start the Celery worker; observe the queued
-    `shopify.initial_store_sync` task; record its task id, start/end
-    timestamps, and complete result. **Post-execution controls — the
+    `shopify.initial_store_sync` task; record, for every one of the
+    1 + K initial tasks, its task id, start/end timestamps and complete
+    result (the release execution first in queue order; each of the K
+    pre-declared re-executions reconciled to the §I14 "added nothing"
+    values; all 1 + K rows exported before step 15). **Post-execution
+    controls — the
     FIRST place these values are recorded (they never appear in the
     step-11 GO record; the §K control pack copies them from here):**
     from the worker's private `[A52] _sync_orders start …
