@@ -1346,9 +1346,12 @@ BEFORE that execution and then verifies equal to its A52 line):
 INITIAL_SYNC_STARTED_AT = the execution-time `now` the initial_store_sync
                           task computes when its store sync begins —
                           each of the 1 + K initial tasks computes its
-                          OWN, recorded per execution; the ordering
-                          rule and the GO / I13 reconciliation bind the
-                          release execution's —
+                          OWN, recorded per execution; the unqualified
+                          name denotes the release execution's value,
+                          which the GO / I13 reconciliation binds; each
+                          K re-execution applies the same seven-day and
+                          ordering rules to its own A52 pair and its
+                          own `date_started` (§I14, §Q step 12) —
                           (`_sync_store`: `now = tz.now()`) — the value
                           the code uses as BOTH window ends. It is
                           observable ONLY as the `created_at_max` value
@@ -1476,7 +1479,8 @@ The line is emitted at INFO on the application logger, so the worker's
 effective log level must be INFO (the `-l INFO` startup command in §G
 and a `LOG_LEVEL` environment value no stricter than INFO, recorded in
 the §E report). The reconciliation that these fields must satisfy is
-ONE rule, stated identically wherever it is applied to an
+ONE rule — the same rule, applied to each execution's own values —
+wherever it is applied to an
 `initial_store_sync` execution (the release execution and the K
 explained re-executions; an explicit-window execution — a closure
 re-execution or the §I15 replacement execution — is reconciled instead
@@ -1956,16 +1960,35 @@ independent completeness control.
   execution; the other K are explained re-executions, each reconciled
   against its OWN execution-time window (its own A52 pair; the
   seven-day rule; `I13_SIGNOFF_TIMESTAMP < its date_started ≤ its
-  INITIAL_SYNC_STARTED_AT`), that may add exactly the records that
-  newly qualified between its predecessor's `INITIAL_SYNC_STARTED_AT`
-  and its own — each addition explained by a Shopify `created_at` /
-  `updated_at` inside that gap, anything else a STOP. On the
-  synthetic store, where nothing is created or edited between
-  executions, that is zero additions: orders leg `created 0`,
-  `skipped` equal to `fetched`, `errors 0`, `pilot_scope_skipped 0`;
-  refund leg `refunds_created 0`, `errors 0`, `fetch_failures 0`,
-  `pilot_scope_skipped 0`; products `created 0` with `updated` equal
-  to the catalog size. Their ids equal the pre-declared ids in order. Any
+  INITIAL_SYNC_STARTED_AT`), that may add exactly what newly qualified
+  since its predecessor, per record class: a parent-order addition
+  explained by a Shopify `created_at` (A) or order `updated_at` (B)
+  inside (predecessor's `INITIAL_SYNC_STARTED_AT`, own
+  `INITIAL_SYNC_STARTED_AT`]; a refund booked by the orders leg's
+  backfill, or a product, explained by a Shopify timestamp inside
+  (predecessor's `INITIAL_SYNC_STARTED_AT`, own `date_done`] — the
+  backfill pulls the order's complete current refund list and the
+  products leg has no window, both running after `now` is computed;
+  or a re-selection that CLOSES a counted error of an earlier
+  execution, recorded per the §I closure rule (a pre-declared
+  re-execution may be that closer); anything else a STOP. An
+  execution's additions are identified read-only as the
+  `ShopifyOrder` / `ShopifyRefund` rows whose local `created_at` lies
+  in [its `date_started`, its `date_done`] (single worker, webhooks
+  blocked, beat stopped); an A addition is explained from the order's
+  `created_at` in the Shopify orders export, a B addition from the
+  in-gap refund or edit event (transaction-history file / Admin
+  timeline — order `updated_at` is in neither the stored payload nor
+  the orders CSV and is never read from the system). On the synthetic
+  store, where nothing is created or edited between executions, that
+  is zero additions: orders leg `created 0`, `skipped` equal to
+  `fetched`, `errors 0`, `refunds_backfilled 0`,
+  `pilot_scope_skipped 0`; refund leg `refunds_created 0`, `errors 0`,
+  `fetch_failures 0`, `pilot_scope_skipped 0`; products `created 0`,
+  `updated` equal to the release execution's products
+  `created + linked + updated`, `skipped` equal to the release
+  execution's `skipped`. Their ids equal the pre-declared ids in
+  order. Any
   other re-execution used for §I closure is a separately recorded,
   explained execution with its own task id and TaskResult row (the
   worker-task form of the §I closure rule — the CLI prints four
@@ -2068,9 +2091,12 @@ independent completeness control.
     cancellation writer failed, appears in
     `errors`/`cancelled_processing_errors` and is dispositioned and
     closed there (§I no-financial-effect closure), never silently;
-  - the A union B parent-order set is deduplicated by Shopify order
-    id — reconcile the union from order ids in the §K control pack,
-    NEVER by summing leg counters: an overlapping A/B order
+  - `AUTHORIZED_PARENT_ORDER_SET` — the union over the 1 + K
+    executions of each one's own A_k ∪ B_k — is deduplicated by
+    Shopify order id: reconcile it from order ids in the §K control
+    pack's per-execution rows (a gap record appears in exactly one
+    execution's A_k or B_k), NEVER by summing leg counters: an
+    overlapping A/B order
     legitimately appears in both legs' counters (`fetched` and
     `scanned`, and — when cancelled — in both legs'
     `cancelled_financial_candidates`);
@@ -2085,8 +2111,10 @@ independent completeness control.
     days.
   Record: `OLDEST_IMPORTED_PARENT_ORDER_CREATED_AT`,
   `OLDEST_IMPORTED_REFUND_CREATED_AT`,
-  `NEWEST_IMPORTED_REFUND_CREATED_AT`, `CANDIDATE_ORDER_COUNT_A`,
-  `CANDIDATE_ORDER_COUNT_B`, `CANDIDATE_ORDER_UNION_COUNT`,
+  `NEWEST_IMPORTED_REFUND_CREATED_AT`, `CANDIDATE_ORDER_COUNT_A` /
+  `_B` per execution (A_k, B_k for each of the 1 + K initial tasks),
+  `CANDIDATE_ORDER_UNION_COUNT` (= |`AUTHORIZED_PARENT_ORDER_SET`|,
+  the union over the 1 + K executions),
   `COMPLETE_REFUND_COUNT`, `REFUND_FETCH_FAILURES`, and the per-leg
   counters `PILOT_SCOPE_SKIPPED_A` / `_B` (must be 0),
   `CANCELLED_FINANCIAL_CANDIDATES_A` / `_B`,
@@ -2130,8 +2158,9 @@ independent completeness control.
   or
   `I13_SIGNOFF_TIMESTAMP < TASK_RECEIVED_AT ≤ INITIAL_SYNC_STARTED_AT`
   fails; a closure re-execution booked an order outside
-  AUTHORIZED_PARENT_ORDER_SET; counts across A, B, and their union
-  cannot be reconciled; an older imported parent/refund is omitted
+  AUTHORIZED_PARENT_ORDER_SET; counts across each execution's A_k, B_k
+  and their union (= AUTHORIZED_PARENT_ORDER_SET) cannot be
+  reconciled; an older imported parent/refund is omitted
   merely to preserve a seven-day timestamp narrative; or a per-order
   line-item count differs between the export and the stored order
   evidence (the §K completeness control over the PR #143 drained
@@ -2384,9 +2413,9 @@ Minimum schema:
 | Control | Source of truth |
 |---|---|
 | Shopify order/refund IDs, counts, gross totals | Shopify admin/exports |
-| Initial-intake set A: order count, ids, totals (`created_at` window) | Shopify admin/exports |
-| Initial-intake set B: refund-candidate order count and ids (order-`updated_at` window) | Shopify admin/exports |
-| A union B order count after deduplication + A/B overlap count | Shopify admin/exports vs system |
+| Initial-intake set A per execution — A_k for each of the 1 + K initial tasks: order count, ids, totals (that execution's `created_at` window) | Shopify admin/exports |
+| Initial-intake set B per execution — B_k for each of the 1 + K initial tasks: refund-candidate order count and ids (that execution's order-`updated_at` window) | Shopify admin/exports |
+| `AUTHORIZED_PARENT_ORDER_SET` = the union over the 1 + K executions of A_k ∪ B_k, deduplicated by Shopify order id (a gap record appears in exactly one execution's A_k or B_k), plus each execution's A_k/B_k overlap count | Shopify admin/exports vs system |
 | Complete refund count and totals per B candidate (derive set B from refund evidence, never from `ShopifyOrder.financial_status`, which is written only at creation) | Shopify "Export transaction histories" file (the orders CSV carries only a per-order refunded amount) vs system |
 | Per-order line-item count for every intake order (must equal the stored order evidence's `line_items` count — an independent completeness control over the PR #143 drained reads; the stored list is unfiltered, so equality is exact. Deliberately no variant-count twin: the sync legitimately skips SKU-less variants and the NON_STOCK catalog collapses shared SKUs, so no export-vs-system variant equality exists to demand) | Shopify admin/exports vs stored order evidence (read-only) |
 | Oldest and newest imported parent-order dates | system (read-only) vs Shopify |
@@ -3221,12 +3250,20 @@ after G1 and G2 are recorded complete in the
     pre-declared re-executions reconciled against its OWN
     execution-time window — its own A52 pair, the seven-day rule and
     `GO_TIMESTAMP < its date_started ≤ its INITIAL_SYNC_STARTED_AT` —
-    and permitted to add exactly the records that newly qualified
-    between its predecessor's `INITIAL_SYNC_STARTED_AT` and its own,
-    because the merchant keeps trading while the hold is on; each
-    addition is explained by a Shopify `created_at` / `updated_at`
-    inside that gap and joins `AUTHORIZED_PARENT_ORDER_SET` for that
-    execution, anything else is a STOP; all 1 + K rows exported before
+    and permitted to add exactly what newly qualified since its
+    predecessor, because the merchant keeps trading while the hold is
+    on — per record class and evidence exactly as §I14 states: parent
+    orders by a Shopify `created_at` (A) or order `updated_at` (B)
+    inside (predecessor's `INITIAL_SYNC_STARTED_AT`, own
+    `INITIAL_SYNC_STARTED_AT`]; backfilled refunds and products by a
+    Shopify timestamp inside (predecessor's `INITIAL_SYNC_STARTED_AT`,
+    own `date_done`]; a closer of an earlier counted error per the §I
+    closure rule; additions identified as the local `ShopifyOrder` /
+    `ShopifyRefund` rows whose `created_at` lies in [its `date_started`,
+    its `date_done`]; `refunds_backfilled` is the counter that carries
+    a gap refund on an already-booked parent — and each parent-order
+    addition joins `AUTHORIZED_PARENT_ORDER_SET` for that execution,
+    anything else is a STOP; all 1 + K rows exported before
     step 15). **Post-execution
     controls — the
     FIRST place these values are recorded (they never appear in the
@@ -3273,10 +3310,11 @@ after G1 and G2 are recorded complete in the
     LEG (the top-level `status` is unconditionally `"ok"` when the legs
     run and proves nothing — §I definition).
     **Reconcile to the authorized intake contract** (§I definition),
-    not merely to source timestamps within seven days: record the A
-    and B candidate sets and their overlap; reconcile their union
-    from order ids without double counting (never by summing leg
-    counters); require, for every B candidate — cancelled or not — a
+    not merely to source timestamps within seven days: record, per
+    execution (each of the 1 + K), the A_k and B_k candidate sets and
+    their overlap; reconcile `AUTHORIZED_PARENT_ORDER_SET` — their
+    union over the 1 + K executions — from order ids without double
+    counting (never by summing leg counters); require, for every B candidate — cancelled or not — a
     local parent order, its complete refund history, and — where
     Shopify shows `cancelled_at` — the cancellation provenance stamp
     verified from the task result and worker log (no stamp-failure
@@ -3340,10 +3378,13 @@ after G1 and G2 are recorded complete in the
     delivery that lapsed reaches the ledger only through the
     periodic catch-up after step 15 and cannot serve as the
     duplicate-delivery proof — record any lapse explicitly. The
-    duplicate proof is carried by held deliveries for orders the
-    step-12 initial sync already booked; a held delivery for an order
-    created after that sync's window is a FIRST ingestion when it
-    arrives (not a duplicate), and an order created after the unblock
+    duplicate proof is carried by held deliveries for orders any of
+    the 1 + K step-12 executions already booked; a held delivery for
+    an order created after the LAST of those executions'
+    `INITIAL_SYNC_STARTED_AT` is a FIRST ingestion when it arrives
+    (not a duplicate — an order created in a gap between consecutive
+    executions was booked by the later one and its held delivery IS a
+    duplicate), and an order created after the unblock
     is ordinary webhook intake;
 15. start Celery beat **LAST** — after every evidence TaskResult row
     (every one of the 1 + K initial-task rows — the release execution
