@@ -221,8 +221,12 @@ is listed read-only before §I5 (a leftover task from the old context would
 target the new store, whose ids restart at 1) and never purged (§O); §C1
 seeds, the §E5 role posture and the §G1d periodic-task registry are
 re-created and re-evidenced on the new database; the §L1 monitor is paused
-with a dated note during the swap; TaskResult and row ids restart at 1
-(re-base the §I12/§I14 expectations).
+with a dated note for the swap and RESUMED — with one recorded probe
+result against the replacement deployment in `alerts/` — as soon as §G1f
+boot health passes and before §H opens (§O treats a failing monitor as an
+abort condition and §L1 requires its scheduled probes throughout); the
+pause and resume timestamps are recorded together; TaskResult and row ids
+restart at 1 (re-base the §I12/§I14 expectations).
 
 - [ ] **C1. Migrate the empty database.**
   - Command / action: from `backend/`, with the production environment of
@@ -797,15 +801,23 @@ introduce infrastructure this repository does not use.
     the database name it is connected to equals the §C database (a
     process manager captures the environment at process creation, so a
     plain restart keeps an OLD `DATABASE_URL` — re-create the process
-    or restart with the environment updated). Record all three in
+    or restart with the environment updated); verify the installed
+    `django-celery-results` is ≥ 2.6.0 (`pip show django-celery-results`
+    in the deployment's virtualenv) and that migration
+    `django_celery_results 0012_taskresult_date_started` is applied
+    (`python manage.py showmigrations django_celery_results`) — the
+    §I intake contract reads `TaskResult.date_started`, which that
+    version introduced. Record all four in
     `environment/`; the worker form is carried into the §N5 pack. (One
     prefork process removes only the Celery-side concurrency — the web
     workers still run synchronous drains on other connections; that
     cross-connection case is covered by the `ProjectionAppliedEvent`
     unique constraint and the A23 bounded retry, not by this setting.)
   - STOP if: **any service is running a different application
-    revision**; the worker's effective concurrency is not 1; or any
-    process is connected to a database other than the §C database.
+    revision**; the worker's effective concurrency is not 1; any
+    process is connected to a database other than the §C database; or
+    `django-celery-results` is older than 2.6.0 / its `0012` migration
+    is unapplied.
 - [ ] **G1f. Boot health.**
   - Command / action: `curl` `/_health/live`, `/_health/ready`,
     `/_health/full` (internal path), and run
@@ -1336,7 +1348,12 @@ TASK_RECEIVED_AT        = the task's `date_started` from its durable
                           first written at STARTED — `date_created` ≈
                           `date_started` — and `date_done` is the
                           finish; the enqueue time is recorded
-                          nowhere), corroborated by the `[A52]
+                          nowhere; the field exists from
+                          django-celery-results 2.6.0 — the pinned
+                          floor, its migration
+                          `django_celery_results.0012_taskresult_date_started`
+                          applied by §C1 and verified at §G1e),
+                          corroborated by the `[A52]
                           _sync_orders start` line that follows within
                           seconds (Celery's own received/started lines
                           reach neither worker stream on this logging
@@ -1999,10 +2016,17 @@ independent completeness control.
   `ShopifyOrder`, `ShopifyRefund` and `JournalEntry` counts unchanged by
   those deliveries; 0 new `ProjectionFailureLog` or
   `ShopifyRejectedEvidence` rows; `/_health/alerts` 200. If the clock
-  was missed, record the backlog as LAPSED: fresh post-§I14 orders are
-  first ingestions, not duplicates, and cannot stand in for the
-  duplicate-delivery proof — repeat §I13 → §I15 inside one sitting or
-  record an explicit gap against J1's duplicate-delivery proof.
+  was missed, record the backlog as LAPSED. Neither §I13 (a sign-off)
+  nor §I14 (the consumption of already-queued sync tasks) creates a
+  webhook delivery, so repeating them produces nothing for Shopify to
+  retry: to exercise this proof the path restarts at the synthetic
+  ORDER CREATION under the §I4 hold (new orders and refunds in the
+  synthetic store, whose deliveries are then held and retried — the
+  hold must be verified in force before they are created), followed by
+  the unblock within ~4 hours of the first of them; orders created
+  AFTER the unblock are first ingestions, not duplicates. Otherwise
+  record an explicit gap against J1's duplicate-delivery proof — never
+  a lapsed backlog as exercised.
   STOP if: any retried delivery creates a duplicate row, event or
   journal, or a subscription declared by the §E3 app version is found
   missing after the hold.
@@ -3016,7 +3040,14 @@ after G1 and G2 are recorded complete in the
     source/control totals;
 14. only after the initial task is accounted for, unblock Shopify
     webhooks; observe and reconcile webhook retries; prove duplicate
-    webhook delivery does not duplicate financial effects;
+    webhook delivery does not duplicate financial effects. The same
+    retry clock as §I15 binds this step: Shopify retries a held
+    delivery 8 times over ~4 hours from its first attempt, so the
+    hold must be lifted within ~4 hours of the FIRST merchant
+    delivery it held (plan steps 8–14 inside one sitting); a
+    delivery that lapsed reaches the ledger only through the
+    periodic catch-up after step 15 and cannot serve as the
+    duplicate-delivery proof — record any lapse explicitly;
 15. start Celery beat **LAST**;
 16. rerun the go-live preflight and alerts after beat starts;
 17. sign the final **intake-complete checkpoint**. Do NOT sign while:
