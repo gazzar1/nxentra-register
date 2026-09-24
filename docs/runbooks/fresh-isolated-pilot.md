@@ -1182,7 +1182,9 @@ pre-activation check:
     synthetic rehearsal before it may appear in this runbook (none
     does). One enqueue form is named elsewhere in this runbook — the
     explicit-window re-execution task `shopify.sync_store_orders` (the
-    §I closure rule; the §I15 replacement execution) — and §I5 grants
+    §I closure rule; the §I15 replacement execution) — it runs the
+    orders leg only and is never a substitute for a failed or
+    uncertain initial-sync enqueue — and §I5 grants
     it a CONTROLLED FIRST SYNTHETIC PROOF: on the synthetic rehearsal
     only, with the worker running (§I14 onward), enqueued once per
     recorded need and recorded as its own execution (task id at
@@ -1399,15 +1401,24 @@ REPLACEMENT_ORDER_SET   = (§I15 lapsed-retry path only) the synthetic
                           addendum signed BEFORE the replacement
                           execution; outside
                           AUTHORIZED_PARENT_ORDER_SET by construction;
-                          contains no cancelled order (a cancelled
-                          never-captured order counts in `skipped`,
-                          not `created` — the cancelled path is
-                          exercised at §I14 and §J, not here)
+                          contains no cancelled order of any kind (a
+                          never-captured one counts in `skipped`, not
+                          `created`; a captured-money one books through
+                          the paid writer but breaks the `cancelled_*`
+                          = 0 clause — the cancelled path is exercised
+                          at §I14 and §J, not here), and every member
+                          is paid at creation (Shopify
+                          `financial_status` paid, partially_paid,
+                          refunded or partially_refunded — a pending
+                          order books no journal and proves nothing
+                          here)
 
 REPLACEMENT_WINDOW      = that execution's [created_at_min,
                           created_at_max] task arguments = [T0, T1],
                           T0 a UTC timestamp read on the deployment
-                          host (`date -u`, to the second) at least one
+                          host directly in the required form
+                          (`date -u +%Y-%m-%dT%H:%M:%S+00:00` — never
+                          hand-rendered from a bare `date`) at least one
                           minute BEFORE the first replacement order is
                           created and T1 one read at least one minute
                           AFTER the last (the margin absorbs clock
@@ -1662,6 +1673,11 @@ and a STOP:
    print(r.status, r.date_started, r.date_done); print(r.result)"
    ```
 
+   Run it after the worker's `[A52] _sync_orders done` line: `r.status`
+   must read `SUCCESS` (the row is written only when the task starts —
+   `CELERY_TASK_TRACK_STARTED` — so a `DoesNotExist` or `STARTED` read
+   is early, not absent: read again); the leg's `status` "ok" is a key
+   inside `r.result`, distinct from `r.status`.
    The CLI `python manage.py resync_shopify_orders --company <slug>
    --from <ISO> --to <ISO>` runs the same orders leg but prints only
    `fetched`, `created`, `skipped` and `errors` (its A52 done line
@@ -1909,10 +1925,12 @@ independent completeness control.
   (privately) — and export each evidence TaskResult row (`task_id`,
   `status`, `date_started`, `date_done`, `result`) into `preflight/`
   BEFORE §I16: once beat runs, the DatabaseScheduler-installed
-  `celery.backend_cleanup` (04:00 daily) deletes TaskResult rows older
-  than `result_expires`, Celery's default 24 h (the settings set no
-  override); the same export applies to every closure re-execution
-  row and the §I15 replacement row; require exactly 1 + K initial
+  `celery.backend_cleanup` (04:00 UTC daily — `CELERY_TIMEZONE` is
+  UTC) deletes TaskResult rows older than `result_expires`, Celery's
+  default 24 h (the settings set no override); the same export
+  applies to every closure re-execution row and the §I15 replacement
+  row, and from §I16 on these exports — not the live rows — are the
+  §K source; require exactly 1 + K initial
   tasks consumed on release,
   where K is the number of successful embedded `token-exchange/` calls
   after the J0 binding that the I13 sign-off pre-declared (each queues
@@ -2130,7 +2148,8 @@ independent completeness control.
   creation under the §I4 hold, so the routes must be unblocked no later
   than ~4 hours after the FIRST synthetic order whose retries this proof
   relies on — plan §I13 → §I14 → §I15 inside one sitting and reach the
-  §I14 read-back verdict with margin (by about T+3 h). This clock is
+  §I14 read-back verdict with margin (by about three hours after that
+  first synthetic order). This clock is
   separate from the 8-hour stale-source clock that starts at the first
   §I5 Connect click and is defused by the §I14 first sync. Evidence
   (`preflight/`): per topic, the count of retried deliveries answered
@@ -2144,7 +2163,8 @@ independent completeness control.
   retry: to exercise this proof the path restarts at the synthetic
   ORDER CREATION under the webhook block (new orders and refunds in the
   synthetic store, whose deliveries are then held and retried — §I4
-  items 1–2 must be re-verified in force before they are created, with
+  items 1–2 must be re-established (if the routes were already opened)
+  and re-verified in force before they are created, with
   beat still stopped; the worker keeps running, as it has since §I14,
   because the replacement execution below runs in it), then —
   because every 1 + K initial task was consumed at §I14 and creating
@@ -2163,7 +2183,9 @@ independent completeness control.
   execution-relative; this addendum is neither, and its window is
   declared, not effective; the I13 sign-off does not cover it) that
   lists `REPLACEMENT_ORDER_SET` — the replacement
-  orders by Shopify order id, none cancelled, with their refunds — and
+  orders by Shopify order id, none cancelled, each paid at creation,
+  with their refunds (issued BEFORE the addendum is signed, so the
+  addendum lists refunds that exist) — and
   `REPLACEMENT_WINDOW` — the `created_at_min`/`created_at_max` pair =
   [T0, T1], the UTC timestamps read on the deployment host at least
   one minute before the first and one minute after the last
@@ -2189,7 +2211,9 @@ independent completeness control.
   `resync_shopify_orders` prints four counters and discards the rest,
   so it is not the evidence-bearing form here), recorded as its own
   execution: its task id (printed at enqueue and written into the
-  record at that moment — the addendum, signed earlier, pre-declares
+  replacement execution's `preflight/` record at that moment — task
+  id, then the A52 pair, then the exported TaskResult row; the
+  addendum, signed earlier, pre-declares
   exactly ONE `shopify.sync_store_orders` task by name and count, never
   an id; it is not an initial task and does not disturb the 1 + K
   count), its TaskResult row
@@ -2210,7 +2234,8 @@ independent completeness control.
   no separate `fetch_failures` field); `refunds_backfilled` = the
   refund count the addendum lists (only an order already
   refunded/partially_refunded at fetch time is backfilled — refund
-  the replacement orders BEFORE the enqueue); `pilot_scope_skipped` =
+  the replacement orders BEFORE the addendum is signed, hence before
+  the enqueue); `pilot_scope_skipped` =
   0; the four `cancelled_*` counters 0 (`REPLACEMENT_ORDER_SET`
   contains no cancelled order by definition);
   `cogs_fulfillments` recorded, no financial effect expected under
@@ -2238,7 +2263,9 @@ independent completeness control.
   `I15_REPLACEMENT_SIGNOFF_TIMESTAMP` not earlier than
   `REPLACEMENT_EXECUTION_STARTED_AT`).
 - [ ] **I16. Beat restart LAST + drift cadence.** Once the initial task
-  and webhook retries are reconciled and health is stable, start Celery
+  and webhook retries are reconciled, health is stable and every
+  evidence TaskResult row is exported into `preflight/` (§I14 — beat
+  installs the 24 h `celery.backend_cleanup`), start Celery
   beat. Rerun the go-live preflight and `/_health/alerts`. From here on,
   rerun the go-live preflight after every subsequent sync/import or
   supported configuration action and before every later phase sign-off.
@@ -2347,7 +2374,7 @@ Minimum schema:
 | Per-leg pilot/cancelled counters (`pilot_scope_skipped`, `cancelled_financial_candidates`, `cancelled_financial_processed`, `cancelled_no_effect_skipped` (orders leg only), `cancelled_processing_errors`) and the inequality check per leg | `initial_store_sync` task result |
 | `pilot_scope_skipped` per leg (must be 0 on the EGP store) | `initial_store_sync` task result |
 | `INITIAL_SYNC_STARTED_AT`, effective window boundaries (timestamps only), `TASK_RECEIVED_AT`, `INTAKE_CONTRACT_VERSION` | worker log `[A52] _sync_orders start` line + the TaskResult row's `date_started` (private) vs the §B runbook revision |
-| The complete `initial_store_sync` task result, plus the complete result of every recorded closure re-execution and of any §I15 replacement execution (each with its own task id and TaskResult row — the worker-task form of the §I closure rule; an orders-leg-only result carries the twelve `_sync_orders` fields and no refund-leg keys — A52 line, counters, and inequality; the replacement execution also with its signed addendum — `REPLACEMENT_ORDER_SET`, `REPLACEMENT_WINDOW`, `I15_REPLACEMENT_SIGNOFF_TIMESTAMP` — the A52-window equality and the replacement evidence contract) | worker log / task result / TaskResult rows (private) |
+| The complete `initial_store_sync` task result, plus the complete result of every recorded closure re-execution and of any §I15 replacement execution (each with its own task id and TaskResult row — the worker-task form of the §I closure rule; an orders-leg-only result carries the twelve `_sync_orders` fields and no refund-leg keys — A52 line, counters, and inequality; the replacement execution also with its signed addendum — `REPLACEMENT_ORDER_SET`, `REPLACEMENT_WINDOW`, `I15_REPLACEMENT_SIGNOFF_TIMESTAMP` — the A52-window equality and the replacement evidence contract) | worker log / task result / the pre-§I16 TaskResult exports in `preflight/` (§I14; the live rows expire 24 h after beat starts) (private) |
 | Settlement row count, gross, fee, net totals | the CSV files |
 | Bank line count, debit total, credit total | the CSV files |
 | Event counts by relevant type | system (read-only) |
@@ -2883,7 +2910,8 @@ Sign-off: operator ______ date ______
 - any claim that `import_mode="skip"` suppresses the refund catch-up;
 - an initial-sync result not observed and retained;
 - webhook release before initial-task reconciliation;
-- beat restarted before initial-task and webhook-retry reconciliation;
+- beat restarted before initial-task and webhook-retry reconciliation,
+  or before every evidence TaskResult row was exported (§I14);
 - a queue purge proposed as evidence of a clean cutover.
 
 The stop/go decision belongs to the **founder/operator**; every stop or go
@@ -2899,7 +2927,7 @@ secrets in Git:
 ```
 revision/           # §B pins
 environment/        # §C, §E, §G reports (secret-free)
-preflight/          # §F blockers, §H bootstrap, §I preflight outputs
+preflight/          # §F blockers, §H bootstrap, §I preflight outputs, the pre-§I16 TaskResult exports (§I14)
 source-controls/    # §K control pack + source-file hashes
 failure-injection/  # §J scenario evidence
 alerts/             # §L delivery proof
@@ -3281,7 +3309,10 @@ after G1 and G2 are recorded complete in the
     created after that sync's window is a FIRST ingestion when it
     arrives (not a duplicate), and an order created after the unblock
     is ordinary webhook intake;
-15. start Celery beat **LAST**;
+15. start Celery beat **LAST** — after every evidence TaskResult row
+    (the release execution's and every recorded closure re-execution's)
+    is exported as in §I14, because beat installs the 24 h
+    `celery.backend_cleanup`;
 16. rerun the go-live preflight and alerts after beat starts;
 17. sign the final **intake-complete checkpoint**. Do NOT sign while:
     the refund catch-up leg's status is not `ok`, or `fetch_failures >
