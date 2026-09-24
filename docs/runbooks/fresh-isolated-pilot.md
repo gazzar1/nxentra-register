@@ -1377,6 +1377,20 @@ B = orders currently refunded or partially_refunded whose Shopify
 
 AUTHORIZED_PARENT_ORDER_SET = A union B, deduplicated by Shopify order id
 
+REPLACEMENT_ORDER_SET   = (§I15 lapsed-retry path only) the synthetic
+                          orders created under the re-verified §I4 hold
+                          AFTER INITIAL_SYNC_STARTED_AT, listed by
+                          Shopify order id in a dated replacement
+                          addendum signed BEFORE the replacement
+                          execution; outside
+                          AUTHORIZED_PARENT_ORDER_SET by construction
+
+REPLACEMENT_WINDOW      = that execution's [--from, --to] pair = the
+                          narrowest created_at window containing exactly
+                          REPLACEMENT_ORDER_SET; must equal the
+                          created_at_min / created_at_max of its own
+                          `[A52] _sync_orders start` line
+
 INTAKE_CONTRACT_VERSION = the runbook document revision SHA recorded in
                           §B (`revision/`, "this runbook's revision";
                           repeated for the merchant database by §Q
@@ -1575,7 +1589,11 @@ and a STOP:
    own task id or CLI invocation, its own `[A52] _sync_orders start`
    line, counters and inequality, in the §K pack), and any order it
    books outside AUTHORIZED_PARENT_ORDER_SET is an intake-contract
-   variance and a STOP. The interactive resync endpoint is NOT a
+   variance and a STOP. (The §I15 lapsed-retry path runs the same
+   command for orders created AFTER `INITIAL_SYNC_STARTED_AT`; that is
+   not a closure re-execution — it is authorized by its own signed
+   `REPLACEMENT_ORDER_SET`, §I15.)
+   The interactive resync endpoint is NOT a
    closure path: it accepts only a `days` lookback ending at its own
    request time, runs in-request as the merchant session, and stays
    blocked under the intake hold. A candidate that no re-execution can
@@ -1784,7 +1802,10 @@ independent completeness control.
   seven-day windows — records that nobody edits those orders in
   Shopify Admin (an edit bumps `updated_at` and re-qualifies them for
   set B), and records the planned §I15 unblock time (≤ ~4 h after the
-  first synthetic order whose retries the §I15 proof relies on).
+  first synthetic order whose retries the §I15 proof relies on). It
+  does not pre-authorize the §I15 lapsed-retry replacement execution:
+  that path needs its own dated replacement addendum, signed before
+  the execution (§I15).
   Sign-off: operator ______ `I13_SIGNOFF_TIMESTAMP` (UTC, to the
   second — the rehearsal twin of `GO_TIMESTAMP`, ordered against
   `TASK_RECEIVED_AT` at I14) ______
@@ -2024,13 +2045,36 @@ independent completeness control.
   synthetic store, whose deliveries are then held and retried — the
   hold must be verified in force before they are created), then —
   because every 1 + K initial task was consumed at §I14 and creating
-  an order enqueues no sync — a RECORDED re-execution that books the
-  replacement orders BEFORE the routes open (the §I closure's A-leg
-  re-execution: `python manage.py resync_shopify_orders --company
-  <slug> --from <ISO> --to <ISO>` with the narrowest window that
-  selects only the replacement orders, recorded as an explained second
-  execution with its own task id or CLI invocation, `[A52]` line,
-  counters and §K row; its refund backfill books their refunds),
+  an order enqueues no sync — a RECORDED replacement execution that
+  books the replacement orders BEFORE the routes open. It is NOT a §I
+  closure re-execution: every replacement order is created after
+  `INITIAL_SYNC_STARTED_AT`, so it lies outside `ORDER_CREATED_WINDOW`
+  and therefore outside `AUTHORIZED_PARENT_ORDER_SET` by construction,
+  and a closure re-execution that books outside that set is a STOP
+  (§I14, §O). It is authorized by its own signed set instead: BEFORE
+  the command is invoked, sign a dated replacement addendum in
+  `signoff/` (the I13 twin for this execution; the I13 sign-off does
+  not cover it) that lists `REPLACEMENT_ORDER_SET` — the replacement
+  orders by Shopify order id, with their refunds — and
+  `REPLACEMENT_WINDOW` — the `--from`/`--to` pair, the narrowest
+  `created_at` window containing exactly those orders — records that
+  nobody edits any earlier order in Shopify Admin (an edit bumps
+  `updated_at` into the window and re-qualifies it for the refund
+  leg), authorizes the same contract at `INTAKE_CONTRACT_VERSION`,
+  names the planned unblock time (≤ ~4 h after the first replacement
+  order), and carries `I15_REPLACEMENT_SIGNOFF_TIMESTAMP` (UTC, to the
+  second). Then run `python manage.py resync_shopify_orders --company
+  <slug> --from <ISO> --to <ISO>` with exactly `REPLACEMENT_WINDOW`,
+  recorded as its own execution (its own task id or CLI invocation,
+  its own `[A52] _sync_orders start` line whose
+  `created_at_min`/`created_at_max` equal `REPLACEMENT_WINDOW`,
+  counters and inequality, and a §K row) with
+  `I15_REPLACEMENT_SIGNOFF_TIMESTAMP` earlier than that A52 start
+  timestamp; its refund backfill books their refunds. Any order it
+  books outside `REPLACEMENT_ORDER_SET` is a STOP (a re-selection of an
+  already-booked order that adds nothing is the idempotent §I closure
+  behaviour, not a booking); `AUTHORIZED_PARENT_ORDER_SET`, the I13
+  sign-off and the §I14 verdict are unchanged by it. The execution is
   verified in a read-back (rows, events and journals present, 0
   failures), and only then the unblock within ~4 hours of the first
   replacement order — the held deliveries then arrive as true
@@ -2039,8 +2083,11 @@ independent completeness control.
   record an explicit gap against J1's duplicate-delivery proof — never
   a lapsed backlog as exercised.
   STOP if: any retried delivery creates a duplicate row, event or
-  journal, or a subscription declared by the §E3 app version is found
-  missing after the hold.
+  journal; a subscription declared by the §E3 app version is found
+  missing after the hold; or a replacement execution ran before its
+  addendum was signed, or booked an order outside
+  `REPLACEMENT_ORDER_SET`, or its A52 window differs from
+  `REPLACEMENT_WINDOW`.
 - [ ] **I16. Beat restart LAST + drift cadence.** Once the initial task
   and webhook retries are reconciled and health is stable, start Celery
   beat. Rerun the go-live preflight and `/_health/alerts`. From here on,
@@ -2145,13 +2192,13 @@ Minimum schema:
 | Per-order line-item count for every intake order (must equal the stored order evidence's `line_items` count — an independent completeness control over the PR #143 drained reads; the stored list is unfiltered, so equality is exact. Deliberately no variant-count twin: the sync legitimately skips SKU-less variants and the NON_STOCK catalog collapses shared SKUs, so no export-vs-system variant equality exists to demand) | Shopify admin/exports vs stored order evidence (read-only) |
 | Oldest and newest imported parent-order dates | system (read-only) vs Shopify |
 | Oldest and newest imported refund dates | system (read-only) vs Shopify |
-| Refund fetch-failure count (must be 0 on the latest accounted execution; any earlier execution's fetch failure recorded with its §I closure) | `initial_store_sync` task result(s) — the release execution AND every recorded closure re-execution |
+| Refund fetch-failure count (must be 0 on the latest accounted execution; any earlier execution's fetch failure recorded with its §I closure) | `initial_store_sync` task result(s) — the release execution, every recorded closure re-execution AND any §I15 replacement execution |
 | Cancelled B candidates: count and ids; for each — local parent present, complete refund count/totals, and the cancellation provenance stamp verified per §I (no stamp-failure entry in `cancelled_processing_errors` and no "Cancellation provenance stamp failed" warning for that order; raw-payload `cancelled_at` corroboration only) | Shopify admin/exports vs system (read-only) + task result / worker log (private) |
 | Cancelled A orders: captured-money (booked + stamped) vs never-captured (no financial effect) split | Shopify admin/exports vs `cancelled_financial_processed` (booked + stamped) / `cancelled_no_effect_skipped` (never captured, writer succeeded); any `cancelled_financial_candidates` − `cancelled_financial_processed` gap must be accounted for by `cancelled_processing_errors` + `pilot_scope_skipped` per the §I inequality (row below) |
 | Per-leg pilot/cancelled counters (`pilot_scope_skipped`, `cancelled_financial_candidates`, `cancelled_financial_processed`, `cancelled_no_effect_skipped` (orders leg only), `cancelled_processing_errors`) and the inequality check per leg | `initial_store_sync` task result |
 | `pilot_scope_skipped` per leg (must be 0 on the EGP store) | `initial_store_sync` task result |
 | `INITIAL_SYNC_STARTED_AT`, effective window boundaries (timestamps only), `TASK_RECEIVED_AT`, `INTAKE_CONTRACT_VERSION` | worker log `[A52] _sync_orders start` line + the TaskResult row's `date_started` (private) vs the §B runbook revision |
-| The complete `initial_store_sync` task result, plus the complete result of every recorded closure re-execution (each with its own task id or CLI invocation, A52 line, counters, and inequality) | worker log / task result / TaskResult rows (private) |
+| The complete `initial_store_sync` task result, plus the complete result of every recorded closure re-execution and of any §I15 replacement execution (each with its own task id or CLI invocation, A52 line, counters, and inequality; the replacement execution also with its signed addendum — `REPLACEMENT_ORDER_SET`, `REPLACEMENT_WINDOW`, `I15_REPLACEMENT_SIGNOFF_TIMESTAMP` — and the A52-window equality) | worker log / task result / TaskResult rows (private) |
 | Settlement row count, gross, fee, net totals | the CSV files |
 | Bank line count, debit total, credit total | the CSV files |
 | Event counts by relevant type | system (read-only) |
@@ -2664,6 +2711,10 @@ Sign-off: operator ______ date ______
 - a closure re-execution that books any order outside
   AUTHORIZED_PARENT_ORDER_SET, or that is not recorded as an explained
   second execution;
+- a §I15 replacement execution (the lapsed-retry path) invoked before
+  its replacement addendum was signed, or that books any order outside
+  its signed REPLACEMENT_ORDER_SET, or whose A52 window differs from
+  REPLACEMENT_WINDOW, or that is not recorded as its own execution;
 - any unexplained initial task (the expected count is 1 + K — §I14);
 - an older parent order or refund excluded merely because its date
   predates the seven-day window;
