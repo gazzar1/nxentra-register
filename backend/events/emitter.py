@@ -57,11 +57,10 @@ def _schedule_projection_processing(company_id: int) -> None:
             # Celery not running or not configured — process synchronously
             try:
                 from accounts.models import Company
-                from projections.base import projection_registry
+                from projections.runtime import drain_company
 
                 company = Company.objects.get(id=company_id)
-                for projection in projection_registry.all():
-                    projection.process_pending(company=company, limit=100)
+                drain_company(company, limit=100)
             except Exception as exc:
                 _emitter_logger.warning(
                     "Failed to process projections synchronously for company %s: %s",

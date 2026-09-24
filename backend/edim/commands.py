@@ -19,7 +19,6 @@ import hashlib
 import json
 import uuid
 
-from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
@@ -53,6 +52,7 @@ from edim.models import (
 )
 from events.emitter import emit_event
 from events.types import EventTypes
+from projections.runtime import command_drain as _process_projections
 from projections.write_barrier import command_writes_allowed
 
 
@@ -93,19 +93,6 @@ def _idempotency_hash(prefix: str, payload: dict) -> str:
     normalized = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     digest = hashlib.sha256(normalized).hexdigest()[:16]
     return f"{prefix}:{digest}"
-
-
-def _process_projections(company, exclude: set[str] | None = None) -> None:
-    if not settings.PROJECTIONS_SYNC:
-        return
-
-    from projections.base import projection_registry
-
-    excluded = exclude or set()
-    for projection in projection_registry.all():
-        if projection.name in excluded:
-            continue
-        projection.process_pending(company, limit=1000)
 
 
 # =============================================================================

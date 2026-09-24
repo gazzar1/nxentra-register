@@ -17,7 +17,6 @@ import calendar
 from datetime import date, timedelta
 from decimal import Decimal
 
-from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
@@ -27,22 +26,8 @@ from accounts.authz import ActorContext, require
 from accounts.pilot_policy import Capability, requires_capability
 from events.emitter import emit_event
 from events.types import EventTypes
+from projections.runtime import command_drain as _process_projections
 from projections.write_barrier import command_writes_allowed
-
-
-def _process_projections(company, exclude: set[str] | None = None) -> None:
-    """Run all registered projections synchronously after a command emits events."""
-    if not settings.PROJECTIONS_SYNC:
-        return
-
-    from projections.base import projection_registry
-
-    excluded = exclude or set()
-    for projection in projection_registry.all():
-        if projection.name in excluded:
-            continue
-        projection.process_pending(company, limit=1000)
-
 
 from .event_types import (
     DepositAdjustedData,

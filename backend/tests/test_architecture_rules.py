@@ -3588,51 +3588,40 @@ def test_exclude_line_has_a_single_production_call_site():
     )
 
 
-# Rule 20 (M1 projection runtime): every projection DRAIN door is frozen.
-# A drain is a call to ``BaseProjection.process_pending`` — the A3 apply choke
-# point and the PR #152 in-flight guard live there. Registry-walk drains
-# (``for projection in projection_registry.all(): ....process_pending(...)``)
-# are the shape the September 2026 re-entrancy bug hid behind: the same loop
-# existed in six command modules, the emitter and two seed commands. The dicts
-# below pin every call site per file; a new ``.process_pending(`` call outside
-# ``projections/`` must go through ``projections.runtime`` (once it exists) or
-# edit this test consciously. Detection is AST-based: ``.process_pending(``
-# also appears in docstrings.
+# Rule 20 (projection runtime): every projection DRAIN door is frozen.
+# A drain is a reference to ``BaseProjection.process_pending`` — the A3 apply
+# choke point and the PR #152 in-flight guard live there. Registry-walk drains
+# (a loop over the projections that dispatches ``process_pending`` on the loop
+# variable) are the shape the September 2026 re-entrancy bug hid behind: the
+# same loop existed in six command modules, the emitter and two seed commands.
+# The dicts below pin every reference per file (exact counts); a new
+# ``process_pending`` reference outside ``projections/`` must go through
+# ``projections.runtime`` or edit this test consciously. Detection is
+# AST-based: ``.process_pending(`` also appears in docstrings.
 #
-# Current state (before the extraction). The extraction PR shrinks the
-# outside dict to the three single-projection survivors and empties the
-# registry-walk allowlist — that diff is the proof that every walk moved.
+# Post-extraction state: the six command-layer copies, the emitter fallback
+# and the two seed commands all call projections.runtime. Outside
+# projections/ three single-projection drains survive with one reference
+# each, and ONE dispatch-shaped registry walk survives — the tenant replay
+# operator command, consciously not routed (per-projection CommandError
+# wrap, dry-run and tenant_context interleave with its loop).
 _PROCESS_PENDING_CALLS_OUTSIDE_PROJECTIONS: dict[str, int] = {
-    "accounting/commands.py": 1,  # V1 copy
-    "accounts/commands.py": 1,  # V1 copy
-    "edim/commands.py": 1,  # V1 copy
-    "properties/commands.py": 1,  # V1 copy
-    "properties/tasks.py": 1,  # V1 copy
-    "scratchpad/commands.py": 1,  # V1 copy (no callers)
-    "events/emitter.py": 1,  # V2 post-commit fallback
-    "shopify_connector/management/commands/seed_shopify_demo.py": 1,  # V6 dev seed
-    "shopify_connector/management/commands/seed_test_csv_pack.py": 1,  # V6 dev seed
-    "reconciliation/commands.py": 1,  # V5b single projection, fresh instance, ungated (Rule 19 pins the text)
+    "reconciliation/commands.py": 1,  # single projection, fresh instance, ungated (shape pinned by test_v5b in the characterisation suite)
     "platform_connectors/management/commands/payments_canonical_backfill.py": 1,  # loop-until-zero after rebuild
-    "tenant/management/commands/replay_projections.py": 1,  # per-projection replay under tenant_context
+    "tenant/management/commands/replay_projections.py": 1,  # whole-registry operator replay under tenant_context
 }
 _PROCESS_PENDING_CALLS_INSIDE_PROJECTIONS: dict[str, int] = {
     "projections/base.py": 1,  # rebuild()'s drain-to-zero loop
+    "projections/runtime.py": 1,  # drain_company — THE registry-walk drain
     "projections/tasks.py": 1,  # process_company_projections
     "projections/views.py": 1,  # AdminProjectionProcessView
     "projections/management/commands/run_projections.py": 2,  # _run_once + _run_daemon
 }
 _REGISTRY_WALK_DRAINS_OUTSIDE_PROJECTIONS: frozenset[str] = frozenset(
     {
-        "accounting/commands.py",
-        "accounts/commands.py",
-        "edim/commands.py",
-        "properties/commands.py",
-        "properties/tasks.py",
-        "scratchpad/commands.py",
-        "events/emitter.py",
-        "shopify_connector/management/commands/seed_shopify_demo.py",
-        "shopify_connector/management/commands/seed_test_csv_pack.py",
+        # operator replay: `projections_to_run = projection_registry.all()` then a
+        # loop that wraps each pass in its own CommandError / dry-run handling
+        "tenant/management/commands/replay_projections.py",
     }
 )
 
@@ -3646,7 +3635,21 @@ def _drain_production_files() -> list[Path]:
 
 
 def _is_process_pending_call(node: ast.AST) -> bool:
-    return isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "process_pending"
+    """Any attribute reference to ``process_pending`` (a call, a bound-method
+    alias, a getattr target) — references, not just calls, so aliasing cannot
+    hide a dispatch."""
+    return isinstance(node, ast.Attribute) and node.attr == "process_pending"
+
+
+def _loop_variable_names(target: ast.AST) -> set[str]:
+    return {n.id for n in ast.walk(target) if isinstance(n, ast.Name)}
+
+
+def _dispatches_on(node: ast.AST, names: set[str]) -> bool:
+    """True when ``node`` contains ``<name>.process_pending`` for a loop variable."""
+    return any(
+        _is_process_pending_call(c) and isinstance(c.value, ast.Name) and c.value.id in names for c in ast.walk(node)
+    )
 
 
 def _process_pending_call_counts() -> tuple[dict[str, int], dict[str, int]]:
@@ -3662,8 +3665,10 @@ def _process_pending_call_counts() -> tuple[dict[str, int], dict[str, int]]:
 
 
 def _registry_walk_drains() -> dict[str, list[int]]:
-    """Files (outside projections/) with a ``for ... in <x>.all():`` loop whose
-    body dispatches ``process_pending``."""
+    """Files (outside projections/) with a dispatch-shaped walk: a ``for`` /
+    ``async for`` / comprehension whose loop variable is the receiver of a
+    ``process_pending`` reference in its body — whatever the iterable is
+    (``x.all()``, a name bound earlier, ``list(...)``)."""
     found: dict[str, list[int]] = {}
     for path in _drain_production_files():
         rel = path.relative_to(BACKEND_ROOT).as_posix()
@@ -3671,12 +3676,14 @@ def _registry_walk_drains() -> dict[str, list[int]]:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
-            if not (isinstance(node, ast.For) and isinstance(node.iter, ast.Call)):
-                continue
-            if not (isinstance(node.iter.func, ast.Attribute) and node.iter.func.attr == "all"):
-                continue
-            if any(_is_process_pending_call(c) for stmt in node.body for c in ast.walk(stmt)):
-                found.setdefault(rel, []).append(node.lineno)
+            if isinstance(node, ast.For | ast.AsyncFor):
+                names = _loop_variable_names(node.target)
+                if any(_dispatches_on(stmt, names) for stmt in node.body):
+                    found.setdefault(rel, []).append(node.lineno)
+            elif isinstance(node, ast.ListComp | ast.SetComp | ast.GeneratorExp | ast.DictComp):
+                names = set().union(*(_loop_variable_names(g.target) for g in node.generators))
+                if _dispatches_on(node, names):
+                    found.setdefault(rel, []).append(node.lineno)
     return found
 
 
@@ -3686,10 +3693,10 @@ def test_process_pending_call_sites_are_frozen_per_file():
         ("outside projections/", outside, _PROCESS_PENDING_CALLS_OUTSIDE_PROJECTIONS),
         ("inside projections/", inside, _PROCESS_PENDING_CALLS_INSIDE_PROJECTIONS),
     ):
-        grown = {k: v for k, v in found.items() if k not in pinned or v > pinned[k]}
-        assert not grown, (
-            f"new projection drain door(s) {label}: {grown}. A drain is a call to process_pending; "
-            "route it through projections.runtime or edit this pin consciously (Rule 20)."
+        drifted = {k: (v, pinned.get(k)) for k, v in found.items() if k not in pinned or v != pinned[k]}
+        assert not drifted, (
+            f"projection drain door(s) {label} changed (found vs pinned): {drifted}. A drain is a reference to "
+            "process_pending; route new ones through projections.runtime or edit this pin consciously (Rule 20)."
         )
         stale = sorted(set(pinned) - set(found))
         assert not stale, f"Rule 20 pins {label} no longer needed — shrink the dict: {stale}"
@@ -3704,3 +3711,37 @@ def test_no_registry_walk_drain_outside_the_allowlisted_files():
     )
     stale = sorted(_REGISTRY_WALK_DRAINS_OUTSIDE_PROJECTIONS - set(found))
     assert not stale, f"Rule 20 registry-walk allowlist entries no longer needed — shrink it: {stale}"
+
+
+def test_projection_runtime_is_a_walker_not_a_transaction_or_rls_owner():
+    """projections/runtime.py dispatches through process_pending and nothing
+    else: no handler call, no transaction, savepoint, on_commit, RLS or tenant
+    context of its own (the caller's context is the contract), no logging."""
+    source = (BACKEND_ROOT / "projections" / "runtime.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    dispatches = [node for node in ast.walk(tree) if _is_process_pending_call(node)]
+    assert len(dispatches) == 1, "the runtime has exactly one process_pending dispatch"
+    # Identifiers, not source text: the module docstring may NAME what it must not do.
+    used = {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)} | {
+        node.id for node in ast.walk(tree) if isinstance(node, ast.Name)
+    }
+    forbidden = {
+        "atomic",
+        "on_commit",
+        "savepoint",
+        "rls_bypass",
+        "set_current_company_id",
+        "tenant_context",
+        "getLogger",
+        "warning",
+        "error",
+        "exception",
+        "info",
+        "debug",
+        "objects",
+        "delay",
+        "apply_async",
+        "handle",
+        "rebuild",
+    }
+    assert not (used & forbidden), f"projections/runtime.py must not use {sorted(used & forbidden)}"

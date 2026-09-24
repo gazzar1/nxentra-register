@@ -7,15 +7,18 @@ projection) and calls ``process_pending``. Before the drains are consolidated
 into ``projections.runtime`` these tests pin what each shape does TODAY, so the
 extraction can be proven behaviour-preserving: same selection and order, same
 ``limit``, same ``exclude`` semantics, same gate, same error propagation, no
-transaction or on_commit of its own. They must pass unchanged before AND after
-the move.
+transaction or on_commit of its own. They must pass with the same assertions
+before AND after the move; the copy list shrinks only when a copy is deleted
+(the zero-caller scratchpad copy went with the extraction).
 
 Shapes (names from the M1 inventory):
-  V1  command-layer synchronous drain — six byte-equivalent private copies
-      (accounting, accounts, edim, properties.commands, properties.tasks,
-      scratchpad); gated on settings.PROJECTIONS_SYNC at CALL time; whole
-      registry in registration order; ``limit=1000``; first escaping exception
-      propagates and aborts the walk; returns None.
+  V1  command-layer synchronous drain — six private copies of the same
+      gate → walk → ``process_pending(company, limit=1000)`` body (accounting,
+      accounts, edim, properties.commands, properties.tasks, scratchpad; four
+      of them with an ``exclude`` filter no caller passes); gated on
+      settings.PROJECTIONS_SYNC at CALL time; whole registry in registration
+      order; first escaping exception propagates and aborts the walk;
+      returns None.
   V2  events.emitter post-commit fallback — ungated; only when Celery
       ``.delay`` raises; ``limit=100``; the whole loop is swallowed at WARNING.
   V3  projections.tasks.process_company_projections — include-list by name in
@@ -48,19 +51,20 @@ pytestmark = pytest.mark.django_db
 
 PROBE_EVENT = "test.drain_probe_event"
 
+# The five live command-layer names (the sixth copy, scratchpad.commands, had
+# no caller and was deleted with the extraction). After M1 every name is an
+# alias of projections.runtime.command_drain; the tests below must not care.
 V1_COPIES = [
     "accounting.commands._process_projections",
     "accounts.commands._process_projections",
     "edim.commands._process_projections",
     "properties.commands._process_projections",
     "properties.tasks._process_projections",
-    "scratchpad.commands._process_projections",
 ]
 V1_COPIES_WITH_EXCLUDE = [
     "accounting.commands._process_projections",
     "edim.commands._process_projections",
     "properties.commands._process_projections",
-    "scratchpad.commands._process_projections",
 ]
 
 
@@ -240,8 +244,9 @@ def test_v1_handler_errors_stay_fail_soft_inside_process_pending(company, probes
     bookmark_a = EventBookmark.objects.get(consumer_name=probe_a.name, company=company)
     assert bookmark_a.error_count >= 1 and bookmark_a.last_error
     assert probe_a.handled == []
-    # the peer saw the same event stream and handled it
-    assert probe_b.handled == []  # boom event raises for both probes — both stop fail-soft
+    # the peer saw the same boom event and also stopped fail-soft — and the
+    # drain still returned normally after both
+    assert probe_b.handled == []
     bookmark_b = EventBookmark.objects.get(consumer_name=probe_b.name, company=company)
     assert bookmark_b.error_count >= 1
 

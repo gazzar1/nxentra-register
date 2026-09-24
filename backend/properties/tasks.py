@@ -12,7 +12,6 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from celery import shared_task
-from django.conf import settings
 
 from accounts.models import Company
 from accounts.pilot_policy import Capability, serialized_company_admission, skip_if_unsupported
@@ -20,6 +19,7 @@ from accounts.rls import rls_bypass
 from events.emitter import emit_event_no_actor
 from events.payload_policy import PayloadOrigin
 from events.types import EventTypes
+from projections.runtime import command_drain as _process_projections
 from projections.write_barrier import command_writes_allowed
 
 from .event_types import (
@@ -48,17 +48,6 @@ def post_rent_dues_and_detect_overdue():
             _process_company(company)
         except Exception:
             logger.exception("Error processing rent dues for company %s", company.name)
-
-
-def _process_projections(company):
-    """Run all registered projections synchronously after events are emitted."""
-    if not settings.PROJECTIONS_SYNC:
-        return
-
-    from projections.base import projection_registry
-
-    for projection in projection_registry.all():
-        projection.process_pending(company, limit=1000)
 
 
 def _process_company(company):
