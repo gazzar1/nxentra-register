@@ -108,7 +108,7 @@ _REPAIR_HINT = (
 # QUARANTINE log (event consumed WITHOUT applying) from an OPERATIONAL
 # failure log (a halt whose event only ever gains an applied-marker through
 # a later SUCCESSFUL apply) — the distinction that keeps legacy
-# operator-resolved halt logs from eclipsing applied journals (round 16).
+# operator-resolved halt logs from eclipsing applied journals.
 QUARANTINE_MESSAGE_SIGNATURE = "failed the canonical apply invariant"
 
 
@@ -272,9 +272,9 @@ def validate_posted_journal_apply(event: BusinessEvent) -> None:
 def is_deferrable_apply_verdict(event: BusinessEvent, codes: list[str]) -> bool:
     """THE single defer predicate, shared by every verdict consumer (the
     choke-point validator, restore verification, the event-first audit —
-    Codex round-1 P2: verdict symmetry must include the lag disposition, or
-    a batch caller reports as corrupt / refuses a backup of exactly the
-    replayable-lag state the choke point defers on). True iff the verdict is
+    verdict symmetry must include the lag disposition, or a batch caller
+    reports as corrupt / refuses a backup of exactly the replayable-lag
+    state the choke point defers on). True iff the verdict is
     SOLELY ``JE_ACCOUNT_UNKNOWN`` and every unresolved reference is pending
     materialization per :func:`_unknown_accounts_are_pending_materialization`.
     """
@@ -286,10 +286,10 @@ def is_deferrable_apply_verdict(event: BusinessEvent, codes: list[str]) -> bool:
 def _entry_pending_materialization(event: BusinessEvent, entry_public_id: object) -> bool:
     """True iff a payload-verified JOURNAL_ENTRY_POSTED event for this entry
     sits EARLIER in the stream, NOT yet consumed by the JournalEntry read
-    model — the deferred-post case (Codex round-5 P1).
+    model — the deferred-post case.
 
     Decided purely from the posted EVENT and its applied-marker, NEVER from
-    row existence (Codex round-9 P1): the normal lifecycle materializes a
+    row existence: the normal lifecycle materializes a
     DRAFT row from JOURNAL_ENTRY_CREATED before the post, so a row-existence
     check would declare "nothing pending" while the post is deferred — a
     line-analysis event would then be consumed against draft lines that the
@@ -297,18 +297,18 @@ def _entry_pending_materialization(event: BusinessEvent, entry_public_id: object
     delete could slip through before the post re-decides it.
 
     Candidates are matched by PAYLOAD identity as well as aggregate metadata
-    in BOTH storage strategies (Codex rounds 6+7 P2): external ingest
-    legitimately carries a different aggregate_id, and a >64 KiB ingested
-    payload stores {} inline, so the payload_ref__payload arm is what finds
-    it. Identity comparison is CANONICAL-UUID, not stored-text (Codex
-    round-10 P2): equivalent spellings (uppercase, ...) are accepted inputs
-    everywhere else, so the exact-match arms are only a fast path — when
-    they yield no verified candidate, a bounded canonical scan of the prior
-    posted events decides (failure-path-only cost). The verification loop
-    stays the authority for everything either path returns. A CONSUMED
-    prior post (materialized or quarantined) is not pending — the guard
-    then decides against the real current rows, and the handlers' tolerant
-    behavior for genuinely absent referents stays unchanged."""
+    in BOTH storage strategies: external ingest legitimately carries a
+    different aggregate_id, and a >64 KiB ingested payload stores {} inline,
+    so the payload_ref__payload arm is what finds it. Identity comparison is
+    CANONICAL-UUID, not stored-text: equivalent spellings (uppercase, ...)
+    are accepted inputs everywhere else, so the exact-match arms are only a
+    fast path — when they yield no verified candidate, a bounded canonical
+    scan of the prior posted events decides (failure-path-only cost). The
+    verification loop stays the authority for everything either path
+    returns. A CONSUMED prior post (materialized or quarantined) is not
+    pending — the guard then decides against the real current rows, and the
+    handlers' tolerant behavior for genuinely absent referents stays
+    unchanged."""
     from django.db import IntegrityError
     from django.db.models import Q
 
@@ -325,7 +325,7 @@ def _entry_pending_materialization(event: BusinessEvent, entry_public_id: object
     def _is_pending_evidence(prior) -> bool | None:
         """True = pending (this matching post is unconsumed); False = this
         matching post is consumed; None = not this entry's post. The CALLER
-        must keep scanning past consumed matches (Codex round-20 P1): a
+        must keep scanning past consumed matches: a
         stream can carry the same entry id twice — a consumed earlier post
         must not hide a later deferred REPOST, or a lifecycle event applies
         against the old lines and its effect is lost when the repost
@@ -337,7 +337,7 @@ def _entry_pending_materialization(event: BusinessEvent, entry_public_id: object
             # is genuinely not evidence. A TRANSIENT database error (e.g. an
             # OperationalError on the lazy external-payload fetch) must
             # PROPAGATE as a retryable halt instead of erasing pending
-            # evidence and letting a sibling no-op-consume (Codex round-21).
+            # evidence and letting a sibling no-op-consume.
             return None
         if not isinstance(prior_data, dict) or _canonical_uuid(prior_data.get("entry_public_id")) != target:
             return None
@@ -374,7 +374,7 @@ def _unknown_accounts_are_pending_materialization(event: BusinessEvent) -> bool:
     """True iff EVERY referenced account id that fails to resolve against the
     Account read model has an ACCOUNT_CREATED event EARLIER in this company's
     stream WHOSE PAYLOAD ACTUALLY CREATES that id — pending materialization,
-    not a genuine unknown. The payload check matters (Codex round-1 P2): the
+    not a genuine unknown. The payload check matters: the
     AccountProjection materializes the payload's ``account_public_id``, so a
     foreign/corrupted event whose aggregate metadata says ``cid`` but whose
     payload creates a DIFFERENT id would never resolve — trusting
@@ -391,7 +391,7 @@ def _unknown_accounts_are_pending_materialization(event: BusinessEvent) -> bool:
     try:
         data = event.get_data()
     except (IntegrityError, ValueError):
-        # Narrowed like the evaluator (Codex round-21): integrity failures
+        # Narrowed like the evaluator: integrity failures
         # are not pending evidence; transient DB errors propagate as
         # retryable halts instead of terminally quarantining a valid event.
         return False
@@ -413,25 +413,25 @@ def _unknown_accounts_are_pending_materialization(event: BusinessEvent) -> bool:
     unresolved = referenced - load_account_facts(event.company, referenced).keys()
 
     # Candidates by PAYLOAD identity as well as aggregate metadata, in both
-    # storage strategies (Codex round-8 P2 — the same rule as the entry
-    # probe): AccountProjection materializes the payload's
-    # account_public_id, so a foreign event whose metadata names another id
-    # would be missed by an aggregate-only query and a valid posted journal
-    # would be terminally quarantined instead of deferred. Identity
-    # comparison is canonical (Codex round-10 P2) — the exact-match arms are
-    # a fast path with a bounded canonical-scan fallback. The
-    # payload/materializability verification stays the authority.
+    # storage strategies (the same rule as the entry probe):
+    # AccountProjection materializes the payload's account_public_id, so a
+    # foreign event whose metadata names another id would be missed by an
+    # aggregate-only query and a valid posted journal would be terminally
+    # quarantined instead of deferred. Identity comparison is canonical —
+    # the exact-match arms are a fast path with a bounded canonical-scan
+    # fallback. The payload/materializability verification stays the
+    # authority.
     for cid in unresolved:
 
         def _account_evidence(prior, cid=cid) -> bool:
             """True iff this prior event is pending/resolved creation evidence
-            for cid. Materializability has two layers (Codex rounds 2+3 P2 —
-            statically re-predicting the projection's write logic is an
-            unwinnable arms race): (a) static — the creation fields
+            for cid. Materializability has two layers (statically
+            re-predicting the projection's write logic is an unwinnable arms
+            race): (a) static — the creation fields
             AccountProjection.handle subscripts unconditionally must be
             present, non-empty strings; (b) dynamic (the closing rule) —
             evidence only counts while the ACCOUNT read model has NOT yet
-            consumed the prior event; once its marker exists, the round-4
+            consumed the prior event; once its marker exists, the
             stale-read rule re-resolves the row (committed concurrently →
             resolved, retry succeeds) and marker-with-row-still-absent means
             draining can never materialize it (not evidence — terminal).
@@ -441,7 +441,7 @@ def _unknown_accounts_are_pending_materialization(event: BusinessEvent) -> bool:
             try:
                 prior_data = prior.get_data()
             except (IntegrityError, ValueError):
-                # Same narrowing (Codex round-21): only documented
+                # Same narrowing: only documented
                 # payload-integrity failures negate evidence; transient DB
                 # errors propagate as retryable halts.
                 return False
@@ -477,7 +477,7 @@ def _unknown_accounts_are_pending_materialization(event: BusinessEvent) -> bool:
                 creates_cid = True
                 break
         if not creates_cid:
-            # Canonical-scan fallback (Codex round-10 P2): the exact-match
+            # Canonical-scan fallback: the exact-match
             # arms miss noncanonical stored spellings; the scan is bounded by
             # the company's account-event count and runs only on the failure
             # path with no fast-path hit.
@@ -512,11 +512,10 @@ def posted_event_accepted_for_apply(
 ) -> bool:
     """The shared filter for event-fold READERS (the report views,
     AccountBalance verification): fold only what the apply boundary actually
-    accepted into the balances (Codex round-12 P1 — folding a quarantined or
-    lag-deferred event misstates reports and produces false integrity
-    mismatches).
+    accepted into the balances (folding a quarantined or lag-deferred event
+    misstates reports and produces false integrity mismatches).
 
-    Two layers, in order (Codex round-13 P1):
+    Two layers, in order:
 
     1. The PERSISTED disposition wins: an event with an UNRESOLVED
        ``ProjectionFailureLog`` was quarantined (or is failing) — it is not
@@ -534,12 +533,11 @@ def posted_event_accepted_for_apply(
     resolution KIND (the framework-owned ``SELF_HEALED_RESOLUTION_NOTE``
     sentinel, which ``mark_resolved`` refuses to reproduce; ``resolved_by``
     is a nullable SET_NULL user reference and therefore not a reliable kind
-    marker — Codex rounds 14+15 P1).
+    marker).
 
     Pass a per-request ``facts_cache`` so account lookups are shared across
     the fold, and ``excluded_ids`` (from :func:`excluded_posted_event_ids`)
-    so batch folds pay ONE disposition query instead of one per event
-    (Codex round-14 P2)."""
+    so batch folds pay ONE disposition query instead of one per event."""
     if excluded_ids is None:
         excluded_ids = excluded_posted_event_ids(event.company)
     if event.id in excluded_ids:
@@ -552,15 +550,14 @@ def excluded_posted_event_ids(company) -> frozenset:
     preload for event-fold readers, and the ONE implementation of the
     disposition rule.
 
-    Scoped to the BALANCE projection's logs (Codex round-15 P1): every
+    Scoped to the BALANCE projection's logs: every
     reader folds amount semantics that mirror ``account_balance``, and the
     canonical apply quarantine stamps every consumer including it — while an
     UNRELATED consumer's operational failure (e.g. the JE read model halting
     on a malformed ``posted_at`` the invariant does not govern) must not
     eclipse a journal the balance projection actually applied.
 
-    Disqualifying, per log (Codex round-16 P1 — legacy compatibility without
-    a migration):
+    Disqualifying, per log (legacy compatibility without a migration):
 
     - UNRESOLVED — the event is failing or quarantined, not in balances;
     - resolved but NOT self-healed, carrying the boundary QUARANTINE message
@@ -604,7 +601,7 @@ def memo_account_public_ids(company) -> frozenset[str]:
     THE account-derived memo classification for payload READERS (the
     event-fold report views, AccountBalance verification): a line is memo
     iff its RESOLVED account is memo, exactly as the invariant and the
-    balance consumers decide (Codex round-11 P1 — a reader trusting the raw
+    balance consumers decide (a reader trusting the raw
     ``is_memo_line`` flag disagrees with the accepted journal and the
     projected balances whenever a historical/foreign flag lies). An
     unresolvable reference is never memo, per the invariant's rule."""
@@ -625,8 +622,8 @@ def memo_account_public_ids(company) -> frozenset[str]:
 
 
 def canonical_line_account_id(line: object):
-    """Canonical account id of one payload line for READER lookups (Codex
-    round-18 P1): accepted payloads may spell UUIDs in any equivalent form,
+    """Canonical account id of one payload line for READER lookups:
+    accepted payloads may spell UUIDs in any equivalent form,
     and reader dictionaries key on canonical ``str(public_id)`` — a raw-text
     lookup would silently drop the line's movement from reports and
     verification while the balances include it. Returns the canonical
@@ -651,8 +648,8 @@ def line_is_memo(line: object, memo_ids: frozenset[str]) -> bool:
 
 def _canonical_uuid(value: object) -> str | None:
     """Canonical lowercase-hyphenated spelling, or None for a non-UUID —
-    identity comparisons in this module are ALWAYS canonical (Codex round-10
-    P2: equivalent spellings are accepted inputs everywhere else)."""
+    identity comparisons in this module are ALWAYS canonical (equivalent
+    spellings are accepted inputs everywhere else)."""
     if value is None or isinstance(value, bool):
         return None
     try:
@@ -666,8 +663,8 @@ def _is_uuid(value: object) -> bool:
 
 
 def validate_reversed_journal_apply(event: BusinessEvent) -> None:
-    """journal_entry.reversed: shape guard (D5) plus lifecycle ordering
-    (Codex round-5 P1). Both entry references must be well-formed UUIDs — a
+    """journal_entry.reversed: shape guard (D5) plus lifecycle ordering.
+    Both entry references must be well-formed UUIDs — a
     payload missing them previously raised KeyError in the handler, halting
     the whole projection stream head-of-line. And when either referenced
     entry's OWN posted event is still pending materialization (a deferred
@@ -687,7 +684,7 @@ def validate_reversed_journal_apply(event: BusinessEvent) -> None:
                 "reversal references a journal entry whose own posted event is still "
                 "pending materialization — deferring so the lifecycle applies in order"
             )
-    # Codex round-11 P1: with no pending post left to wait for, both entry
+    # With no pending post left to wait for, both entry
     # rows must EXIST before the handler runs — a reversal whose referenced
     # post was terminally QUARANTINED (marker present, row absent) would
     # otherwise flip the original to REVERSED while the reversal row and its
@@ -702,7 +699,7 @@ def validate_reversed_journal_apply(event: BusinessEvent) -> None:
             if ref is not None
             else None
         )
-        # Codex round-12 P1: existence is not enough — the normal lifecycle
+        # Existence is not enough — the normal lifecycle
         # leaves a DRAFT row (from CREATED) under the same id, so a reversal
         # over a quarantined post would flip a draft to REVERSED (or link a
         # draft reversal) with no balance movements behind it. Both rows
@@ -725,7 +722,7 @@ def validate_deleted_journal_apply(event: BusinessEvent) -> None:
     entry_public_id = data.get("entry_public_id")
     if not _is_uuid(entry_public_id):
         raise PostedJournalApplyInvalid(event.event_type, [APPLY_ENTRY_REF_INVALID])
-    # Lifecycle ordering (Codex round-5 P1, same rule as the reversed door):
+    # Lifecycle ordering (same rule as the reversed door):
     # with the target's own posted event still pending materialization, the
     # status probe below would read an absent row and wave the delete
     # through as a no-op — defer so the guard decides against the
@@ -747,7 +744,7 @@ def validate_deleted_journal_apply(event: BusinessEvent) -> None:
 
 
 def validate_line_analysis_apply(event: BusinessEvent) -> None:
-    """journal_line_analysis.set: lifecycle ordering (Codex round-6 P1). The
+    """journal_line_analysis.set: lifecycle ordering. The
     backfill emits this event AFTER its journal's posted event — during a
     bounded replay where that post is deferred, the handler's missing-entry
     branch would silently consume the analysis event and the retried post

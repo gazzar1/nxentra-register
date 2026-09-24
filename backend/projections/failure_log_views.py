@@ -207,7 +207,7 @@ class ProjectionFailureResolveView(APIView):
             )
 
         note = (request.data.get("resolution_note") or "").strip()[:2000]
-        # A3-PR3 (Codex round-15 P1): route through mark_resolved — the ONE
+        # A3-PR3: route through mark_resolved — the ONE
         # place that guarantees an operator resolution cannot reproduce the
         # framework's self-heal signature.
         log.mark_resolved(request.user, note=note)
@@ -308,7 +308,7 @@ class ImportRejectedRowListView(APIView):
 
         actor = resolve_actor(request)
         # raw_row carries financial import evidence — gate on the same read
-        # permission as other report/audit views (Codex P2).
+        # permission as other report/audit views.
         require(actor, "reports.view")
         qs = ImportRejectedRow.objects.filter(company=actor.company).select_related("resolved_by")
 
@@ -370,7 +370,7 @@ class ImportRejectedRowResolveView(APIView):
         actor = resolve_actor(request)
         # Same read gate as the list view — the response echoes raw_row financial
         # evidence, so an admin with reports.view revoked must not read it here
-        # either (Codex round-2 P2).
+        # either.
         require(actor, "reports.view")
         if not (request.user.is_staff or request.user.is_superuser or actor.is_admin):
             return Response(

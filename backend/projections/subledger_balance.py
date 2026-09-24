@@ -125,7 +125,7 @@ class SubledgerBalanceProjection(BaseProjection):
         debit = Decimal(line_data.get("debit", "0"))
         credit = Decimal(line_data.get("credit", "0"))
 
-        # A3-PR3 (Codex round-2 P1): memo classification from the RESOLVED
+        # A3-PR3: memo classification from the RESOLVED
         # ACCOUNT (the canonical invariant's authority rule) — the payload
         # flag is only the fallback when no account resolves (which validated
         # posted events never hit; see AccountBalanceProjection._apply_line).
