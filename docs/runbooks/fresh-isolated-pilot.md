@@ -1922,15 +1922,18 @@ independent completeness control.
   the §I12 queue baseline and its durable `django_celery_results`
   TaskResult row — Celery's own receive/start lines reach neither
   worker stream, §G1d), its start/finish timestamps, and its complete result
-  (privately) — and export each evidence TaskResult row (`task_id`,
-  `status`, `date_started`, `date_done`, `result`) into `preflight/`
+  (privately) — and export each evidence TaskResult row — every one of
+  the 1 + K initial-task rows (the release execution AND the K
+  pre-declared re-executions whose "added nothing" proof lives in
+  their complete results), every closure re-execution row and the §I15
+  replacement row — (`task_id`, `status`, `date_started`, `date_done`,
+  `result`) into `preflight/`
   BEFORE §I16: once beat runs, the DatabaseScheduler-installed
   `celery.backend_cleanup` (04:00 UTC daily — `CELERY_TIMEZONE` is
   UTC) deletes TaskResult rows older than `result_expires`, Celery's
-  default 24 h (the settings set no override); the same export
-  applies to every closure re-execution row and the §I15 replacement
-  row, and from §I16 on these exports — not the live rows — are the
-  §K source; require exactly 1 + K initial
+  default 24 h (the settings set no override); from §I16 on these
+  exports — not the live rows — are the §K source; require exactly
+  1 + K initial
   tasks consumed on release,
   where K is the number of successful embedded `token-exchange/` calls
   after the J0 binding that the I13 sign-off pre-declared (each queues
@@ -3310,8 +3313,11 @@ after G1 and G2 are recorded complete in the
     arrives (not a duplicate), and an order created after the unblock
     is ordinary webhook intake;
 15. start Celery beat **LAST** — after every evidence TaskResult row
-    (the release execution's and every recorded closure re-execution's)
-    is exported as in §I14, because beat installs the 24 h
+    (every one of the 1 + K initial-task rows — the release execution
+    and the K pre-declared re-executions whose "added nothing" proof
+    step 12 reads from their complete results — and every recorded
+    closure re-execution's) is exported as in §I14, because beat
+    installs the 24 h
     `celery.backend_cleanup`;
 16. rerun the go-live preflight and alerts after beat starts;
 17. sign the final **intake-complete checkpoint**. Do NOT sign while:
