@@ -10,9 +10,11 @@ Projections:
 - Can be rebuilt from scratch by replaying all events
 """
 
+import contextvars
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import cast
 
 from django.db import transaction
@@ -25,6 +27,52 @@ from projections.models import ProjectionAppliedEvent
 from projections.write_barrier import projection_writes_allowed
 
 logger = logging.getLogger(__name__)
+
+
+# --- Pass re-entrancy guard (G1 rehearsal §I14 STOP, 2026-09-22) -------------
+#
+# A pass is the unit of company-stream order. Commands invoked from inside a
+# handler drain EVERY projection synchronously (accounting.commands
+# `_process_projections` and its copies, the emitter's synchronous fallback
+# loop). Before this guard such a drain re-entered the SAME projection while
+# the outer handler was mid-flight: it read the outer event's applied marker
+# (written before the handler runs, inside the still-open per-event
+# transaction) and treated the in-flight event as complete — a refund pending
+# behind its own order was consumed as a dead-end while the order's invoice was
+# still DRAFT, and nested passes completed deepest-first (LIFO numbering).
+#
+# Invariant: a projection never observes its own in-flight pass. A re-entered
+# call for the same (projection name, company id) returns 0 without touching
+# RLS state or the bookmark; the outer pass owns stream order. Every OTHER
+# projection still drains synchronously from inside a handler, so a command's
+# read-back of the row it just projected keeps working.
+#
+# ContextVar holding an immutable frozenset (the write_barrier idiom): set()
+# rebinds a new value for the nested scope and reset() restores the outer one,
+# so the mark is scoped per thread and per asyncio task and cannot leak past
+# its `with` block, whichever way the block exits.
+_PASSES_IN_FLIGHT: contextvars.ContextVar[frozenset[tuple[str, int]]] = contextvars.ContextVar(
+    "nxentra.projections.passes_in_flight",
+    default=frozenset(),
+)
+
+
+@contextmanager
+def _pass_in_flight(key: tuple[str, int]) -> Iterator[None]:
+    """Mark ``key`` = (projection name, company id) in flight for the dynamic
+    extent of the block; the token reset in ``finally`` never touches a mark
+    this frame did not set."""
+    token = _PASSES_IN_FLIGHT.set(_PASSES_IN_FLIGHT.get() | {key})
+    try:
+        yield
+    finally:
+        _PASSES_IN_FLIGHT.reset(token)
+
+
+def projection_in_flight(name: str, company_id: int) -> bool:
+    """True while a ``process_pending`` pass for (name, company_id) is running
+    on the current context. Read helper for tests and diagnostics."""
+    return (name, company_id) in _PASSES_IN_FLIGHT.get()
 
 
 class DeferEvent(Exception):
@@ -207,24 +255,43 @@ class BaseProjection(ABC):
         """
         Process all pending events for this projection.
 
+        A pass is the unit of company-stream order and is NOT re-entrant: a
+        nested call for the same (projection, company) — reached through a
+        command's synchronous projection drain from inside a handler — returns
+        0 immediately and the outer pass owns the stream (see
+        ``_PASSES_IN_FLIGHT``). The applied marker created for an event before
+        its handler runs is therefore never read as completion evidence by the
+        same projection on the same connection. Commands invoked from a
+        handler still drain every OTHER projection synchronously.
+
         Args:
             company: The company to process events for
             limit: Maximum events to process in one call
             stop_on_error: If True, stop on first error
 
         Returns:
-            Number of events successfully processed
+            Number of events successfully processed (0 for a re-entered pass)
         """
         from accounts.rls import rls_bypass as _rls_bypass
         from accounts.rls import set_current_company_id
         from projections.exceptions import ProjectionTerminalSkip
+
+        # Re-entrancy guard — checked before anything touches RLS state or the
+        # bookmark (see the module-level note on _PASSES_IN_FLIGHT).
+        # DEBUG, not INFO: the guard fires on every routine command drain inside
+        # a handler (several times per posted document), so it is not an anomaly
+        # signal; the outcome evidence is the posted document and FIFO numbering.
+        key = (self.name, company.id)
+        if key in _PASSES_IN_FLIGHT.get():
+            logger.debug("Projection %s: nested pass for company %s skipped (already in flight)", self.name, company.id)
+            return 0
 
         # Projections are system-level operations that build read models.
         # They bypass RLS because they explicitly receive the company parameter
         # and should not be blocked by tenant isolation policies.
         # We also ensure current_company_id is set so that WITH CHECK clauses
         # on INSERT/UPDATE pass correctly.
-        with _rls_bypass():
+        with _pass_in_flight(key), _rls_bypass():
             set_current_company_id(company.id)
 
             bookmark, _ = EventBookmark.objects.get_or_create(
@@ -396,10 +463,10 @@ class BaseProjection(ABC):
                         .order_by("-company_sequence")
                         .first()
                     )
-                    # Refresh bookmark from DB — recursive _process_projections
-                    # calls may have advanced it. We need the current row to
-                    # update_fields against, otherwise our save() races against
-                    # the inner advancements.
+                    # Refresh bookmark from DB before the rewind. Same-projection
+                    # re-entry is excluded by the in-flight guard, but another
+                    # connection (a second worker) may have advanced this row;
+                    # re-read it so update_fields applies to the current state.
                     bookmark.refresh_from_db()
                     bookmark.last_event = predecessor
                     bookmark.last_processed_at = timezone.now()

@@ -177,10 +177,12 @@ def _post_projections(store):
     recorded. The journal-materializing tests run under
     django_db(transaction=True) so each leg-internal transaction.atomic
     COMMITS for real and the emitter's on_commit projection dispatch fires
-    right at that boundary — exactly the Celery-worker sequencing, where the
-    order posts fully before its refund is processed. (Processing both
-    events later inside one wrapping test transaction instead hits the A23
-    same-transaction visibility window and terminal-skips the refund.)"""
+    right at that boundary, projecting each order at ingest-commit. (Before
+    the process_pending re-entrancy guard, processing an order and its refund
+    in ONE pass consumed the refund — the command's synchronous drain
+    re-entered this projection while the invoice was still DRAFT. That was a
+    real defect, not a test-mode artefact; the same-pass shape is now covered
+    by tests/test_i14_same_pass_order_refund.py.)"""
     from projections.models import ProjectionFailureLog
     from shopify_connector.projections import ShopifyAccountingHandler
 

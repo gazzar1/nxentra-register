@@ -621,6 +621,50 @@ def test_process_pending_validates_before_every_handler_dispatch():
     )
 
 
+def test_process_pending_has_one_in_flight_guard_ahead_of_the_bookmark_and_dispatch():
+    """A projection never observes its own in-flight pass (G1 rehearsal §I14
+    STOP): exactly ONE in-flight ContextVar exists in base.py, and the
+    re-entry check sits lexically before the bookmark fetch and before the
+    handler dispatch — a guard placed after either could still let a nested
+    drain read or advance the stream."""
+    source = (BACKEND_ROOT / "projections" / "base.py").read_text(encoding="utf-8")
+    assert source.count("_PASSES_IN_FLIGHT: contextvars.ContextVar") == 1, (
+        "BaseProjection must keep exactly one in-flight registry (a ContextVar) in projections/base.py"
+    )
+    body = source.index("def process_pending(")
+    guard = source.index("if key in _PASSES_IN_FLIGHT.get():", body)
+    assert guard < source.index("EventBookmark.objects.get_or_create(", body), (
+        "the re-entry guard must run before process_pending touches the bookmark"
+    )
+    assert guard < source.index("self.handle(event)", body), "the re-entry guard must run before the handler dispatch"
+
+
+def test_no_production_module_dispatches_a_projection_handler_directly():
+    """The single dispatch site in process_pending is what the in-flight guard
+    and the apply validator protect. A production module calling a
+    projection's `.handle(` directly would bypass both."""
+    # Substring heuristic by design: a future `logging.Handler.handle(record)`,
+    # `Command().handle(...)` or `dispatcher.handle(event)` in production code
+    # trips it too — each is a conscious edit to this test, never a silent pass.
+    offenders: list[str] = []
+    for path in _python_files_under(BACKEND_ROOT, exclude=("migrations/", "tests/", "venv", ".venv", "__pycache__")):
+        if path == BACKEND_ROOT / "projections" / "base.py":
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except UnicodeDecodeError:
+            continue
+        for lineno, line in enumerate(lines, 1):
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            if ".handle(" in stripped and "super().handle(" not in stripped:
+                offenders.append(f"{path.relative_to(BACKEND_ROOT).as_posix()}:{lineno}")
+    assert not offenders, "projection handlers are dispatched only by process_pending; direct calls:\n  " + "\n  ".join(
+        offenders
+    )
+
+
 def test_no_projection_subclass_overrides_process_pending():
     """process_pending is the choke point — a subclass overriding it could
     apply events without validation. Registration imports every projection
