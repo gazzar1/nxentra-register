@@ -3586,3 +3586,121 @@ def test_exclude_line_has_a_single_production_call_site():
     assert callers == ["accounting/bank_views.py", "reconciliation/commands.py"], (
         f"unexpected exclude_line call sites: {callers}"
     )
+
+
+# Rule 20 (M1 projection runtime): every projection DRAIN door is frozen.
+# A drain is a call to ``BaseProjection.process_pending`` — the A3 apply choke
+# point and the PR #152 in-flight guard live there. Registry-walk drains
+# (``for projection in projection_registry.all(): ....process_pending(...)``)
+# are the shape the September 2026 re-entrancy bug hid behind: the same loop
+# existed in six command modules, the emitter and two seed commands. The dicts
+# below pin every call site per file; a new ``.process_pending(`` call outside
+# ``projections/`` must go through ``projections.runtime`` (once it exists) or
+# edit this test consciously. Detection is AST-based: ``.process_pending(``
+# also appears in docstrings.
+#
+# Current state (before the extraction). The extraction PR shrinks the
+# outside dict to the three single-projection survivors and empties the
+# registry-walk allowlist — that diff is the proof that every walk moved.
+_PROCESS_PENDING_CALLS_OUTSIDE_PROJECTIONS: dict[str, int] = {
+    "accounting/commands.py": 1,  # V1 copy
+    "accounts/commands.py": 1,  # V1 copy
+    "edim/commands.py": 1,  # V1 copy
+    "properties/commands.py": 1,  # V1 copy
+    "properties/tasks.py": 1,  # V1 copy
+    "scratchpad/commands.py": 1,  # V1 copy (no callers)
+    "events/emitter.py": 1,  # V2 post-commit fallback
+    "shopify_connector/management/commands/seed_shopify_demo.py": 1,  # V6 dev seed
+    "shopify_connector/management/commands/seed_test_csv_pack.py": 1,  # V6 dev seed
+    "reconciliation/commands.py": 1,  # V5b single projection, fresh instance, ungated (Rule 19 pins the text)
+    "platform_connectors/management/commands/payments_canonical_backfill.py": 1,  # loop-until-zero after rebuild
+    "tenant/management/commands/replay_projections.py": 1,  # per-projection replay under tenant_context
+}
+_PROCESS_PENDING_CALLS_INSIDE_PROJECTIONS: dict[str, int] = {
+    "projections/base.py": 1,  # rebuild()'s drain-to-zero loop
+    "projections/tasks.py": 1,  # process_company_projections
+    "projections/views.py": 1,  # AdminProjectionProcessView
+    "projections/management/commands/run_projections.py": 2,  # _run_once + _run_daemon
+}
+_REGISTRY_WALK_DRAINS_OUTSIDE_PROJECTIONS: frozenset[str] = frozenset(
+    {
+        "accounting/commands.py",
+        "accounts/commands.py",
+        "edim/commands.py",
+        "properties/commands.py",
+        "properties/tasks.py",
+        "scratchpad/commands.py",
+        "events/emitter.py",
+        "shopify_connector/management/commands/seed_shopify_demo.py",
+        "shopify_connector/management/commands/seed_test_csv_pack.py",
+    }
+)
+
+
+def _drain_production_files() -> list[Path]:
+    return [
+        p
+        for p in _python_files_under(BACKEND_ROOT, exclude=("migrations/", "tests/", "venv", ".venv", "__pycache__"))
+        if not p.name.startswith("test_")
+    ]
+
+
+def _is_process_pending_call(node: ast.AST) -> bool:
+    return isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "process_pending"
+
+
+def _process_pending_call_counts() -> tuple[dict[str, int], dict[str, int]]:
+    outside: dict[str, int] = {}
+    inside: dict[str, int] = {}
+    for path in _drain_production_files():
+        rel = path.relative_to(BACKEND_ROOT).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        n = sum(1 for node in ast.walk(tree) if _is_process_pending_call(node))
+        if n:
+            (inside if rel.startswith("projections/") else outside)[rel] = n
+    return outside, inside
+
+
+def _registry_walk_drains() -> dict[str, list[int]]:
+    """Files (outside projections/) with a ``for ... in <x>.all():`` loop whose
+    body dispatches ``process_pending``."""
+    found: dict[str, list[int]] = {}
+    for path in _drain_production_files():
+        rel = path.relative_to(BACKEND_ROOT).as_posix()
+        if rel.startswith("projections/"):
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.For) and isinstance(node.iter, ast.Call)):
+                continue
+            if not (isinstance(node.iter.func, ast.Attribute) and node.iter.func.attr == "all"):
+                continue
+            if any(_is_process_pending_call(c) for stmt in node.body for c in ast.walk(stmt)):
+                found.setdefault(rel, []).append(node.lineno)
+    return found
+
+
+def test_process_pending_call_sites_are_frozen_per_file():
+    outside, inside = _process_pending_call_counts()
+    for label, found, pinned in (
+        ("outside projections/", outside, _PROCESS_PENDING_CALLS_OUTSIDE_PROJECTIONS),
+        ("inside projections/", inside, _PROCESS_PENDING_CALLS_INSIDE_PROJECTIONS),
+    ):
+        grown = {k: v for k, v in found.items() if k not in pinned or v > pinned[k]}
+        assert not grown, (
+            f"new projection drain door(s) {label}: {grown}. A drain is a call to process_pending; "
+            "route it through projections.runtime or edit this pin consciously (Rule 20)."
+        )
+        stale = sorted(set(pinned) - set(found))
+        assert not stale, f"Rule 20 pins {label} no longer needed — shrink the dict: {stale}"
+
+
+def test_no_registry_walk_drain_outside_the_allowlisted_files():
+    found = _registry_walk_drains()
+    extra = {k: v for k, v in found.items() if k not in _REGISTRY_WALK_DRAINS_OUTSIDE_PROJECTIONS}
+    assert not extra, (
+        f"new registry-walk drain(s) outside projections/: {extra}. This is the shape the September 2026 "
+        "re-entrancy bug hid behind — use projections.runtime (Rule 20)."
+    )
+    stale = sorted(_REGISTRY_WALK_DRAINS_OUTSIDE_PROJECTIONS - set(found))
+    assert not stale, f"Rule 20 registry-walk allowlist entries no longer needed — shrink it: {stale}"
