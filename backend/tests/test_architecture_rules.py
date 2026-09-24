@@ -40,6 +40,8 @@ Why source scans instead of behavior tests:
 import ast
 from pathlib import Path
 
+import pytest
+
 # =============================================================================
 # Helpers
 # =============================================================================
@@ -3597,7 +3599,11 @@ def test_exclude_line_has_a_single_production_call_site():
 # The dicts below pin every reference per file (exact counts); a new
 # ``process_pending`` reference outside ``projections/`` must go through
 # ``projections.runtime`` or edit this test consciously. Detection is
-# AST-based: ``.process_pending(`` also appears in docstrings.
+# AST-based (``.process_pending(`` also appears in docstrings): a reference is
+# the attribute ``x.process_pending`` OR the string constant
+# ``"process_pending"`` — the ``getattr(x, "process_pending")``,
+# ``operator.methodcaller`` / ``attrgetter`` and ``vars(x)[...]`` spellings —
+# so no spelling of a dispatch escapes the count.
 #
 # Post-extraction state: the six command-layer copies, the emitter fallback
 # and the two seed commands all call projections.runtime. Outside
@@ -3635,21 +3641,67 @@ def _drain_production_files() -> list[Path]:
 
 
 def _is_process_pending_call(node: ast.AST) -> bool:
-    """Any attribute reference to ``process_pending`` (a call, a bound-method
-    alias, a getattr target) — references, not just calls, so aliasing cannot
-    hide a dispatch."""
-    return isinstance(node, ast.Attribute) and node.attr == "process_pending"
+    """Any reference to ``process_pending`` — the attribute ``x.process_pending``
+    (a call or a bound-method alias) OR the string constant ``"process_pending"``
+    (``getattr(x, "process_pending")``, ``operator.methodcaller`` /
+    ``attrgetter``, ``vars(x)["process_pending"]``). References, not just
+    calls, and every spelling, so neither aliasing nor reflection hides a
+    dispatch from the per-file count."""
+    if isinstance(node, ast.Attribute) and node.attr == "process_pending":
+        return True
+    return isinstance(node, ast.Constant) and node.value == "process_pending"
 
 
 def _loop_variable_names(target: ast.AST) -> set[str]:
     return {n.id for n in ast.walk(target) if isinstance(n, ast.Name)}
 
 
+def _getattr_process_pending_calls(node: ast.AST) -> list[ast.Call]:
+    return [
+        c
+        for c in ast.walk(node)
+        if isinstance(c, ast.Call)
+        and isinstance(c.func, ast.Name)
+        and c.func.id == "getattr"
+        and len(c.args) >= 2
+        and isinstance(c.args[1], ast.Constant)
+        and c.args[1].value == "process_pending"
+    ]
+
+
 def _dispatches_on(node: ast.AST, names: set[str]) -> bool:
-    """True when ``node`` contains ``<name>.process_pending`` for a loop variable."""
-    return any(
-        _is_process_pending_call(c) and isinstance(c.value, ast.Name) and c.value.id in names for c in ast.walk(node)
-    )
+    """True when ``node`` dispatches ``process_pending`` on a loop variable:
+    ``<name>.process_pending`` or ``getattr(<name>, "process_pending")``. A bare
+    ``"process_pending"`` constant that is not a getattr target (methodcaller,
+    attrgetter, ``vars()[...]``) binds its receiver later, so it counts as a
+    dispatch on the loop variable — fail closed."""
+    getattr_calls = _getattr_process_pending_calls(node)
+    getattr_targets = {id(c.args[1]) for c in getattr_calls}
+    for c in ast.walk(node):
+        if isinstance(c, ast.Attribute) and c.attr == "process_pending":
+            if isinstance(c.value, ast.Name) and c.value.id in names:
+                return True
+        elif isinstance(c, ast.Constant) and c.value == "process_pending" and id(c) not in getattr_targets:
+            return True
+    return any(isinstance(c.args[0], ast.Name) and c.args[0].id in names for c in getattr_calls)
+
+
+def _walk_drain_linenos(tree: ast.AST) -> list[int]:
+    """Line numbers of dispatch-shaped walks in ``tree``: a ``for`` / ``async
+    for`` / comprehension whose loop variable is the receiver of a
+    ``process_pending`` dispatch in its body — whatever the iterable is
+    (``x.all()``, a name bound earlier, ``list(...)``)."""
+    found: list[int] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.For | ast.AsyncFor):
+            names = _loop_variable_names(node.target)
+            if any(_dispatches_on(stmt, names) for stmt in node.body):
+                found.append(node.lineno)
+        elif isinstance(node, ast.ListComp | ast.SetComp | ast.GeneratorExp | ast.DictComp):
+            names = set().union(*(_loop_variable_names(g.target) for g in node.generators))
+            if _dispatches_on(node, names):
+                found.append(node.lineno)
+    return found
 
 
 def _process_pending_call_counts() -> tuple[dict[str, int], dict[str, int]]:
@@ -3665,26 +3717,43 @@ def _process_pending_call_counts() -> tuple[dict[str, int], dict[str, int]]:
 
 
 def _registry_walk_drains() -> dict[str, list[int]]:
-    """Files (outside projections/) with a dispatch-shaped walk: a ``for`` /
-    ``async for`` / comprehension whose loop variable is the receiver of a
-    ``process_pending`` reference in its body — whatever the iterable is
-    (``x.all()``, a name bound earlier, ``list(...)``)."""
+    """Files (outside projections/) with a dispatch-shaped walk (see
+    ``_walk_drain_linenos``)."""
     found: dict[str, list[int]] = {}
     for path in _drain_production_files():
         rel = path.relative_to(BACKEND_ROOT).as_posix()
         if rel.startswith("projections/"):
             continue
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.For | ast.AsyncFor):
-                names = _loop_variable_names(node.target)
-                if any(_dispatches_on(stmt, names) for stmt in node.body):
-                    found.setdefault(rel, []).append(node.lineno)
-            elif isinstance(node, ast.ListComp | ast.SetComp | ast.GeneratorExp | ast.DictComp):
-                names = set().union(*(_loop_variable_names(g.target) for g in node.generators))
-                if _dispatches_on(node, names):
-                    found.setdefault(rel, []).append(node.lineno)
+        linenos = _walk_drain_linenos(ast.parse(path.read_text(encoding="utf-8")))
+        if linenos:
+            found[rel] = linenos
     return found
+
+
+@pytest.mark.parametrize(
+    ("snippet", "references", "walk"),
+    [
+        ("for p in registry.all():\n    p.process_pending(company)\n", 1, True),
+        ("for p in registry.all():\n    getattr(p, 'process_pending')(company, limit=100)\n", 1, True),
+        ("for p in registry.all():\n    fn = getattr(p, 'process_pending')\n    fn(company)\n", 1, True),
+        ("for p in registry.all():\n    operator.methodcaller('process_pending', company)(p)\n", 1, True),
+        ("for p in registry.all():\n    vars(type(p))['process_pending'](p, company)\n", 1, True),
+        ("[getattr(p, 'process_pending')(company) for p in registry.all()]\n", 1, True),
+        ("async def f():\n    async for p in registry.stream():\n        p.process_pending(company)\n", 1, True),
+        ("drain = projection.process_pending\ndrain(company)\n", 1, False),
+        ("getattr(projection, 'process_pending')(company)\n", 1, False),
+        ("for p in registry.all():\n    p.rebuild(company)\n", 0, False),
+        ("for p in registry.all():\n    other.process_pending(company)\n", 1, False),
+        ('"""process_pending is mentioned in this docstring."""\n', 0, False),
+    ],
+)
+def test_rule20_detector_recognises_every_dispatch_spelling(snippet: str, references: int, walk: bool):
+    """The count pin and the walk detector must see a dispatch however it is
+    spelled — attribute, getattr, methodcaller, ``vars()[...]`` — or Rule 20
+    is bypassable by reflection (PR #155 review)."""
+    tree = ast.parse(snippet)
+    assert sum(1 for node in ast.walk(tree) if _is_process_pending_call(node)) == references
+    assert bool(_walk_drain_linenos(tree)) is walk
 
 
 def test_process_pending_call_sites_are_frozen_per_file():
